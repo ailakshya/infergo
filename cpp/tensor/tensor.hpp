@@ -73,6 +73,21 @@ void tensor_free(Tensor* t) noexcept;
 /// Returns false and sets the last-error string on any validation failure.
 bool tensor_copy_from(Tensor* t, const void* src, int nbytes) noexcept;
 
+// ─── Getters ─────────────────────────────────────────────────────────────────
+
+/// Write up to max_dims shape dimensions into out_shape and return ndim.
+/// Returns 0 if t or out_shape is null, or if max_dims <= 0.
+int tensor_get_shape(const Tensor* t, int* out_shape, int max_dims) noexcept;
+
+/// Return the dtype constant (INFER_DTYPE_*). Returns -1 if t is null.
+int tensor_get_dtype(const Tensor* t) noexcept;
+
+/// Return total byte size of the data buffer. Returns 0 if t is null.
+int tensor_get_nbytes(const Tensor* t) noexcept;
+
+/// Return total number of elements. Returns 0 if t is null.
+int tensor_get_nelements(const Tensor* t) noexcept;
+
 // ─── Error string ─────────────────────────────────────────────────────────────
 
 /// Set the thread-local last-error string. Used internally by alloc/free

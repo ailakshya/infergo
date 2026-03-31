@@ -188,4 +188,32 @@ bool tensor_copy_from(Tensor* t, const void* src, int nbytes) noexcept {
     return true;
 }
 
+// ─── Getters (T-08) ──────────────────────────────────────────────────────────
+
+int tensor_get_shape(const Tensor* t, int* out_shape, int max_dims) noexcept {
+    if (t == nullptr || out_shape == nullptr || max_dims <= 0) {
+        return 0;
+    }
+    const int dims = (t->ndim < max_dims) ? t->ndim : max_dims;
+    for (int i = 0; i < dims; ++i) {
+        out_shape[i] = t->shape[i];
+    }
+    return t->ndim;
+}
+
+int tensor_get_dtype(const Tensor* t) noexcept {
+    if (t == nullptr) { return -1; }
+    return t->dtype;
+}
+
+int tensor_get_nbytes(const Tensor* t) noexcept {
+    if (t == nullptr) { return 0; }
+    return static_cast<int>(t->nbytes);
+}
+
+int tensor_get_nelements(const Tensor* t) noexcept {
+    if (t == nullptr) { return 0; }
+    return static_cast<int>(t->nelements());
+}
+
 } // namespace infergo
