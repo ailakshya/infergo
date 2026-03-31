@@ -85,3 +85,21 @@ add_subdirectory(cpp/tensor)
 add_subdirectory(cpp/onnx)
 add_subdirectory(cpp/tokenizer)
 add_subdirectory(cpp/api)
+
+# ─── llama.cpp (vendor/llama.cpp) ────────────────────────────────────────────
+# Build as static library so CGo links a single .a instead of many .so files.
+# GGML_CUDA mirrors the presence of CUDA in this build.
+# Disable everything we don't need to keep build times short.
+if(EXISTS "${CMAKE_SOURCE_DIR}/vendor/llama.cpp/CMakeLists.txt")
+    set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS    OFF CACHE BOOL "" FORCE)
+    if(INFER_CUDA_AVAILABLE)
+        set(GGML_CUDA ON CACHE BOOL "" FORCE)
+    endif()
+    add_subdirectory(vendor/llama.cpp)
+    message(STATUS "llama.cpp submodule found — building libllama.a (CUDA=${INFER_CUDA_AVAILABLE})")
+else()
+    message(WARNING "vendor/llama.cpp not found — run: git submodule update --init vendor/llama.cpp")
+endif()
