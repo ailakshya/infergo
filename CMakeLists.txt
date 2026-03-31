@@ -76,3 +76,4 @@ enable_testing()
 
 # Libraries — add more subdirectories as tasks progress
 add_subdirectory(cpp/tensor)
+add_subdirectory(cpp/api)
