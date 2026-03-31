@@ -41,7 +41,9 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         $<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address,undefined>
         $<$<COMPILE_LANGUAGE:CXX>:-fno-omit-frame-pointer>
     )
-    add_link_options(-fsanitize=address,undefined)
+    # Restrict to CXX link steps — CUDA separable-compilation device-link
+    # uses gcc and chokes on -fsanitize if passed unconditionally
+    add_link_options($<$<LINK_LANGUAGE:CXX>:-fsanitize=address,undefined>)
 elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_compile_options(
         $<$<COMPILE_LANGUAGE:CXX>:-O3>

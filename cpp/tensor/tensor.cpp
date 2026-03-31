@@ -138,20 +138,25 @@ void tensor_free(Tensor* t) noexcept {
         return;
     }
 
-    if (t->on_device) {
-#ifdef INFER_CUDA_AVAILABLE
-        tensor_cuda_free_data(t->data);  // RULE 7: CUDA memory freed by CUDA code
-#endif
-    } else {
-        std::free(t->data);
-    }
+    // Save → zero → free for every pointer field (RULE 5).
+    // Zeroing before freeing means a double-free of `t` produces a harmless
+    // free(nullptr) rather than a heap corruption.
 
-    std::free(t->shape);
+    void* data_ptr  = t->data;
+    int*  shape_ptr = t->shape;
 
-    // Zero all pointer fields before freeing struct to catch use-after-free (RULE 5)
     t->data  = nullptr;
     t->shape = nullptr;
 
+    if (t->on_device) {
+#ifdef INFER_CUDA_AVAILABLE
+        tensor_cuda_free_data(data_ptr);  // RULE 7: CUDA memory freed by CUDA code
+#endif
+    } else {
+        std::free(data_ptr);
+    }
+
+    std::free(shape_ptr);
     std::free(t);
 }
 

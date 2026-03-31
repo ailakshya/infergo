@@ -292,3 +292,60 @@ TEST(TensorAllocCuda, FreeDeviceTensor) {
 }
 
 #endif // INFER_CUDA_AVAILABLE
+
+// ─── tensor_free (T-05) ──────────────────────────────────────────────────────
+
+TEST(TensorFreeT05, NullNoOp) {
+    // Calling free on nullptr must be a silent no-op — never crash
+    tensor_free(nullptr);
+    tensor_free(nullptr);
+}
+
+TEST(TensorFreeT05, RepeatedAllocFree) {
+    // 1000 alloc+free cycles — valgrind / ASan must show zero leaks
+    int shape[] = {64, 64};
+    for (int i = 0; i < 1000; ++i) {
+        Tensor* t = tensor_alloc_cpu(shape, 2, 0);
+        ASSERT_NE(t, nullptr);
+        tensor_free(t);
+    }
+}
+
+TEST(TensorFreeT05, HighNdim) {
+    // Valgrind checks that the shape array (ndim ints) is fully freed
+    int shape[] = {2, 3, 4, 5, 6, 7, 8};
+    Tensor* t = tensor_alloc_cpu(shape, 7, 0);
+    ASSERT_NE(t, nullptr);
+    EXPECT_EQ(t->nbytes, static_cast<size_t>(2*3*4*5*6*7*8*4));
+    tensor_free(t);
+}
+
+TEST(TensorFreeT05, AllDtypesCpuNoLeak) {
+    int shape[] = {16};
+    for (int dtype = 0; dtype <= 6; ++dtype) {
+        Tensor* t = tensor_alloc_cpu(shape, 1, dtype);
+        ASSERT_NE(t, nullptr) << "dtype=" << dtype;
+        tensor_free(t);
+    }
+}
+
+#ifdef INFER_CUDA_AVAILABLE
+TEST(TensorFreeT05, AllDtypesCudaNoLeak) {
+    int shape[] = {16};
+    for (int dtype = 0; dtype <= 6; ++dtype) {
+        Tensor* t = tensor_alloc_cuda(shape, 1, dtype, 0);
+        ASSERT_NE(t, nullptr) << "dtype=" << dtype << ": " << get_last_error();
+        tensor_free(t);
+    }
+}
+
+TEST(TensorFreeT05, RepeatedCudaAllocFree) {
+    // 100 CUDA alloc+free cycles — confirms cudaFree is always called
+    int shape[] = {256, 256};
+    for (int i = 0; i < 100; ++i) {
+        Tensor* t = tensor_alloc_cuda(shape, 2, 0, 0);
+        ASSERT_NE(t, nullptr) << get_last_error();
+        tensor_free(t);
+    }
+}
+#endif // INFER_CUDA_AVAILABLE
