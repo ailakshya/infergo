@@ -1,0 +1,174 @@
+#include "llm_engine.hpp"
+
+#include <cstring>
+#include <stdexcept>
+
+namespace infergo {
+
+// ─── Constructor / Destructor ─────────────────────────────────────────────────
+
+LLMEngine::LLMEngine() = default;
+
+LLMEngine::~LLMEngine() {
+    if (batch_initialized_) {
+        llama_batch_free(batch_);
+        batch_initialized_ = false;
+    }
+    if (ctx_) {
+        llama_free(ctx_);
+        ctx_ = nullptr;
+    }
+    if (model_) {
+        llama_model_free(model_);
+        model_ = nullptr;
+    }
+}
+
+// ─── LoadModel ────────────────────────────────────────────────────────────────
+
+void LLMEngine::LoadModel(const std::string& path,
+                           int  n_gpu_layers,
+                           int  ctx_size,
+                           int  n_seq_max,
+                           int  n_batch)
+{
+    // Clean up any previously loaded model
+    if (batch_initialized_) { llama_batch_free(batch_); batch_initialized_ = false; }
+    if (ctx_)   { llama_free(ctx_);           ctx_   = nullptr; }
+    if (model_) { llama_model_free(model_);   model_ = nullptr; }
+
+    // Model params
+    llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = n_gpu_layers;
+
+    model_ = llama_model_load_from_file(path.c_str(), mparams);
+    if (model_ == nullptr) {
+        throw std::runtime_error(
+            "LLMEngine::LoadModel: failed to load model from '" + path + "'");
+    }
+
+    // Context params
+    llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx      = static_cast<uint32_t>(ctx_size);
+    cparams.n_batch    = static_cast<uint32_t>(n_batch);
+    cparams.n_ubatch   = static_cast<uint32_t>(n_batch);
+    cparams.n_seq_max  = static_cast<uint32_t>(n_seq_max);
+    cparams.offload_kqv = true;   // keep KV cache on GPU
+    cparams.no_perf     = true;   // skip perf counters
+
+    ctx_ = llama_init_from_model(model_, cparams);
+    if (ctx_ == nullptr) {
+        llama_model_free(model_);
+        model_ = nullptr;
+        throw std::runtime_error("LLMEngine::LoadModel: failed to create llama_context");
+    }
+
+    // Pre-allocate batch
+    n_batch_ = n_batch;
+    batch_ = llama_batch_init(n_batch, /*embd=*/0, /*n_seq_max=*/1);
+    batch_initialized_ = true;
+
+    // Cache vocab size
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    vocab_size_ = llama_vocab_n_tokens(vocab);
+}
+
+// ─── BatchDecode ─────────────────────────────────────────────────────────────
+
+std::vector<SequenceLogits> LLMEngine::BatchDecode(
+    const std::vector<SequenceInput>& inputs)
+{
+    if (model_ == nullptr || ctx_ == nullptr) {
+        throw std::runtime_error("LLMEngine::BatchDecode: model not loaded");
+    }
+    if (inputs.empty()) {
+        return {};
+    }
+
+    // Count total tokens across all inputs
+    int total_tokens = 0;
+    for (const auto& seq : inputs) {
+        total_tokens += static_cast<int>(seq.tokens.size());
+    }
+    if (total_tokens > n_batch_) {
+        throw std::runtime_error(
+            "LLMEngine::BatchDecode: total tokens (" + std::to_string(total_tokens) +
+            ") exceeds n_batch (" + std::to_string(n_batch_) + ")");
+    }
+
+    // Fill batch
+    batch_.n_tokens = 0;
+    for (const auto& seq : inputs) {
+        const int n = static_cast<int>(seq.tokens.size());
+        for (int i = 0; i < n; ++i) {
+            const int idx = batch_.n_tokens;
+            batch_.token   [idx]    = static_cast<llama_token>(seq.tokens[i]);
+            batch_.pos     [idx]    = static_cast<llama_pos>(seq.pos + i);
+            batch_.n_seq_id[idx]    = 1;
+            batch_.seq_id  [idx][0] = static_cast<llama_seq_id>(seq.seq_id);
+            // Only request logits for the last token of each sequence
+            batch_.logits  [idx]    = (seq.want_logits && i == n - 1) ? 1 : 0;
+            batch_.n_tokens++;
+        }
+    }
+
+    // Run decode
+    const int rc = llama_decode(ctx_, batch_);
+    if (rc != 0) {
+        throw std::runtime_error(
+            "LLMEngine::BatchDecode: llama_decode returned " + std::to_string(rc));
+    }
+
+    // Collect logits.
+    // llama_get_logits_ith(ctx, i) returns logits for batch slot i.
+    // Slots where logits=0 return null — we must use the actual slot index
+    // of each sequence's last token, not a separate output counter.
+    std::vector<SequenceLogits> results;
+    int entry = 0;
+    for (const auto& seq : inputs) {
+        const int n = static_cast<int>(seq.tokens.size());
+        if (seq.want_logits) {
+            const int last_slot = entry + n - 1;  // batch slot of the last token
+            const float* raw = llama_get_logits_ith(ctx_, last_slot);
+            if (raw == nullptr) {
+                throw std::runtime_error(
+                    "LLMEngine::BatchDecode: null logits for seq_id=" +
+                    std::to_string(seq.seq_id));
+            }
+            SequenceLogits sl;
+            sl.seq_id = seq.seq_id;
+            sl.logits.assign(raw, raw + vocab_size_);
+            results.push_back(std::move(sl));
+        }
+        entry += n;
+    }
+
+    return results;
+}
+
+// ─── Accessors ────────────────────────────────────────────────────────────────
+
+int LLMEngine::VocabSize() const noexcept {
+    return vocab_size_;
+}
+
+int32_t LLMEngine::BOS() const noexcept {
+    if (model_ == nullptr) return -1;
+    return static_cast<int32_t>(
+        llama_vocab_bos(llama_model_get_vocab(model_)));
+}
+
+int32_t LLMEngine::EOS() const noexcept {
+    if (model_ == nullptr) return -1;
+    return static_cast<int32_t>(
+        llama_vocab_eos(llama_model_get_vocab(model_)));
+}
+
+bool LLMEngine::IsEOG(int32_t token) const noexcept {
+    if (model_ == nullptr) return false;
+    return llama_vocab_is_eog(
+        llama_model_get_vocab(model_),
+        static_cast<llama_token>(token));
+}
+
+} // namespace infergo
