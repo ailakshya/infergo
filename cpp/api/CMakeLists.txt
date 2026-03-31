@@ -5,7 +5,11 @@ target_include_directories(infer_api
     PRIVATE ${CMAKE_SOURCE_DIR}/cpp
 )
 
-target_link_libraries(infer_api PRIVATE infer_tensor infer_onnx)
+target_link_libraries(infer_api PRIVATE infer_tensor infer_onnx infer_tokenizer)
+
+set_target_properties(infer_api PROPERTIES
+    BUILD_RPATH "${CMAKE_SOURCE_DIR}/tokenizer-rs/target/release"
+)
 
 if(INFER_CUDA_AVAILABLE)
     target_compile_definitions(infer_api PUBLIC INFER_CUDA_AVAILABLE=1)

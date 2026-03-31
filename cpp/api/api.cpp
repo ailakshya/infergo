@@ -1,6 +1,7 @@
 #include "infer_api.h"
 #include "../tensor/tensor.hpp"
 #include "../onnx/onnx_session.hpp"
+#include "../tokenizer/tokenizer.hpp"
 
 #include <cstring>
 #include <exception>
@@ -301,6 +302,130 @@ void infer_session_destroy(InferSession s) {
     if (s == nullptr) return;
     try {
         delete static_cast<infergo::OnnxSession*>(s);
+    } catch (...) {
+        // destructor must not throw
+    }
+}
+
+// ─── Tokenizer API ────────────────────────────────────────────────────────────
+
+InferTokenizer infer_tokenizer_load(const char* path) {
+    try {
+        if (path == nullptr) {
+            infergo::set_last_error("infer_tokenizer_load: null path");
+            return nullptr;
+        }
+        return static_cast<InferTokenizer>(
+            new infergo::TokenizerWrapper(path)
+        );
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_tokenizer_load: unknown exception");
+        return nullptr;
+    }
+}
+
+int infer_tokenizer_encode(
+    InferTokenizer  tok,
+    const char*     text,
+    int             add_special_tokens,
+    int*            out_ids,
+    int*            out_mask,
+    int             max_tokens)
+{
+    try {
+        if (tok == nullptr || text == nullptr || out_ids == nullptr || out_mask == nullptr) {
+            infergo::set_last_error("infer_tokenizer_encode: null argument");
+            return -1;
+        }
+        auto& t = *static_cast<infergo::TokenizerWrapper*>(tok);
+        const infergo::Encoding enc = t.encode(
+            text, add_special_tokens != 0, max_tokens
+        );
+        const int n = static_cast<int>(enc.ids.size());
+        std::memcpy(out_ids,  enc.ids.data(),            static_cast<size_t>(n) * sizeof(int));
+        std::memcpy(out_mask, enc.attention_mask.data(), static_cast<size_t>(n) * sizeof(int));
+        return n;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_tokenizer_encode: unknown exception");
+        return -1;
+    }
+}
+
+int infer_tokenizer_decode(
+    InferTokenizer  tok,
+    const int*      ids,
+    int             n_ids,
+    int             skip_special_tokens,
+    char*           out_buf,
+    int             buf_size)
+{
+    try {
+        if (tok == nullptr || out_buf == nullptr || buf_size <= 0) {
+            infergo::set_last_error("infer_tokenizer_decode: null argument");
+            return -1;
+        }
+        std::vector<int32_t> id_vec;
+        if (n_ids > 0 && ids != nullptr) {
+            id_vec.assign(ids, ids + n_ids);
+        }
+        auto& t = *static_cast<infergo::TokenizerWrapper*>(tok);
+        const std::string text = t.decode(id_vec, skip_special_tokens != 0);
+        std::strncpy(out_buf, text.c_str(), static_cast<size_t>(buf_size) - 1);
+        out_buf[buf_size - 1] = '\0';
+        return 0;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_tokenizer_decode: unknown exception");
+        return -1;
+    }
+}
+
+int infer_tokenizer_decode_token(
+    InferTokenizer  tok,
+    int             id,
+    char*           out_buf,
+    int             buf_size)
+{
+    try {
+        if (tok == nullptr || out_buf == nullptr || buf_size <= 0) {
+            infergo::set_last_error("infer_tokenizer_decode_token: null argument");
+            return -1;
+        }
+        auto& t = *static_cast<infergo::TokenizerWrapper*>(tok);
+        const std::string piece = t.decode_token(static_cast<int32_t>(id));
+        std::strncpy(out_buf, piece.c_str(), static_cast<size_t>(buf_size) - 1);
+        out_buf[buf_size - 1] = '\0';
+        return 0;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_tokenizer_decode_token: unknown exception");
+        return -1;
+    }
+}
+
+int infer_tokenizer_vocab_size(InferTokenizer tok) {
+    if (tok == nullptr) return 0;
+    try {
+        return static_cast<infergo::TokenizerWrapper*>(tok)->vocab_size();
+    } catch (...) {
+        return 0;
+    }
+}
+
+void infer_tokenizer_destroy(InferTokenizer tok) {
+    if (tok == nullptr) return;
+    try {
+        delete static_cast<infergo::TokenizerWrapper*>(tok);
     } catch (...) {
         // destructor must not throw
     }

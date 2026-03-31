@@ -132,6 +132,58 @@ InferError infer_session_run(
 // Destroy session and free all resources. Safe to call with NULL.
 void infer_session_destroy(InferSession s);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TOKENIZER API
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef void* InferTokenizer;
+
+// Load a HuggingFace tokenizer from a tokenizer.json file.
+// Returns NULL on failure; call infer_last_error_string() for details.
+InferTokenizer infer_tokenizer_load(const char* path);
+
+// Encode text into token IDs and attention mask.
+// add_special_tokens: 1 = prepend/append BOS/EOS, 0 = raw tokens only.
+// max_tokens: hard cap on output length.
+// out_ids / out_mask: caller-allocated arrays of length max_tokens.
+// Returns number of tokens written, or -1 on error.
+int infer_tokenizer_encode(
+    InferTokenizer  tok,
+    const char*     text,
+    int             add_special_tokens,
+    int*            out_ids,
+    int*            out_mask,
+    int             max_tokens
+);
+
+// Decode token IDs back to text.
+// skip_special_tokens: 1 = omit BOS/EOS/PAD in output.
+// out_buf: caller-allocated buffer of buf_size bytes (null-terminated on success).
+// Returns 0 on success, -1 on error.
+int infer_tokenizer_decode(
+    InferTokenizer  tok,
+    const int*      ids,
+    int             n_ids,
+    int             skip_special_tokens,
+    char*           out_buf,
+    int             buf_size
+);
+
+// Decode a single token ID to its string piece (null-terminated in out_buf).
+// Returns 0 on success, -1 on error.
+int infer_tokenizer_decode_token(
+    InferTokenizer  tok,
+    int             id,
+    char*           out_buf,
+    int             buf_size
+);
+
+// Returns the vocabulary size, or 0 on error.
+int infer_tokenizer_vocab_size(InferTokenizer tok);
+
+// Destroy tokenizer and free all resources. Safe to call with NULL.
+void infer_tokenizer_destroy(InferTokenizer tok);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

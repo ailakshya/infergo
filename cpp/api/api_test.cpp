@@ -4,6 +4,10 @@
 #include <cstdint>
 #include <gtest/gtest.h>
 
+#ifndef TEST_TOKENIZER_PATH
+#define TEST_TOKENIZER_PATH "/tmp/bert_tokenizer/tokenizer.json"
+#endif
+
 // ─── infer_last_error_string ──────────────────────────────────────────────────
 
 TEST(ApiErrorString, ReturnsCharPointer) {
@@ -297,4 +301,95 @@ TEST(ApiSession, RunWrongInputCountReturnsErr) {
     InferTensor out = nullptr;
     EXPECT_NE(infer_session_run(s, nullptr, 0, &out, 1), INFER_OK);
     infer_session_destroy(s);
+}
+
+// ─── Tokenizer API ────────────────────────────────────────────────────────────
+
+TEST(ApiTokenizer, LoadValid) {
+    InferTokenizer tok = infer_tokenizer_load(TEST_TOKENIZER_PATH);
+    ASSERT_NE(tok, nullptr);
+    infer_tokenizer_destroy(tok);
+}
+
+TEST(ApiTokenizer, LoadNullPathReturnsNull) {
+    EXPECT_EQ(infer_tokenizer_load(nullptr), nullptr);
+}
+
+TEST(ApiTokenizer, LoadBadPathReturnsNull) {
+    EXPECT_EQ(infer_tokenizer_load("/no/such/tokenizer.json"), nullptr);
+}
+
+TEST(ApiTokenizer, VocabSizePositive) {
+    InferTokenizer tok = infer_tokenizer_load(TEST_TOKENIZER_PATH);
+    ASSERT_NE(tok, nullptr);
+    EXPECT_GT(infer_tokenizer_vocab_size(tok), 0);
+    infer_tokenizer_destroy(tok);
+}
+
+TEST(ApiTokenizer, VocabSizeNullReturnsZero) {
+    EXPECT_EQ(infer_tokenizer_vocab_size(nullptr), 0);
+}
+
+TEST(ApiTokenizer, EncodeHelloWorld) {
+    InferTokenizer tok = infer_tokenizer_load(TEST_TOKENIZER_PATH);
+    ASSERT_NE(tok, nullptr);
+
+    int ids[512] = {};
+    int mask[512] = {};
+    const int n = infer_tokenizer_encode(tok, "Hello world", 0, ids, mask, 512);
+    EXPECT_GT(n, 0);
+    for (int i = 0; i < n; ++i) EXPECT_EQ(mask[i], 1);
+
+    infer_tokenizer_destroy(tok);
+}
+
+TEST(ApiTokenizer, EncodeNullArgsReturnsMinus1) {
+    EXPECT_EQ(infer_tokenizer_encode(nullptr, "text", 0, nullptr, nullptr, 512), -1);
+}
+
+TEST(ApiTokenizer, DecodeRoundTrip) {
+    InferTokenizer tok = infer_tokenizer_load(TEST_TOKENIZER_PATH);
+    ASSERT_NE(tok, nullptr);
+
+    int ids[512] = {};
+    int mask[512] = {};
+    const int n = infer_tokenizer_encode(tok, "hello world", 0, ids, mask, 512);
+    ASSERT_GT(n, 0);
+
+    char buf[1024] = {};
+    EXPECT_EQ(infer_tokenizer_decode(tok, ids, n, 1, buf, static_cast<int>(sizeof(buf))), 0);
+    EXPECT_STREQ(buf, "hello world");
+
+    infer_tokenizer_destroy(tok);
+}
+
+TEST(ApiTokenizer, DecodeEmptyIdsReturnsEmpty) {
+    InferTokenizer tok = infer_tokenizer_load(TEST_TOKENIZER_PATH);
+    ASSERT_NE(tok, nullptr);
+
+    char buf[64] = {};
+    EXPECT_EQ(infer_tokenizer_decode(tok, nullptr, 0, 1, buf, static_cast<int>(sizeof(buf))), 0);
+    EXPECT_EQ(buf[0], '\0');
+
+    infer_tokenizer_destroy(tok);
+}
+
+TEST(ApiTokenizer, DecodeToken) {
+    InferTokenizer tok = infer_tokenizer_load(TEST_TOKENIZER_PATH);
+    ASSERT_NE(tok, nullptr);
+
+    int ids[8] = {};
+    int mask[8] = {};
+    const int n = infer_tokenizer_encode(tok, "hello", 0, ids, mask, 8);
+    ASSERT_GT(n, 0);
+
+    char buf[64] = {};
+    EXPECT_EQ(infer_tokenizer_decode_token(tok, ids[0], buf, static_cast<int>(sizeof(buf))), 0);
+    EXPECT_GT(static_cast<int>(strlen(buf)), 0);
+
+    infer_tokenizer_destroy(tok);
+}
+
+TEST(ApiTokenizer, DestroyNullIsNoop) {
+    EXPECT_NO_FATAL_FAILURE(infer_tokenizer_destroy(nullptr));
 }
