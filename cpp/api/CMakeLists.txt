@@ -5,7 +5,15 @@ target_include_directories(infer_api
     PRIVATE ${CMAKE_SOURCE_DIR}/cpp
 )
 
-target_link_libraries(infer_api PRIVATE infer_tensor infer_onnx infer_tokenizer)
+if(TARGET infer_llm)
+    target_include_directories(infer_api PRIVATE
+        ${CMAKE_SOURCE_DIR}/vendor/llama.cpp/include
+    )
+    target_link_libraries(infer_api PRIVATE infer_tensor infer_onnx infer_tokenizer infer_llm)
+    target_compile_definitions(infer_api PRIVATE INFER_LLM_AVAILABLE=1)
+else()
+    target_link_libraries(infer_api PRIVATE infer_tensor infer_onnx infer_tokenizer)
+endif()
 
 set_target_properties(infer_api PROPERTIES
     BUILD_RPATH "${CMAKE_SOURCE_DIR}/tokenizer-rs/target/release"
@@ -31,6 +39,10 @@ target_link_libraries(api_test
 
 if(INFER_CUDA_AVAILABLE)
     target_compile_definitions(api_test PRIVATE INFER_CUDA_AVAILABLE=1)
+endif()
+
+if(TARGET infer_llm)
+    target_compile_definitions(api_test PRIVATE INFER_LLM_AVAILABLE=1)
 endif()
 
 include(GoogleTest)

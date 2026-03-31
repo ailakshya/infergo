@@ -84,12 +84,12 @@ enable_testing()
 add_subdirectory(cpp/tensor)
 add_subdirectory(cpp/onnx)
 add_subdirectory(cpp/tokenizer)
-add_subdirectory(cpp/api)
 
 # ─── llama.cpp (vendor/llama.cpp) ────────────────────────────────────────────
 # Build as static library so CGo links a single .a instead of many .so files.
 # GGML_CUDA mirrors the presence of CUDA in this build.
 # Disable everything we don't need to keep build times short.
+# NOTE: must come before cpp/api so infer_llm target exists when api is configured.
 if(EXISTS "${CMAKE_SOURCE_DIR}/vendor/llama.cpp/CMakeLists.txt")
     set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -104,3 +104,6 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/vendor/llama.cpp/CMakeLists.txt")
 else()
     message(WARNING "vendor/llama.cpp not found — run: git submodule update --init vendor/llama.cpp")
 endif()
+
+# cpp/api depends on infer_llm (if available) — must come after llama.cpp block
+add_subdirectory(cpp/api)

@@ -1,7 +1,9 @@
 #include "infer_api.h"
 
+#include <cmath>
 #include <cstring>
 #include <cstdint>
+#include <vector>
 #include <gtest/gtest.h>
 
 #ifndef TEST_TOKENIZER_PATH
@@ -393,3 +395,139 @@ TEST(ApiTokenizer, DecodeToken) {
 TEST(ApiTokenizer, DestroyNullIsNoop) {
     EXPECT_NO_FATAL_FAILURE(infer_tokenizer_destroy(nullptr));
 }
+
+// ─── LLM API (T-28) ──────────────────────────────────────────────────────────
+
+#ifdef INFER_LLM_AVAILABLE
+
+#ifndef TEST_LLM_MODEL_PATH
+#define TEST_LLM_MODEL_PATH "/tmp/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+#endif
+
+static bool llm_model_available() {
+    FILE* f = fopen(TEST_LLM_MODEL_PATH, "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
+
+#define SKIP_IF_NO_LLM() \
+    if (!llm_model_available()) { GTEST_SKIP() << "LLM model not found at " TEST_LLM_MODEL_PATH; }
+
+TEST(ApiLLM, CreateDestroyNull) {
+    infer_llm_destroy(nullptr);  // must not crash
+}
+
+TEST(ApiLLM, CreateValid) {
+    SKIP_IF_NO_LLM();
+    InferLLM llm = infer_llm_create(TEST_LLM_MODEL_PATH, 99, 512, 4, 256);
+    ASSERT_NE(llm, nullptr);
+    EXPECT_GT(infer_llm_vocab_size(llm), 0);
+    EXPECT_GE(infer_llm_bos(llm), 0);
+    EXPECT_GE(infer_llm_eos(llm), 0);
+    infer_llm_destroy(llm);
+}
+
+TEST(ApiLLM, CreateBadPathReturnsNull) {
+    InferLLM llm = infer_llm_create("/no/such/model.gguf", 0, 512, 4, 256);
+    EXPECT_EQ(llm, nullptr);
+    EXPECT_NE(infer_last_error_string()[0], '\0');
+}
+
+TEST(ApiLLM, SeqCreateDestroyNull) {
+    infer_seq_destroy(nullptr);  // must not crash
+}
+
+TEST(ApiLLM, SeqCreateNullLLMReturnsNull) {
+    const int tokens[] = {1, 2, 3};
+    InferSeq seq = infer_seq_create(nullptr, tokens, 3);
+    EXPECT_EQ(seq, nullptr);
+}
+
+// Core acceptance criterion: 4 sequences batched together, all get valid logits
+TEST(ApiLLM, FourSequencesBatchedGetValidLogits) {
+    SKIP_IF_NO_LLM();
+
+    InferLLM llm = infer_llm_create(TEST_LLM_MODEL_PATH, 99, 1024, 4, 512);
+    ASSERT_NE(llm, nullptr);
+
+    const int vocab_size = infer_llm_vocab_size(llm);
+    ASSERT_GT(vocab_size, 0);
+
+    const int bos = infer_llm_bos(llm);
+
+    // Create 4 sequences with different prompt lengths
+    const int prompt0[] = {bos};
+    const int prompt1[] = {bos, 100};
+    const int prompt2[] = {bos, 200, 300};
+    const int prompt3[] = {bos, 400, 500, 600};
+
+    InferSeq seqs[4];
+    seqs[0] = infer_seq_create(llm, prompt0, 1);
+    seqs[1] = infer_seq_create(llm, prompt1, 2);
+    seqs[2] = infer_seq_create(llm, prompt2, 3);
+    seqs[3] = infer_seq_create(llm, prompt3, 4);
+
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_NE(seqs[i], nullptr) << "seq[" << i << "] is null";
+    }
+
+    // Batch decode: all 4 sequences in one call
+    InferError err = infer_llm_batch_decode(llm, seqs, 4);
+    EXPECT_EQ(err, INFER_OK);
+
+    // All 4 sequences must produce valid logits
+    std::vector<float> logits(vocab_size);
+    for (int i = 0; i < 4; ++i) {
+        InferError lerr = infer_seq_get_logits(seqs[i], logits.data(), vocab_size);
+        EXPECT_EQ(lerr, INFER_OK) << "seq[" << i << "] get_logits failed";
+
+        // At least one logit must be non-zero (model produced real output)
+        float sum = 0.0f;
+        for (int j = 0; j < vocab_size; ++j) sum += std::abs(logits[j]);
+        EXPECT_GT(sum, 0.0f) << "seq[" << i << "] logits are all zero";
+    }
+
+    // Slot IDs must be distinct
+    EXPECT_NE(infer_seq_slot_id(seqs[0]), infer_seq_slot_id(seqs[1]));
+    EXPECT_NE(infer_seq_slot_id(seqs[0]), infer_seq_slot_id(seqs[2]));
+    EXPECT_NE(infer_seq_slot_id(seqs[1]), infer_seq_slot_id(seqs[3]));
+
+    for (int i = 0; i < 4; ++i) infer_seq_destroy(seqs[i]);
+    infer_llm_destroy(llm);
+}
+
+TEST(ApiLLM, SeqIsDoneAfterEOS) {
+    SKIP_IF_NO_LLM();
+
+    InferLLM llm = infer_llm_create(TEST_LLM_MODEL_PATH, 99, 512, 4, 256);
+    ASSERT_NE(llm, nullptr);
+
+    const int bos = infer_llm_bos(llm);
+    const int eos = infer_llm_eos(llm);
+    const int tokens[] = {bos};
+    InferSeq seq = infer_seq_create(llm, tokens, 1);
+    ASSERT_NE(seq, nullptr);
+
+    EXPECT_EQ(infer_seq_is_done(seq), 0);
+    infer_seq_append_token(seq, eos);
+    EXPECT_EQ(infer_seq_is_done(seq), 1);
+
+    infer_seq_destroy(seq);
+    infer_llm_destroy(llm);
+}
+
+TEST(ApiLLM, IsEOGWorks) {
+    SKIP_IF_NO_LLM();
+
+    InferLLM llm = infer_llm_create(TEST_LLM_MODEL_PATH, 99, 512, 4, 256);
+    ASSERT_NE(llm, nullptr);
+
+    const int eos = infer_llm_eos(llm);
+    EXPECT_EQ(infer_llm_is_eog(llm, eos), 1);
+    EXPECT_EQ(infer_llm_is_eog(llm, 0), 0);
+
+    infer_llm_destroy(llm);
+}
+
+#endif // INFER_LLM_AVAILABLE
