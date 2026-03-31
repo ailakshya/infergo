@@ -2,6 +2,9 @@
 #include "../tensor/tensor.hpp"
 #include "../onnx/onnx_session.hpp"
 #include "../tokenizer/tokenizer.hpp"
+#include "../llm/kv_cache.hpp"
+#include "../llm/llm_engine.hpp"
+#include "../llm/infer_sequence.hpp"
 
 #include <cstring>
 #include <exception>
@@ -428,5 +431,213 @@ void infer_tokenizer_destroy(InferTokenizer tok) {
         delete static_cast<infergo::TokenizerWrapper*>(tok);
     } catch (...) {
         // destructor must not throw
+    }
+}
+
+// ─── LLM Engine API ───────────────────────────────────────────────────────────
+
+// Internal handle: owns the engine and the slot manager together.
+struct LLMHandle {
+    infergo::LLMEngine          engine;
+    infergo::KVCacheSlotManager slots;
+    explicit LLMHandle(int n_seq_max) : slots(n_seq_max) {}
+};
+
+// Internal handle: owns one InferSequence + its last decoded logits.
+struct SeqHandle {
+    infergo::InferSequence  seq;
+    std::vector<float>      logits;  // updated by infer_llm_batch_decode
+    SeqHandle(infergo::KVCacheSlotManager& mgr,
+              std::vector<int32_t> tokens,
+              int32_t eos)
+        : seq(mgr, std::move(tokens), eos) {}
+};
+
+InferLLM infer_llm_create(const char* path,
+                           int         n_gpu_layers,
+                           int         ctx_size,
+                           int         n_seq_max,
+                           int         n_batch)
+{
+    try {
+        if (path == nullptr) {
+            infergo::set_last_error("infer_llm_create: null path");
+            return nullptr;
+        }
+        if (n_seq_max <= 0) {
+            infergo::set_last_error("infer_llm_create: n_seq_max must be > 0");
+            return nullptr;
+        }
+        auto* h = new LLMHandle(n_seq_max);
+        h->engine.LoadModel(path, n_gpu_layers, ctx_size, n_seq_max, n_batch);
+        return static_cast<InferLLM>(h);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_llm_create: unknown exception");
+        return nullptr;
+    }
+}
+
+void infer_llm_destroy(InferLLM llm) {
+    if (llm == nullptr) return;
+    try { delete static_cast<LLMHandle*>(llm); } catch (...) {}
+}
+
+int infer_llm_vocab_size(InferLLM llm) {
+    if (llm == nullptr) return 0;
+    return static_cast<LLMHandle*>(llm)->engine.VocabSize();
+}
+
+int infer_llm_bos(InferLLM llm) {
+    if (llm == nullptr) return -1;
+    return static_cast<int>(static_cast<LLMHandle*>(llm)->engine.BOS());
+}
+
+int infer_llm_eos(InferLLM llm) {
+    if (llm == nullptr) return -1;
+    return static_cast<int>(static_cast<LLMHandle*>(llm)->engine.EOS());
+}
+
+int infer_llm_is_eog(InferLLM llm, int token) {
+    if (llm == nullptr) return 0;
+    return static_cast<LLMHandle*>(llm)->engine.IsEOG(static_cast<int32_t>(token)) ? 1 : 0;
+}
+
+InferSeq infer_seq_create(InferLLM llm, const int* tokens, int n_tokens) {
+    try {
+        if (llm == nullptr || tokens == nullptr || n_tokens <= 0) {
+            infergo::set_last_error("infer_seq_create: invalid argument");
+            return nullptr;
+        }
+        auto* h = static_cast<LLMHandle*>(llm);
+        std::vector<int32_t> tok_vec(tokens, tokens + n_tokens);
+        auto* s = new SeqHandle(h->slots, std::move(tok_vec),
+                                static_cast<int32_t>(h->engine.EOS()));
+        return static_cast<InferSeq>(s);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_seq_create: unknown exception");
+        return nullptr;
+    }
+}
+
+void infer_seq_destroy(InferSeq seq) {
+    if (seq == nullptr) return;
+    try { delete static_cast<SeqHandle*>(seq); } catch (...) {}
+}
+
+int infer_seq_is_done(InferSeq seq) {
+    if (seq == nullptr) return 1;
+    return static_cast<SeqHandle*>(seq)->seq.IsDone() ? 1 : 0;
+}
+
+int infer_seq_position(InferSeq seq) {
+    if (seq == nullptr) return 0;
+    return static_cast<SeqHandle*>(seq)->seq.Position();
+}
+
+int infer_seq_slot_id(InferSeq seq) {
+    if (seq == nullptr) return -1;
+    return static_cast<SeqHandle*>(seq)->seq.SlotID();
+}
+
+void infer_seq_append_token(InferSeq seq, int token) {
+    if (seq == nullptr) return;
+    static_cast<SeqHandle*>(seq)->seq.AppendToken(static_cast<int32_t>(token));
+}
+
+int infer_seq_next_tokens(InferSeq seq, int* out_ids, int max_tokens) {
+    try {
+        if (seq == nullptr || out_ids == nullptr || max_tokens <= 0) {
+            infergo::set_last_error("infer_seq_next_tokens: invalid argument");
+            return -1;
+        }
+        const auto tokens = static_cast<SeqHandle*>(seq)->seq.NextTokens();
+        const int n = std::min(static_cast<int>(tokens.size()), max_tokens);
+        for (int i = 0; i < n; ++i) out_ids[i] = static_cast<int>(tokens[i]);
+        return n;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        return -1;
+    }
+}
+
+InferError infer_llm_batch_decode(InferLLM llm, InferSeq* seqs, int n_seqs) {
+    try {
+        if (llm == nullptr) {
+            infergo::set_last_error("infer_llm_batch_decode: null llm");
+            return INFER_ERR_NULL;
+        }
+        if (seqs == nullptr || n_seqs <= 0) {
+            infergo::set_last_error("infer_llm_batch_decode: empty sequence list");
+            return INFER_ERR_INVALID;
+        }
+        auto* h = static_cast<LLMHandle*>(llm);
+
+        // Build SequenceInputs
+        std::vector<infergo::SequenceInput> inputs;
+        inputs.reserve(static_cast<size_t>(n_seqs));
+        for (int i = 0; i < n_seqs; ++i) {
+            if (seqs[i] == nullptr) continue;
+            auto* sh = static_cast<SeqHandle*>(seqs[i]);
+            if (sh->seq.IsDone()) continue;
+
+            infergo::SequenceInput inp;
+            inp.seq_id      = sh->seq.SlotID();
+            inp.tokens      = sh->seq.NextTokens();
+            inp.pos         = sh->seq.Position();
+            inp.want_logits = true;
+            inputs.push_back(std::move(inp));
+        }
+        if (inputs.empty()) return INFER_OK;
+
+        // Run batch decode
+        auto results = h->engine.BatchDecode(inputs);
+
+        // Write logits back into each SeqHandle by matching seq_id
+        for (const auto& r : results) {
+            for (int i = 0; i < n_seqs; ++i) {
+                if (seqs[i] == nullptr) continue;
+                auto* sh = static_cast<SeqHandle*>(seqs[i]);
+                if (sh->seq.SlotID() == r.seq_id) {
+                    sh->logits = r.logits;
+                    break;
+                }
+            }
+        }
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_RUNTIME;
+    } catch (...) {
+        return INFER_ERR_UNKNOWN;
+    }
+}
+
+InferError infer_seq_get_logits(InferSeq seq, float* out_logits, int vocab_size) {
+    try {
+        if (seq == nullptr || out_logits == nullptr || vocab_size <= 0) {
+            infergo::set_last_error("infer_seq_get_logits: invalid argument");
+            return INFER_ERR_NULL;
+        }
+        auto* sh = static_cast<SeqHandle*>(seq);
+        if (sh->logits.empty()) {
+            infergo::set_last_error("infer_seq_get_logits: no logits available (call batch_decode first)");
+            return INFER_ERR_INVALID;
+        }
+        const int n = std::min(vocab_size, static_cast<int>(sh->logits.size()));
+        std::memcpy(out_logits, sh->logits.data(), static_cast<size_t>(n) * sizeof(float));
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_RUNTIME;
+    } catch (...) {
+        return INFER_ERR_UNKNOWN;
     }
 }

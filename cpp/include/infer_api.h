@@ -184,6 +184,73 @@ int infer_tokenizer_vocab_size(InferTokenizer tok);
 // Destroy tokenizer and free all resources. Safe to call with NULL.
 void infer_tokenizer_destroy(InferTokenizer tok);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LLM ENGINE API
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef void* InferLLM;
+typedef void* InferSeq;
+
+// Load a GGUF model and create an LLM engine.
+// n_gpu_layers: transformer layers to offload to GPU (large value = all).
+// ctx_size:     total KV cache token budget across all sequences.
+// n_seq_max:    max number of concurrent sequences.
+// n_batch:      max tokens per decode call.
+// Returns NULL on failure; call infer_last_error_string() for details.
+InferLLM infer_llm_create(const char* path,
+                           int         n_gpu_layers,
+                           int         ctx_size,
+                           int         n_seq_max,
+                           int         n_batch);
+
+// Destroy LLM engine. Safe to call with NULL.
+void infer_llm_destroy(InferLLM llm);
+
+// Returns the vocabulary size (valid after infer_llm_create).
+int infer_llm_vocab_size(InferLLM llm);
+
+// Returns BOS token ID.
+int infer_llm_bos(InferLLM llm);
+
+// Returns EOS token ID.
+int infer_llm_eos(InferLLM llm);
+
+// Returns 1 if token is an end-of-generation token (EOS/EOT), 0 otherwise.
+int infer_llm_is_eog(InferLLM llm, int token);
+
+// Create a new sequence with the given prompt tokens.
+// Allocates a KV cache slot; returns NULL if pool is full or llm is NULL.
+InferSeq infer_seq_create(InferLLM llm, const int* tokens, int n_tokens);
+
+// Destroy a sequence and release its KV cache slot. Safe to call with NULL.
+void infer_seq_destroy(InferSeq seq);
+
+// Returns 1 if the sequence has generated an end-of-generation token, 0 otherwise.
+int infer_seq_is_done(InferSeq seq);
+
+// Returns the current KV cache position (number of tokens already decoded).
+int infer_seq_position(InferSeq seq);
+
+// Returns the KV slot ID (= llama_seq_id for this sequence).
+int infer_seq_slot_id(InferSeq seq);
+
+// Append a sampled token to the sequence history and advance the KV position.
+void infer_seq_append_token(InferSeq seq, int token);
+
+// Write the tokens that need to be decoded in the next batch into out_ids.
+// Returns the number of tokens written, or -1 on error.
+int infer_seq_next_tokens(InferSeq seq, int* out_ids, int max_tokens);
+
+// Batch decode: run all n_seqs sequences through one llama_decode call.
+// Logits for each sequence are stored internally; retrieve with infer_seq_get_logits.
+// Returns INFER_OK on success.
+InferError infer_llm_batch_decode(InferLLM llm, InferSeq* seqs, int n_seqs);
+
+// Copy the logits from the last batch_decode into out_logits[0..vocab_size).
+// out_logits must be caller-allocated with at least vocab_size floats.
+// Returns INFER_OK on success, or INFER_ERR_INVALID if no logits are available.
+InferError infer_seq_get_logits(InferSeq seq, float* out_logits, int vocab_size);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
