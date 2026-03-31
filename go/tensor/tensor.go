@@ -224,3 +224,20 @@ func (t *Tensor) ToHost() error {
 	}
 	return nil
 }
+
+// UnsafePtr returns the raw C InferTensor pointer as an unsafe.Pointer.
+// Used by sibling packages (e.g. onnx) to pass tensors across the C API.
+// Do not use outside of the infergo module.
+func (t *Tensor) UnsafePtr() unsafe.Pointer {
+	return unsafe.Pointer(t.ptr)
+}
+
+// WrapUnsafePtr wraps a raw C InferTensor pointer in a Go Tensor.
+// The caller is responsible for ensuring ptr is a valid InferTensor.
+// Used by sibling packages to wrap tensors returned from C API calls.
+// Do not use outside of the infergo module.
+func WrapUnsafePtr(ptr unsafe.Pointer) *Tensor {
+	t := &Tensor{ptr: C.InferTensor(ptr)}
+	runtime.SetFinalizer(t, (*Tensor).Free)
+	return t
+}
