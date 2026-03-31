@@ -142,3 +142,54 @@ TEST(OnnxSession, OutputsOwnedByCaller) {
         tensor_free(in);
     }
 }
+
+// ─── T-14: Execution provider selection ──────────────────────────────────────
+
+TEST(OnnxSessionProvider, CpuProviderActive) {
+    OnnxSession s("cpu", 0);
+    EXPECT_EQ(s.provider(), "cpu");
+}
+
+TEST(OnnxSessionProvider, CpuProviderLoadsAndRuns) {
+    OnnxSession s("cpu", 0);
+    ASSERT_EQ(s.provider(), "cpu");
+    s.load_model(TEST_MODEL_PATH);
+
+    const int shape[] = {1, 4};
+    Tensor* in = tensor_alloc_cpu(shape, 2, 0);
+    ASSERT_NE(in, nullptr);
+    const float src[] = {3.0f, 3.0f, 3.0f, 3.0f};
+    ASSERT_TRUE(tensor_copy_from(in, src, sizeof(src)));
+
+    auto outs = s.run({in});
+    ASSERT_EQ(outs.size(), 1u);
+    const float* data = static_cast<const float*>(outs[0]->data);
+    EXPECT_FLOAT_EQ(data[0], 6.0f);
+    tensor_free(outs[0]);
+    tensor_free(in);
+}
+
+TEST(OnnxSessionProvider, UnknownProviderFallsBackToCpu) {
+    // "xpu" is not a real provider — must fall back to CPU without throwing
+    OnnxSession s("xpu", 0);
+    EXPECT_EQ(s.provider(), "cpu");
+    // Must still be usable
+    s.load_model(TEST_MODEL_PATH);
+    EXPECT_EQ(s.num_inputs(), 1);
+}
+
+TEST(OnnxSessionProvider, CudaProviderFallsBackOrSucceeds) {
+    // Either CUDA is available (provider stays "cuda") or it falls back to CPU.
+    // Either way: no exception, and the session is usable.
+    OnnxSession s("cuda", 0);
+    EXPECT_TRUE(s.provider() == "cuda" || s.provider() == "cpu");
+    s.load_model(TEST_MODEL_PATH);
+    EXPECT_EQ(s.num_inputs(), 1);
+}
+
+TEST(OnnxSessionProvider, TensorRTProviderFallsBackOrSucceeds) {
+    OnnxSession s("tensorrt", 0);
+    EXPECT_TRUE(s.provider() == "tensorrt" || s.provider() == "cpu");
+    s.load_model(TEST_MODEL_PATH);
+    EXPECT_EQ(s.num_inputs(), 1);
+}

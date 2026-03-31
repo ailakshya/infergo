@@ -4,6 +4,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <cstdio>
 
 namespace infergo {
 
@@ -63,6 +64,66 @@ OnnxSession::OnnxSession(const std::string& provider, int device_id)
     // Performance defaults
     throw_on_error(api_->SetSessionGraphOptimizationLevel(options_, ORT_ENABLE_ALL));
     throw_on_error(api_->SetIntraOpNumThreads(options_, 0)); // 0 = use all cores
+
+    // ── Execution provider selection ──────────────────────────────────────────
+    // Each provider is attempted and falls back to CPU on failure (RULE: never
+    // crash when a provider is unavailable — log and degrade gracefully).
+
+    if (provider == "cuda") {
+        OrtCUDAProviderOptions cuda_opts{};
+        cuda_opts.device_id = device_id;
+        OrtStatus* st = api_->SessionOptionsAppendExecutionProvider_CUDA(options_, &cuda_opts);
+        if (st != nullptr) {
+            const char* msg = api_->GetErrorMessage(st);
+            std::fprintf(stderr,
+                "[infergo] CUDA provider unavailable (%s) — falling back to CPU\n",
+                msg ? msg : "unknown");
+            api_->ReleaseStatus(st);
+            provider_ = "cpu";
+        }
+    } else if (provider == "tensorrt") {
+        OrtTensorRTProviderOptions trt_opts{};
+        trt_opts.device_id = device_id;
+        OrtStatus* st = api_->SessionOptionsAppendExecutionProvider_TensorRT(options_, &trt_opts);
+        if (st != nullptr) {
+            const char* msg = api_->GetErrorMessage(st);
+            std::fprintf(stderr,
+                "[infergo] TensorRT provider unavailable (%s) — falling back to CPU\n",
+                msg ? msg : "unknown");
+            api_->ReleaseStatus(st);
+            provider_ = "cpu";
+        }
+    } else if (provider == "coreml") {
+        // CoreML is only available on Apple platforms. ORT exposes it via the
+        // generic AppendExecutionProvider() call using the provider name string.
+        OrtStatus* st = api_->SessionOptionsAppendExecutionProvider(
+            options_, "CoreML", nullptr, nullptr, 0);
+        if (st != nullptr) {
+            const char* msg = api_->GetErrorMessage(st);
+            std::fprintf(stderr,
+                "[infergo] CoreML provider unavailable (%s) — falling back to CPU\n",
+                msg ? msg : "unknown");
+            api_->ReleaseStatus(st);
+            provider_ = "cpu";
+        }
+    } else if (provider == "openvino") {
+        OrtStatus* st = api_->SessionOptionsAppendExecutionProvider(
+            options_, "OpenVINO", nullptr, nullptr, 0);
+        if (st != nullptr) {
+            const char* msg = api_->GetErrorMessage(st);
+            std::fprintf(stderr,
+                "[infergo] OpenVINO provider unavailable (%s) — falling back to CPU\n",
+                msg ? msg : "unknown");
+            api_->ReleaseStatus(st);
+            provider_ = "cpu";
+        }
+    } else if (provider != "cpu") {
+        std::fprintf(stderr,
+            "[infergo] Unknown provider '%s' — falling back to CPU\n",
+            provider.c_str());
+        provider_ = "cpu";
+    }
+    // "cpu" needs no explicit registration — it is always the ORT default.
 }
 
 OnnxSession::~OnnxSession() {

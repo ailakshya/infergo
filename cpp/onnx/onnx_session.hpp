@@ -51,6 +51,10 @@ public:
     const std::string& input_name(int idx)  const { return input_names_.at(idx); }
     const std::string& output_name(int idx) const { return output_names_.at(idx); }
 
+    /// Returns the active provider ("cpu", "cuda", "tensorrt").
+    /// May differ from the requested provider if fallback to CPU occurred.
+    const std::string& provider() const noexcept { return provider_; }
+
 private:
     void throw_on_error(OrtStatus* status) const;
     int  ort_dtype_to_infer(ONNXTensorElementDataType ort_type) const;
