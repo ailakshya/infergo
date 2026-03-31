@@ -92,6 +92,46 @@ InferError infer_tensor_to_host(InferTensor t);
 // src must point to at least nbytes bytes. nbytes must equal the tensor's nbytes.
 InferError infer_tensor_copy_from(InferTensor t, const void* src, int nbytes);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ONNX INFERENCE SESSION API
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef void* InferSession;
+
+// Create a session for the given execution provider.
+// provider: "cpu" | "cuda" | "tensorrt" | "coreml" | "openvino"
+// Falls back to CPU if the requested provider is unavailable.
+// Returns NULL on failure; call infer_last_error_string() for details.
+InferSession infer_session_create(const char* provider, int device_id);
+
+// Load an ONNX model file into the session.
+InferError infer_session_load(InferSession s, const char* model_path);
+
+// Get number of model inputs (valid after infer_session_load).
+int infer_session_num_inputs(InferSession s);
+
+// Get number of model outputs (valid after infer_session_load).
+int infer_session_num_outputs(InferSession s);
+
+// Write the input name at index idx into out_buf (max buf_size bytes, null-terminated).
+InferError infer_session_input_name(InferSession s, int idx, char* out_buf, int buf_size);
+
+// Write the output name at index idx into out_buf (max buf_size bytes, null-terminated).
+InferError infer_session_output_name(InferSession s, int idx, char* out_buf, int buf_size);
+
+// Run inference.
+// inputs:   array of n_inputs InferTensor values (CPU tensors only).
+// outputs:  array of n_outputs InferTensor pointers to write results into.
+//           Each output tensor is heap-allocated; caller must call infer_tensor_free().
+InferError infer_session_run(
+    InferSession   s,
+    InferTensor*   inputs,   int n_inputs,
+    InferTensor*   outputs,  int n_outputs
+);
+
+// Destroy session and free all resources. Safe to call with NULL.
+void infer_session_destroy(InferSession s);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

@@ -195,3 +195,106 @@ TEST(ApiCudaTransfer, NullToHostReturnsErrNull) {
 }
 
 #endif // INFER_CUDA_AVAILABLE
+
+// ─── Session API (T-15) ───────────────────────────────────────────────────────
+
+#ifndef TEST_MODEL_PATH
+#define TEST_MODEL_PATH "/tmp/scale.onnx"
+#endif
+
+TEST(ApiSession, CreateCpuNotNull) {
+    InferSession s = infer_session_create("cpu", 0);
+    ASSERT_NE(s, nullptr);
+    infer_session_destroy(s);
+}
+
+TEST(ApiSession, CreateNullProviderDefaultsCpu) {
+    InferSession s = infer_session_create(nullptr, 0);
+    ASSERT_NE(s, nullptr);
+    infer_session_destroy(s);
+}
+
+TEST(ApiSession, DestroyNullIsNoop) {
+    infer_session_destroy(nullptr); // must not crash
+}
+
+TEST(ApiSession, LoadModel) {
+    InferSession s = infer_session_create("cpu", 0);
+    ASSERT_NE(s, nullptr);
+    EXPECT_EQ(infer_session_load(s, TEST_MODEL_PATH), INFER_OK);
+    EXPECT_EQ(infer_session_num_inputs(s),  1);
+    EXPECT_EQ(infer_session_num_outputs(s), 1);
+    infer_session_destroy(s);
+}
+
+TEST(ApiSession, LoadBadPathReturnsErrLoad) {
+    InferSession s = infer_session_create("cpu", 0);
+    ASSERT_NE(s, nullptr);
+    EXPECT_EQ(infer_session_load(s, "/no/such/model.onnx"), INFER_ERR_LOAD);
+    EXPECT_NE(infer_last_error_string()[0], '\0');
+    infer_session_destroy(s);
+}
+
+TEST(ApiSession, LoadNullSessionReturnsErrNull) {
+    EXPECT_EQ(infer_session_load(nullptr, TEST_MODEL_PATH), INFER_ERR_NULL);
+}
+
+TEST(ApiSession, InputOutputNames) {
+    InferSession s = infer_session_create("cpu", 0);
+    ASSERT_NE(s, nullptr);
+    ASSERT_EQ(infer_session_load(s, TEST_MODEL_PATH), INFER_OK);
+
+    char buf[64];
+    EXPECT_EQ(infer_session_input_name(s, 0, buf, sizeof(buf)), INFER_OK);
+    EXPECT_STREQ(buf, "x");
+
+    EXPECT_EQ(infer_session_output_name(s, 0, buf, sizeof(buf)), INFER_OK);
+    EXPECT_STREQ(buf, "y");
+
+    infer_session_destroy(s);
+}
+
+TEST(ApiSession, RunScaleModel) {
+    InferSession s = infer_session_create("cpu", 0);
+    ASSERT_NE(s, nullptr);
+    ASSERT_EQ(infer_session_load(s, TEST_MODEL_PATH), INFER_OK);
+
+    // Input [1,4] float32 = {1,2,3,4}
+    const int shape[] = {1, 4};
+    InferTensor in = infer_tensor_alloc_cpu(shape, 2, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(in, nullptr);
+    const float src[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    ASSERT_EQ(infer_tensor_copy_from(in, src, sizeof(src)), INFER_OK);
+
+    InferTensor out = nullptr;
+    EXPECT_EQ(infer_session_run(s, &in, 1, &out, 1), INFER_OK);
+    ASSERT_NE(out, nullptr);
+
+    // y = x * 2: expect [2,4,6,8]
+    EXPECT_EQ(infer_tensor_nbytes(out), 16);
+    const float* data = static_cast<const float*>(infer_tensor_data_ptr(out));
+    EXPECT_FLOAT_EQ(data[0], 2.0f);
+    EXPECT_FLOAT_EQ(data[1], 4.0f);
+    EXPECT_FLOAT_EQ(data[2], 6.0f);
+    EXPECT_FLOAT_EQ(data[3], 8.0f);
+
+    infer_tensor_free(out);
+    infer_tensor_free(in);
+    infer_session_destroy(s);
+}
+
+TEST(ApiSession, RunNullSessionReturnsErrNull) {
+    InferTensor out = nullptr;
+    EXPECT_EQ(infer_session_run(nullptr, nullptr, 0, &out, 1), INFER_ERR_NULL);
+}
+
+TEST(ApiSession, RunWrongInputCountReturnsErr) {
+    InferSession s = infer_session_create("cpu", 0);
+    ASSERT_NE(s, nullptr);
+    ASSERT_EQ(infer_session_load(s, TEST_MODEL_PATH), INFER_OK);
+
+    // Pass 0 inputs instead of 1
+    InferTensor out = nullptr;
+    EXPECT_NE(infer_session_run(s, nullptr, 0, &out, 1), INFER_OK);
+    infer_session_destroy(s);
+}

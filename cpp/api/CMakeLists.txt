@@ -5,7 +5,7 @@ target_include_directories(infer_api
     PRIVATE ${CMAKE_SOURCE_DIR}/cpp
 )
 
-target_link_libraries(infer_api PRIVATE infer_tensor)
+target_link_libraries(infer_api PRIVATE infer_tensor infer_onnx)
 
 if(INFER_CUDA_AVAILABLE)
     target_compile_definitions(infer_api PUBLIC INFER_CUDA_AVAILABLE=1)

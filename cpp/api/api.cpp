@@ -1,7 +1,10 @@
 #include "infer_api.h"
 #include "../tensor/tensor.hpp"
+#include "../onnx/onnx_session.hpp"
 
+#include <cstring>
 #include <exception>
+#include <vector>
 
 // ─── Error string ─────────────────────────────────────────────────────────────
 
@@ -165,5 +168,140 @@ InferError infer_tensor_copy_from(InferTensor t, const void* src, int nbytes) {
         return INFER_ERR_RUNTIME;
     } catch (...) {
         return INFER_ERR_UNKNOWN;
+    }
+}
+
+// ─── Session API ──────────────────────────────────────────────────────────────
+
+InferSession infer_session_create(const char* provider, int device_id) {
+    try {
+        const std::string p = (provider != nullptr) ? provider : "cpu";
+        auto* s = new infergo::OnnxSession(p, device_id);
+        return static_cast<InferSession>(s);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_session_create: unknown exception");
+        return nullptr;
+    }
+}
+
+InferError infer_session_load(InferSession s, const char* model_path) {
+    try {
+        if (s == nullptr) {
+            infergo::set_last_error("infer_session_load: null session");
+            return INFER_ERR_NULL;
+        }
+        if (model_path == nullptr) {
+            infergo::set_last_error("infer_session_load: null model_path");
+            return INFER_ERR_NULL;
+        }
+        static_cast<infergo::OnnxSession*>(s)->load_model(model_path);
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_LOAD;
+    } catch (...) {
+        return INFER_ERR_UNKNOWN;
+    }
+}
+
+int infer_session_num_inputs(InferSession s) {
+    if (s == nullptr) return 0;
+    return static_cast<infergo::OnnxSession*>(s)->num_inputs();
+}
+
+int infer_session_num_outputs(InferSession s) {
+    if (s == nullptr) return 0;
+    return static_cast<infergo::OnnxSession*>(s)->num_outputs();
+}
+
+InferError infer_session_input_name(InferSession s, int idx, char* out_buf, int buf_size) {
+    try {
+        if (s == nullptr || out_buf == nullptr || buf_size <= 0) {
+            infergo::set_last_error("infer_session_input_name: invalid argument");
+            return INFER_ERR_NULL;
+        }
+        const std::string& name =
+            static_cast<infergo::OnnxSession*>(s)->input_name(idx);
+        std::strncpy(out_buf, name.c_str(), static_cast<size_t>(buf_size) - 1);
+        out_buf[buf_size - 1] = '\0';
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_INVALID;
+    } catch (...) {
+        return INFER_ERR_UNKNOWN;
+    }
+}
+
+InferError infer_session_output_name(InferSession s, int idx, char* out_buf, int buf_size) {
+    try {
+        if (s == nullptr || out_buf == nullptr || buf_size <= 0) {
+            infergo::set_last_error("infer_session_output_name: invalid argument");
+            return INFER_ERR_NULL;
+        }
+        const std::string& name =
+            static_cast<infergo::OnnxSession*>(s)->output_name(idx);
+        std::strncpy(out_buf, name.c_str(), static_cast<size_t>(buf_size) - 1);
+        out_buf[buf_size - 1] = '\0';
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_INVALID;
+    } catch (...) {
+        return INFER_ERR_UNKNOWN;
+    }
+}
+
+InferError infer_session_run(
+    InferSession  s,
+    InferTensor*  inputs,  int n_inputs,
+    InferTensor*  outputs, int n_outputs)
+{
+    try {
+        if (s == nullptr) {
+            infergo::set_last_error("infer_session_run: null session");
+            return INFER_ERR_NULL;
+        }
+        if ((n_inputs > 0 && inputs == nullptr) || (n_outputs > 0 && outputs == nullptr)) {
+            infergo::set_last_error("infer_session_run: null inputs/outputs array");
+            return INFER_ERR_NULL;
+        }
+
+        std::vector<infergo::Tensor*> in_tensors(static_cast<size_t>(n_inputs));
+        for (int i = 0; i < n_inputs; ++i) {
+            in_tensors[i] = static_cast<infergo::Tensor*>(inputs[i]);
+        }
+
+        std::vector<infergo::Tensor*> out_tensors =
+            static_cast<infergo::OnnxSession*>(s)->run(in_tensors);
+
+        const int actual = static_cast<int>(out_tensors.size());
+        const int copy_n = (actual < n_outputs) ? actual : n_outputs;
+        for (int i = 0; i < copy_n; ++i) {
+            outputs[i] = static_cast<InferTensor>(out_tensors[i]);
+        }
+        // Free any extra outputs not fitting in the caller's array
+        for (int i = copy_n; i < actual; ++i) {
+            infergo::tensor_free(out_tensors[i]);
+        }
+
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_RUNTIME;
+    } catch (...) {
+        return INFER_ERR_UNKNOWN;
+    }
+}
+
+void infer_session_destroy(InferSession s) {
+    if (s == nullptr) return;
+    try {
+        delete static_cast<infergo::OnnxSession*>(s);
+    } catch (...) {
+        // destructor must not throw
     }
 }
