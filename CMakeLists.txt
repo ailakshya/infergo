@@ -72,6 +72,12 @@ endif()
 # Google Test — installed via vcpkg (RULE 16)
 find_package(GTest REQUIRED CONFIG)
 
+# ONNX Runtime — prebuilt release, located by cmake/FindONNXRuntime.cmake
+# Override root: cmake -DONNXRUNTIME_ROOT=/path/to/onnxruntime
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+find_package(ONNXRuntime REQUIRED)
+message(STATUS "ONNX Runtime ${ONNXRuntime_VERSION} found at ${ONNXRuntime_LIBRARIES}")
+
 enable_testing()
 
 # Libraries — add more subdirectories as tasks progress
