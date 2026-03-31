@@ -3,7 +3,7 @@
 
 # ─── libinfer_llm ─────────────────────────────────────────────────────────────
 
-add_library(infer_llm STATIC kv_cache.cpp llm_engine.cpp sampler.cpp)
+add_library(infer_llm STATIC kv_cache.cpp llm_engine.cpp sampler.cpp infer_sequence.cpp)
 
 target_include_directories(infer_llm
     PUBLIC  ${CMAKE_SOURCE_DIR}/cpp/include
@@ -57,3 +57,18 @@ target_link_libraries(sampler_test
 )
 
 gtest_discover_tests(sampler_test)
+
+# ─── infer_sequence_test ──────────────────────────────────────────────────────
+
+add_executable(infer_sequence_test infer_sequence_test.cpp)
+
+target_include_directories(infer_sequence_test
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/vendor/llama.cpp/include
+)
+
+target_link_libraries(infer_sequence_test
+    PRIVATE infer_llm GTest::gtest_main
+)
+
+gtest_discover_tests(infer_sequence_test)
