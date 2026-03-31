@@ -1,6 +1,30 @@
 #include "tensor.hpp"
 
+#include <cstdlib>   // malloc, free
+#include <cstring>   // memcpy, strncpy
+
 namespace infergo {
+
+// ─── Thread-local error string ───────────────────────────────────────────────
+
+namespace {
+    thread_local char g_last_error[512] = {};
+}
+
+void set_last_error(const char* msg) noexcept {
+    if (msg == nullptr) {
+        g_last_error[0] = '\0';
+        return;
+    }
+    std::strncpy(g_last_error, msg, sizeof(g_last_error) - 1);
+    g_last_error[sizeof(g_last_error) - 1] = '\0';
+}
+
+const char* get_last_error() noexcept {
+    return g_last_error;
+}
+
+// ─── dtype_size ──────────────────────────────────────────────────────────────
 
 size_t Tensor::dtype_size(int dtype) noexcept {
     switch (dtype) {
@@ -14,6 +38,8 @@ size_t Tensor::dtype_size(int dtype) noexcept {
         default: return 0;
     }
 }
+
+// ─── nelements / compute_nbytes ──────────────────────────────────────────────
 
 size_t Tensor::nelements() const noexcept {
     if (shape == nullptr || ndim <= 0) {
@@ -42,6 +68,90 @@ size_t Tensor::compute_nbytes(const int* shape, int ndim, int dtype) noexcept {
         n *= static_cast<size_t>(shape[i]);
     }
     return n * elem_size;
+}
+
+// ─── tensor_alloc_cpu ────────────────────────────────────────────────────────
+
+Tensor* tensor_alloc_cpu(const int* shape, int ndim, int dtype) noexcept {
+    if (shape == nullptr) {
+        set_last_error("tensor_alloc_cpu: shape is null");
+        return nullptr;
+    }
+    if (ndim <= 0) {
+        set_last_error("tensor_alloc_cpu: ndim must be > 0");
+        return nullptr;
+    }
+    for (int i = 0; i < ndim; ++i) {
+        if (shape[i] <= 0) {
+            set_last_error("tensor_alloc_cpu: all shape dimensions must be > 0");
+            return nullptr;
+        }
+    }
+
+    const size_t nb = Tensor::compute_nbytes(shape, ndim, dtype);
+    if (nb == 0) {
+        set_last_error("tensor_alloc_cpu: unsupported dtype");
+        return nullptr;
+    }
+
+    // Allocate the struct itself via malloc — never new (RULE: C ABI compatibility)
+    Tensor* t = static_cast<Tensor*>(std::malloc(sizeof(Tensor)));
+    if (t == nullptr) {
+        set_last_error("tensor_alloc_cpu: OOM allocating Tensor struct");
+        return nullptr;
+    }
+    *t = Tensor{};  // zero-initialise all fields
+
+    // Allocate and copy shape array
+    t->shape = static_cast<int*>(
+        std::malloc(static_cast<size_t>(ndim) * sizeof(int))
+    );
+    if (t->shape == nullptr) {
+        std::free(t);
+        set_last_error("tensor_alloc_cpu: OOM allocating shape array");
+        return nullptr;
+    }
+    std::memcpy(t->shape, shape, static_cast<size_t>(ndim) * sizeof(int));
+
+    // Allocate data buffer
+    t->data = std::malloc(nb);
+    if (t->data == nullptr) {
+        std::free(t->shape);
+        std::free(t);
+        set_last_error("tensor_alloc_cpu: OOM allocating data buffer");
+        return nullptr;
+    }
+
+    t->ndim      = ndim;
+    t->dtype     = dtype;
+    t->on_device = false;
+    t->device_id = 0;
+    t->nbytes    = nb;
+
+    return t;
+}
+
+// ─── tensor_free ─────────────────────────────────────────────────────────────
+
+void tensor_free(Tensor* t) noexcept {
+    if (t == nullptr) {
+        return;
+    }
+
+    if (t->on_device) {
+        // CUDA free path — completed in T-05 (infer_tensor_free)
+        // GPU pointer freed there via cudaFree
+    } else {
+        std::free(t->data);
+    }
+
+    std::free(t->shape);
+
+    // Zero all pointer fields before freeing struct to catch use-after-free (RULE 5)
+    t->data  = nullptr;
+    t->shape = nullptr;
+
+    std::free(t);
 }
 
 } // namespace infergo

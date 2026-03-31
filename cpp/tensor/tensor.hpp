@@ -29,4 +29,28 @@ struct Tensor {
     static size_t compute_nbytes(const int* shape, int ndim, int dtype) noexcept;
 };
 
+// ─── Allocation ──────────────────────────────────────────────────────────────
+
+/// Allocate a CPU tensor via malloc.
+/// Validates shape, ndim, and dtype. Returns nullptr on any failure and sets
+/// the thread-local error string via set_last_error().
+/// All three allocations (Tensor struct, shape array, data buffer) use malloc,
+/// never operator new, to preserve C ABI compatibility.
+Tensor* tensor_alloc_cpu(const int* shape, int ndim, int dtype) noexcept;
+
+/// Free a tensor allocated by tensor_alloc_cpu (or tensor_alloc_cuda in T-04).
+/// Safe to call with nullptr. Zeroes all pointer fields before freeing the
+/// struct to catch use-after-free (RULE 5).
+/// CUDA path (on_device == true) is completed in T-05.
+void tensor_free(Tensor* t) noexcept;
+
+// ─── Error string ─────────────────────────────────────────────────────────────
+
+/// Set the thread-local last-error string. Used internally by alloc/free
+/// and exposed to Go via infer_last_error_string() in T-09.
+void set_last_error(const char* msg) noexcept;
+
+/// Return the thread-local last-error string. Empty string if no error.
+const char* get_last_error() noexcept;
+
 } // namespace infergo
