@@ -67,6 +67,12 @@ bool tensor_to_host(Tensor* t) noexcept;
 /// struct to catch use-after-free (RULE 5).
 void tensor_free(Tensor* t) noexcept;
 
+/// Copy nbytes from the host buffer src into a CPU tensor's data buffer.
+/// CPU tensors only — src must be a host pointer.
+/// Validates: t and src not null, nbytes > 0, nbytes == t->nbytes.
+/// Returns false and sets the last-error string on any validation failure.
+bool tensor_copy_from(Tensor* t, const void* src, int nbytes) noexcept;
+
 // ─── Error string ─────────────────────────────────────────────────────────────
 
 /// Set the thread-local last-error string. Used internally by alloc/free

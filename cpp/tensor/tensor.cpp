@@ -160,4 +160,32 @@ void tensor_free(Tensor* t) noexcept {
     std::free(t);
 }
 
+// ─── tensor_copy_from ────────────────────────────────────────────────────────
+
+bool tensor_copy_from(Tensor* t, const void* src, int nbytes) noexcept {
+    if (t == nullptr) {
+        set_last_error("tensor_copy_from: null tensor");
+        return false;
+    }
+    if (src == nullptr) {
+        set_last_error("tensor_copy_from: null src");
+        return false;
+    }
+    if (nbytes <= 0) {
+        set_last_error("tensor_copy_from: nbytes must be > 0");
+        return false;
+    }
+    if (t->on_device) {
+        set_last_error("tensor_copy_from: tensor is on device — use tensor_to_host first");
+        return false;
+    }
+    if (static_cast<size_t>(nbytes) != t->nbytes) {
+        set_last_error("tensor_copy_from: nbytes does not match tensor size");
+        return false;
+    }
+
+    std::memcpy(t->data, src, t->nbytes);
+    return true;
+}
+
 } // namespace infergo

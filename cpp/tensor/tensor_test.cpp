@@ -8,6 +8,7 @@
 
 using infergo::Tensor;
 using infergo::tensor_alloc_cpu;
+using infergo::tensor_copy_from;
 using infergo::tensor_free;
 using infergo::get_last_error;
 
@@ -350,6 +351,107 @@ TEST(TensorFreeT05, RepeatedCudaAllocFree) {
         ASSERT_NE(t, nullptr) << get_last_error();
         tensor_free(t);
     }
+}
+#endif // INFER_CUDA_AVAILABLE
+
+// ─── tensor_copy_from (T-07) ─────────────────────────────────────────────────
+
+// Acceptance criterion: copy float array into tensor, read back via data ptr,
+// values identical.
+TEST(TensorCopyFrom, Float32ReadBack) {
+    int shape[] = {2, 3, 4};
+    Tensor* t = tensor_alloc_cpu(shape, 3, 0);
+    ASSERT_NE(t, nullptr);
+
+    float src[24];
+    for (int i = 0; i < 24; ++i) { src[i] = static_cast<float>(i) * 1.5f; }
+
+    ASSERT_TRUE(tensor_copy_from(t, src, static_cast<int>(sizeof(src))))
+        << get_last_error();
+
+    const float* dst = static_cast<const float*>(t->data);
+    for (int i = 0; i < 24; ++i) {
+        EXPECT_FLOAT_EQ(dst[i], src[i]) << "i=" << i;
+    }
+    tensor_free(t);
+}
+
+TEST(TensorCopyFrom, AllDtypes) {
+    int shape[] = {8};
+    uint8_t src[64];
+    for (int i = 0; i < 64; ++i) { src[i] = static_cast<uint8_t>(i); }
+
+    for (int dtype = 0; dtype <= 6; ++dtype) {
+        Tensor* t = tensor_alloc_cpu(shape, 1, dtype);
+        ASSERT_NE(t, nullptr) << "dtype=" << dtype;
+        ASSERT_TRUE(tensor_copy_from(t, src, static_cast<int>(t->nbytes)))
+            << "dtype=" << dtype << ": " << get_last_error();
+        EXPECT_EQ(std::memcmp(t->data, src, t->nbytes), 0) << "dtype=" << dtype;
+        tensor_free(t);
+    }
+}
+
+TEST(TensorCopyFrom, OverwriteExistingData) {
+    int shape[] = {4};
+    Tensor* t = tensor_alloc_cpu(shape, 1, 0);
+    ASSERT_NE(t, nullptr);
+
+    float first[4]  = {1.f, 2.f, 3.f, 4.f};
+    float second[4] = {9.f, 8.f, 7.f, 6.f};
+
+    ASSERT_TRUE(tensor_copy_from(t, first,  static_cast<int>(sizeof(first))));
+    ASSERT_TRUE(tensor_copy_from(t, second, static_cast<int>(sizeof(second))));
+
+    const float* dst = static_cast<const float*>(t->data);
+    EXPECT_FLOAT_EQ(dst[0], 9.f);
+    EXPECT_FLOAT_EQ(dst[3], 6.f);
+    tensor_free(t);
+}
+
+TEST(TensorCopyFrom, NullTensorReturnsFalse) {
+    float src[4] = {};
+    EXPECT_FALSE(tensor_copy_from(nullptr, src, static_cast<int>(sizeof(src))));
+    EXPECT_STRNE(get_last_error(), "");
+}
+
+TEST(TensorCopyFrom, NullSrcReturnsFalse) {
+    int shape[] = {4};
+    Tensor* t = tensor_alloc_cpu(shape, 1, 0);
+    ASSERT_NE(t, nullptr);
+    EXPECT_FALSE(tensor_copy_from(t, nullptr, static_cast<int>(t->nbytes)));
+    EXPECT_STRNE(get_last_error(), "");
+    tensor_free(t);
+}
+
+TEST(TensorCopyFrom, ZeroNbytesReturnsFalse) {
+    int shape[] = {4};
+    float src[4] = {};
+    Tensor* t = tensor_alloc_cpu(shape, 1, 0);
+    ASSERT_NE(t, nullptr);
+    EXPECT_FALSE(tensor_copy_from(t, src, 0));
+    EXPECT_STRNE(get_last_error(), "");
+    tensor_free(t);
+}
+
+TEST(TensorCopyFrom, WrongNbytesReturnsFalse) {
+    int shape[] = {4};
+    float src[8] = {};
+    Tensor* t = tensor_alloc_cpu(shape, 1, 0);
+    ASSERT_NE(t, nullptr);
+    EXPECT_FALSE(tensor_copy_from(t, src, 32));  // tensor is 16 bytes
+    EXPECT_STRNE(get_last_error(), "");
+    tensor_free(t);
+}
+
+#ifdef INFER_CUDA_AVAILABLE
+TEST(TensorCopyFrom, DeviceTensorReturnsFalse) {
+    int shape[] = {4};
+    Tensor* t = tensor_alloc_cuda(shape, 1, 0, 0);
+    ASSERT_NE(t, nullptr) << get_last_error();
+    float src[4] = {};
+    EXPECT_FALSE(tensor_copy_from(t, src, static_cast<int>(t->nbytes)));
+    EXPECT_STRNE(get_last_error(), "");
+    tensor_free(t);
 }
 #endif // INFER_CUDA_AVAILABLE
 
