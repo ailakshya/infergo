@@ -15,4 +15,33 @@ size_t Tensor::dtype_size(int dtype) noexcept {
     }
 }
 
+size_t Tensor::nelements() const noexcept {
+    if (shape == nullptr || ndim <= 0) {
+        return 0;
+    }
+    size_t n = 1;
+    for (int i = 0; i < ndim; ++i) {
+        if (shape[i] <= 0) {
+            return 0;
+        }
+        n *= static_cast<size_t>(shape[i]);
+    }
+    return n;
+}
+
+size_t Tensor::compute_nbytes(const int* shape, int ndim, int dtype) noexcept {
+    const size_t elem_size = dtype_size(dtype);
+    if (shape == nullptr || ndim <= 0 || elem_size == 0) {
+        return 0;
+    }
+    size_t n = 1;
+    for (int i = 0; i < ndim; ++i) {
+        if (shape[i] <= 0) {
+            return 0;
+        }
+        n *= static_cast<size_t>(shape[i]);
+    }
+    return n * elem_size;
+}
+
 } // namespace infergo
