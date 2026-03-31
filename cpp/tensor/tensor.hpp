@@ -38,10 +38,20 @@ struct Tensor {
 /// never operator new, to preserve C ABI compatibility.
 Tensor* tensor_alloc_cpu(const int* shape, int ndim, int dtype) noexcept;
 
-/// Free a tensor allocated by tensor_alloc_cpu (or tensor_alloc_cuda in T-04).
+#ifdef INFER_CUDA_AVAILABLE
+/// Allocate a CUDA tensor. The Tensor struct and shape array are CPU-allocated;
+/// only the data buffer is placed on the GPU via cudaMalloc.
+/// Returns nullptr and sets the last-error string on any failure.
+Tensor* tensor_alloc_cuda(const int* shape, int ndim, int dtype, int device_id) noexcept;
+
+/// Free a CUDA device data pointer via cudaFree.
+/// Called by tensor_free when on_device == true (RULE 7: CUDA memory freed by CUDA code).
+void tensor_cuda_free_data(void* ptr) noexcept;
+#endif // INFER_CUDA_AVAILABLE
+
+/// Free a tensor allocated by tensor_alloc_cpu or tensor_alloc_cuda.
 /// Safe to call with nullptr. Zeroes all pointer fields before freeing the
 /// struct to catch use-after-free (RULE 5).
-/// CUDA path (on_device == true) is completed in T-05.
 void tensor_free(Tensor* t) noexcept;
 
 // ─── Error string ─────────────────────────────────────────────────────────────

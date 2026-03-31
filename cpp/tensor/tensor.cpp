@@ -139,8 +139,9 @@ void tensor_free(Tensor* t) noexcept {
     }
 
     if (t->on_device) {
-        // CUDA free path — completed in T-05 (infer_tensor_free)
-        // GPU pointer freed there via cudaFree
+#ifdef INFER_CUDA_AVAILABLE
+        tensor_cuda_free_data(t->data);  // RULE 7: CUDA memory freed by CUDA code
+#endif
     } else {
         std::free(t->data);
     }

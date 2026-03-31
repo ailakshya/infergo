@@ -1,10 +1,18 @@
 #include <gtest/gtest.h>
 #include "tensor.hpp"
 
+#ifdef INFER_CUDA_AVAILABLE
+#include <cuda_runtime.h>
+#endif
+
 using infergo::Tensor;
 using infergo::tensor_alloc_cpu;
 using infergo::tensor_free;
 using infergo::get_last_error;
+
+#ifdef INFER_CUDA_AVAILABLE
+using infergo::tensor_alloc_cuda;
+#endif
 
 // ─── dtype_size ──────────────────────────────────────────────────────────────
 
@@ -191,3 +199,96 @@ TEST(TensorFree, FreedPtrsZeroed) {
     // by address-sanitizer in Debug builds.
     tensor_free(t);
 }
+
+// ─── tensor_alloc_cuda ───────────────────────────────────────────────────────
+
+#ifdef INFER_CUDA_AVAILABLE
+
+// Acceptance criterion: alloc on device 0, ptr not null,
+// cudaPointerGetAttributes confirms device memory.
+TEST(TensorAllocCuda, Float32_234_DeviceMemory) {
+    int shape[] = {2, 3, 4};
+    Tensor* t = tensor_alloc_cuda(shape, 3, 0, 0);
+
+    ASSERT_NE(t, nullptr) << "tensor_alloc_cuda failed: " << get_last_error();
+    EXPECT_NE(t->data, nullptr);
+    EXPECT_EQ(t->nbytes, static_cast<size_t>(96));
+    EXPECT_EQ(t->nelements(), static_cast<size_t>(24));
+    EXPECT_EQ(t->ndim, 3);
+    EXPECT_EQ(t->shape[0], 2);
+    EXPECT_EQ(t->shape[1], 3);
+    EXPECT_EQ(t->shape[2], 4);
+    EXPECT_EQ(t->dtype, 0);
+    EXPECT_TRUE(t->on_device);
+    EXPECT_EQ(t->device_id, 0);
+
+    // Confirm the data pointer is actually device memory
+    cudaPointerAttributes attrs{};
+    cudaError_t err = cudaPointerGetAttributes(&attrs, t->data);
+    EXPECT_EQ(err, cudaSuccess) << cudaGetErrorString(err);
+    EXPECT_EQ(attrs.type, cudaMemoryTypeDevice);
+    EXPECT_EQ(attrs.device, 0);
+
+    tensor_free(t);
+}
+
+TEST(TensorAllocCuda, AllDtypes) {
+    int shape[] = {4};
+    const size_t expected[] = {16, 8, 8, 16, 32, 4, 4};
+    for (int dtype = 0; dtype <= 6; ++dtype) {
+        Tensor* t = tensor_alloc_cuda(shape, 1, dtype, 0);
+        ASSERT_NE(t, nullptr) << "dtype=" << dtype << ": " << get_last_error();
+        EXPECT_EQ(t->nbytes, expected[static_cast<size_t>(dtype)]) << "dtype=" << dtype;
+        EXPECT_TRUE(t->on_device);
+        tensor_free(t);
+    }
+}
+
+TEST(TensorAllocCuda, ShapeLivesOnHost) {
+    int shape[] = {5, 6};
+    Tensor* t = tensor_alloc_cuda(shape, 2, 0, 0);
+    ASSERT_NE(t, nullptr) << get_last_error();
+
+    // Shape array must be in host memory, accessible from CPU
+    cudaPointerAttributes attrs{};
+    cudaError_t err = cudaPointerGetAttributes(&attrs, t->shape);
+    // Host malloc'd memory may appear as cudaMemoryTypeUnregistered or host
+    EXPECT_EQ(err, cudaSuccess);
+    EXPECT_NE(attrs.type, cudaMemoryTypeDevice);
+
+    // Mutate original — tensor must not be affected
+    shape[0] = 99;
+    EXPECT_EQ(t->shape[0], 5);
+
+    tensor_free(t);
+}
+
+TEST(TensorAllocCuda, NullShapeReturnsNull) {
+    Tensor* t = tensor_alloc_cuda(nullptr, 3, 0, 0);
+    EXPECT_EQ(t, nullptr);
+    EXPECT_STRNE(get_last_error(), "");
+}
+
+TEST(TensorAllocCuda, ZeroDimensionReturnsNull) {
+    int shape[] = {2, 0, 4};
+    Tensor* t = tensor_alloc_cuda(shape, 3, 0, 0);
+    EXPECT_EQ(t, nullptr);
+    EXPECT_STRNE(get_last_error(), "");
+}
+
+TEST(TensorAllocCuda, UnknownDtypeReturnsNull) {
+    int shape[] = {2, 3};
+    Tensor* t = tensor_alloc_cuda(shape, 2, 99, 0);
+    EXPECT_EQ(t, nullptr);
+    EXPECT_STRNE(get_last_error(), "");
+}
+
+TEST(TensorAllocCuda, FreeDeviceTensor) {
+    int shape[] = {8};
+    Tensor* t = tensor_alloc_cuda(shape, 1, 0, 0);
+    ASSERT_NE(t, nullptr) << get_last_error();
+    // Must not crash or leak (address sanitizer validates this in Debug builds)
+    tensor_free(t);
+}
+
+#endif // INFER_CUDA_AVAILABLE

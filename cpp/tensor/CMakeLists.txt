@@ -35,11 +35,16 @@ target_link_libraries(tensor_test
     PRIVATE
         infer_tensor
         GTest::gtest_main
+        $<$<BOOL:${INFER_CUDA_AVAILABLE}>:CUDA::cudart>
 )
 
 target_include_directories(tensor_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
+
+if(INFER_CUDA_AVAILABLE)
+    target_compile_definitions(tensor_test PRIVATE INFER_CUDA_AVAILABLE=1)
+endif()
 
 include(GoogleTest)
 gtest_discover_tests(tensor_test)
