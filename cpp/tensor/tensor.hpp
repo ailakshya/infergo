@@ -47,6 +47,19 @@ Tensor* tensor_alloc_cuda(const int* shape, int ndim, int dtype, int device_id) 
 /// Free a CUDA device data pointer via cudaFree.
 /// Called by tensor_free when on_device == true (RULE 7: CUDA memory freed by CUDA code).
 void tensor_cuda_free_data(void* ptr) noexcept;
+
+/// Copy a CPU tensor's data buffer to the specified CUDA device (cudaMemcpy H→D).
+/// The old CPU buffer is freed after a successful copy; t->data, t->on_device,
+/// and t->device_id are updated atomically (new ptr written before old is freed).
+/// No-op if t is already on the requested device. Returns false and sets
+/// the last-error string on failure; the tensor is left unchanged.
+bool tensor_to_device(Tensor* t, int device_id) noexcept;
+
+/// Copy a CUDA tensor's data buffer back to CPU heap (cudaMemcpy D→H).
+/// The old device buffer is freed via cudaFree after a successful copy.
+/// No-op if t is already on the host. Returns false and sets the last-error
+/// string on failure; the tensor is left unchanged.
+bool tensor_to_host(Tensor* t) noexcept;
 #endif // INFER_CUDA_AVAILABLE
 
 /// Free a tensor allocated by tensor_alloc_cpu or tensor_alloc_cuda.

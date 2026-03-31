@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <cstring>
 #include "tensor.hpp"
 
 #ifdef INFER_CUDA_AVAILABLE
@@ -12,6 +13,8 @@ using infergo::get_last_error;
 
 #ifdef INFER_CUDA_AVAILABLE
 using infergo::tensor_alloc_cuda;
+using infergo::tensor_to_device;
+using infergo::tensor_to_host;
 #endif
 
 // ─── dtype_size ──────────────────────────────────────────────────────────────
@@ -348,4 +351,125 @@ TEST(TensorFreeT05, RepeatedCudaAllocFree) {
         tensor_free(t);
     }
 }
+#endif // INFER_CUDA_AVAILABLE
+
+// ─── tensor_to_device / tensor_to_host (T-06) ────────────────────────────────
+
+#ifdef INFER_CUDA_AVAILABLE
+
+// Acceptance criterion: alloc CPU [1,3], fill known values, to_device, to_host,
+// values match.
+TEST(TensorTransfer, RoundTrip_Float32) {
+    int shape[] = {1, 3};
+    Tensor* t = tensor_alloc_cpu(shape, 2, 0);
+    ASSERT_NE(t, nullptr);
+
+    // Write known values into the CPU buffer
+    float src[3] = {1.0f, 2.0f, 3.0f};
+    std::memcpy(t->data, src, sizeof(src));
+
+    // to_device
+    ASSERT_TRUE(tensor_to_device(t, 0)) << get_last_error();
+    EXPECT_TRUE(t->on_device);
+    EXPECT_EQ(t->device_id, 0);
+    EXPECT_EQ(t->nbytes, static_cast<size_t>(12));
+
+    // data pointer must now be device memory
+    cudaPointerAttributes attrs{};
+    ASSERT_EQ(cudaPointerGetAttributes(&attrs, t->data), cudaSuccess);
+    EXPECT_EQ(attrs.type, cudaMemoryTypeDevice);
+
+    // to_host
+    ASSERT_TRUE(tensor_to_host(t)) << get_last_error();
+    EXPECT_FALSE(t->on_device);
+
+    // data pointer must now be host memory
+    ASSERT_EQ(cudaPointerGetAttributes(&attrs, t->data), cudaSuccess);
+    EXPECT_NE(attrs.type, cudaMemoryTypeDevice);
+
+    // Values must survive the round trip exactly
+    float dst[3] = {};
+    std::memcpy(dst, t->data, sizeof(dst));
+    EXPECT_FLOAT_EQ(dst[0], 1.0f);
+    EXPECT_FLOAT_EQ(dst[1], 2.0f);
+    EXPECT_FLOAT_EQ(dst[2], 3.0f);
+
+    tensor_free(t);
+}
+
+TEST(TensorTransfer, RoundTrip_Int64) {
+    int shape[] = {4};
+    Tensor* t = tensor_alloc_cpu(shape, 1, 4);  // INT64
+    ASSERT_NE(t, nullptr);
+
+    int64_t src[4] = {100LL, -200LL, 0LL, 9999999999LL};
+    std::memcpy(t->data, src, sizeof(src));
+
+    ASSERT_TRUE(tensor_to_device(t, 0)) << get_last_error();
+    ASSERT_TRUE(tensor_to_host(t))      << get_last_error();
+
+    int64_t dst[4] = {};
+    std::memcpy(dst, t->data, sizeof(dst));
+    EXPECT_EQ(dst[0], 100LL);
+    EXPECT_EQ(dst[1], -200LL);
+    EXPECT_EQ(dst[2], 0LL);
+    EXPECT_EQ(dst[3], 9999999999LL);
+
+    tensor_free(t);
+}
+
+TEST(TensorTransfer, ToDeviceIsNoOpIfAlreadyOnDevice) {
+    int shape[] = {8};
+    Tensor* t = tensor_alloc_cuda(shape, 1, 0, 0);
+    ASSERT_NE(t, nullptr) << get_last_error();
+
+    void* original_ptr = t->data;
+    EXPECT_TRUE(tensor_to_device(t, 0));  // must not reallocate or crash
+    EXPECT_EQ(t->data, original_ptr);     // pointer unchanged
+
+    tensor_free(t);
+}
+
+TEST(TensorTransfer, ToHostIsNoOpIfAlreadyOnHost) {
+    int shape[] = {8};
+    Tensor* t = tensor_alloc_cpu(shape, 1, 0);
+    ASSERT_NE(t, nullptr);
+
+    void* original_ptr = t->data;
+    EXPECT_TRUE(tensor_to_host(t));    // must not reallocate or crash
+    EXPECT_EQ(t->data, original_ptr);  // pointer unchanged
+
+    tensor_free(t);
+}
+
+TEST(TensorTransfer, NullTensorReturnsFalse) {
+    EXPECT_FALSE(tensor_to_device(nullptr, 0));
+    EXPECT_STRNE(get_last_error(), "");
+    EXPECT_FALSE(tensor_to_host(nullptr));
+    EXPECT_STRNE(get_last_error(), "");
+}
+
+TEST(TensorTransfer, MultipleRoundTrips) {
+    int shape[] = {16};
+    Tensor* t = tensor_alloc_cpu(shape, 1, 0);
+    ASSERT_NE(t, nullptr);
+
+    float src[16];
+    for (int i = 0; i < 16; ++i) { src[i] = static_cast<float>(i) * 0.5f; }
+    std::memcpy(t->data, src, sizeof(src));
+
+    for (int round = 0; round < 5; ++round) {
+        ASSERT_TRUE(tensor_to_device(t, 0)) << "round=" << round;
+        ASSERT_TRUE(tensor_to_host(t))      << "round=" << round;
+    }
+
+    float dst[16] = {};
+    std::memcpy(dst, t->data, sizeof(dst));
+    for (int i = 0; i < 16; ++i) {
+        EXPECT_FLOAT_EQ(dst[i], src[i]) << "i=" << i;
+    }
+
+    tensor_free(t);
+}
+
 #endif // INFER_CUDA_AVAILABLE

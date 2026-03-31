@@ -86,4 +86,84 @@ Tensor* tensor_alloc_cuda(const int* shape, int ndim, int dtype, int device_id) 
     return t;
 }
 
+// ─── tensor_to_device ────────────────────────────────────────────────────────
+
+bool tensor_to_device(Tensor* t, int device_id) noexcept {
+    if (t == nullptr) {
+        set_last_error("tensor_to_device: null tensor");
+        return false;
+    }
+    if (t->on_device) {
+        // Already on a device — no-op (moving between devices is not supported here)
+        return true;
+    }
+
+    cudaError_t err = cudaSetDevice(device_id);
+    if (err != cudaSuccess) {
+        set_last_error(cudaGetErrorString(err));
+        return false;
+    }
+
+    // Allocate device buffer
+    void* dev_ptr = nullptr;
+    err = cudaMalloc(&dev_ptr, t->nbytes);
+    if (err != cudaSuccess) {
+        set_last_error(cudaGetErrorString(err));
+        return false;
+    }
+
+    // Copy host → device
+    err = cudaMemcpy(dev_ptr, t->data, t->nbytes, cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        cudaFree(dev_ptr);
+        set_last_error(cudaGetErrorString(err));
+        return false;
+    }
+
+    // Swap: write new ptr into tensor before freeing old one (RULE 5 pattern)
+    void* old_cpu = t->data;
+    t->data      = dev_ptr;
+    t->on_device = true;
+    t->device_id = device_id;
+    std::free(old_cpu);
+
+    return true;
+}
+
+// ─── tensor_to_host ──────────────────────────────────────────────────────────
+
+bool tensor_to_host(Tensor* t) noexcept {
+    if (t == nullptr) {
+        set_last_error("tensor_to_host: null tensor");
+        return false;
+    }
+    if (!t->on_device) {
+        // Already on host — no-op
+        return true;
+    }
+
+    // Allocate host buffer
+    void* host_ptr = std::malloc(t->nbytes);
+    if (host_ptr == nullptr) {
+        set_last_error("tensor_to_host: OOM allocating host buffer");
+        return false;
+    }
+
+    // Copy device → host
+    cudaError_t err = cudaMemcpy(host_ptr, t->data, t->nbytes, cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        std::free(host_ptr);
+        set_last_error(cudaGetErrorString(err));
+        return false;
+    }
+
+    // Swap: write new ptr before freeing old device memory (RULE 5 + RULE 7)
+    void* old_dev = t->data;
+    t->data      = host_ptr;
+    t->on_device = false;
+    tensor_cuda_free_data(old_dev);  // RULE 7: CUDA memory freed by CUDA code
+
+    return true;
+}
+
 } // namespace infergo
