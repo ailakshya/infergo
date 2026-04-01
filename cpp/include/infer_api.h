@@ -262,6 +262,16 @@ InferError infer_llm_batch_decode(InferLLM llm, InferSeq* seqs, int n_seqs);
 // Returns INFER_OK on success, or INFER_ERR_INVALID if no logits are available.
 InferError infer_seq_get_logits(InferSeq seq, float* out_logits, int vocab_size);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PREPROCESSING API
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Decode raw image bytes (JPEG / PNG / WebP / BMP) into a CPU tensor.
+// Output shape: [H, W, 3], dtype float32, pixel values in [0, 255].
+// Returns NULL on failure; call infer_last_error_string() for details.
+// Caller owns the returned tensor — call infer_tensor_free() when done.
+InferTensor infer_preprocess_decode_image(const void* data, int nbytes);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

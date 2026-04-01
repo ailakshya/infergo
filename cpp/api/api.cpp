@@ -5,6 +5,9 @@
 #include "../llm/kv_cache.hpp"
 #include "../llm/llm_engine.hpp"
 #include "../llm/infer_sequence.hpp"
+#ifdef INFER_PREPROCESS_AVAILABLE
+#include "../preprocess/preprocess.hpp"
+#endif
 
 #include <cstring>
 #include <exception>
@@ -681,3 +684,34 @@ InferError infer_seq_get_logits(InferSeq seq, float* out_logits, int vocab_size)
         return INFER_ERR_UNKNOWN;
     }
 }
+
+// ─── Preprocessing API ────────────────────────────────────────────────────────
+
+#ifdef INFER_PREPROCESS_AVAILABLE
+
+InferTensor infer_preprocess_decode_image(const void* data, int nbytes) {
+    try {
+        if (data == nullptr || nbytes <= 0) {
+            infergo::set_last_error("infer_preprocess_decode_image: null or empty input");
+            return nullptr;
+        }
+        return static_cast<InferTensor>(
+            infergo::decode_image(static_cast<const uint8_t*>(data), nbytes)
+        );
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_preprocess_decode_image: unknown exception");
+        return nullptr;
+    }
+}
+
+#else
+
+InferTensor infer_preprocess_decode_image(const void* /*data*/, int /*nbytes*/) {
+    infergo::set_last_error("infer_preprocess_decode_image: OpenCV not available in this build");
+    return nullptr;
+}
+
+#endif // INFER_PREPROCESS_AVAILABLE

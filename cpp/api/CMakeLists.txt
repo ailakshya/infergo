@@ -15,6 +15,11 @@ else()
     target_link_libraries(infer_api PRIVATE infer_tensor infer_onnx infer_tokenizer)
 endif()
 
+if(TARGET infer_preprocess)
+    target_link_libraries(infer_api PRIVATE infer_preprocess)
+    target_compile_definitions(infer_api PRIVATE INFER_PREPROCESS_AVAILABLE=1)
+endif()
+
 set_target_properties(infer_api PROPERTIES
     BUILD_RPATH "${CMAKE_SOURCE_DIR}/tokenizer-rs/target/release"
 )
@@ -43,6 +48,10 @@ endif()
 
 if(TARGET infer_llm)
     target_compile_definitions(api_test PRIVATE INFER_LLM_AVAILABLE=1)
+endif()
+
+if(TARGET infer_preprocess)
+    target_compile_definitions(api_test PRIVATE INFER_PREPROCESS_AVAILABLE=1)
 endif()
 
 include(GoogleTest)

@@ -105,10 +105,7 @@ else()
     message(WARNING "vendor/llama.cpp not found — run: git submodule update --init vendor/llama.cpp")
 endif()
 
-# cpp/api depends on infer_llm (if available) — must come after llama.cpp block
-add_subdirectory(cpp/api)
-
-# ─── Preprocessing (OpenCV) ───────────────────────────────────────────────────
+# ─── Preprocessing (OpenCV) — must come before cpp/api so infer_preprocess target exists ──
 find_package(OpenCV QUIET COMPONENTS core imgcodecs imgproc)
 if(OpenCV_FOUND)
     message(STATUS "OpenCV ${OpenCV_VERSION} found — building infer_preprocess")
@@ -116,3 +113,6 @@ if(OpenCV_FOUND)
 else()
     message(STATUS "OpenCV not found — skipping infer_preprocess (install via vcpkg: opencv4)")
 endif()
+
+# cpp/api depends on infer_llm and infer_preprocess (if available) — must come last
+add_subdirectory(cpp/api)
