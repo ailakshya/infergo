@@ -286,6 +286,13 @@ InferTensor infer_preprocess_letterbox(InferTensor src, int target_w, int target
 InferTensor infer_preprocess_normalize(InferTensor src, float scale,
                                         const float* mean, const float* std);
 
+// Stack n [C, H, W] float32 tensors into a single [N, C, H, W] batch tensor.
+// All tensors must have identical shape and dtype.
+// tensors: array of n InferTensor values.
+// Returns NULL on failure; call infer_last_error_string() for details.
+// Caller owns the returned tensor — call infer_tensor_free() when done.
+InferTensor infer_preprocess_stack_batch(const InferTensor* tensors, int n);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

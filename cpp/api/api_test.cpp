@@ -631,6 +631,80 @@ TEST(ApiPreprocessNormalize, ValuesMatchFormula) {
     infer_tensor_free(src);
 }
 
+// ─── ApiPreprocessStackBatch (T-35) ─────────────────────────────────────────
+
+// Helper: allocate a [C,H,W] float32 tensor filled with fill_val
+static InferTensor make_chw(int C, int H, int W, float fill_val) {
+    const int shape[] = {C, H, W};
+    InferTensor t = infer_tensor_alloc_cpu(shape, 3, INFER_DTYPE_FLOAT32);
+    if (!t) return nullptr;
+    auto* p = static_cast<float*>(infer_tensor_data_ptr(t));
+    const int n = infer_tensor_nelements(t);
+    for (int i = 0; i < n; ++i) p[i] = fill_val;
+    return t;
+}
+
+TEST(ApiPreprocessStackBatch, NullArrayReturnsNull) {
+    InferTensor t = infer_preprocess_stack_batch(nullptr, 1);
+    EXPECT_EQ(t, nullptr);
+    EXPECT_NE(infer_last_error_string()[0], '\0');
+}
+
+TEST(ApiPreprocessStackBatch, ZeroCountReturnsNull) {
+    InferTensor src = make_chw(3, 4, 4, 1.0f);
+    ASSERT_NE(src, nullptr);
+    EXPECT_EQ(infer_preprocess_stack_batch(&src, 0), nullptr);
+    infer_tensor_free(src);
+}
+
+TEST(ApiPreprocessStackBatch, NullElementReturnsNull) {
+    InferTensor tensors[2] = {make_chw(3, 4, 4, 1.0f), nullptr};
+    ASSERT_NE(tensors[0], nullptr);
+    EXPECT_EQ(infer_preprocess_stack_batch(tensors, 2), nullptr);
+    infer_tensor_free(tensors[0]);
+}
+
+TEST(ApiPreprocessStackBatch, OutputShapeIsNCHW) {
+    const int N = 4, C = 3, H = 640, W = 640;
+    InferTensor tensors[4];
+    for (int i = 0; i < N; ++i) {
+        tensors[i] = make_chw(C, H, W, static_cast<float>(i));
+        ASSERT_NE(tensors[i], nullptr);
+    }
+
+    InferTensor batch = infer_preprocess_stack_batch(tensors, N);
+    ASSERT_NE(batch, nullptr) << infer_last_error_string();
+
+    int shape[8] = {};
+    EXPECT_EQ(infer_tensor_shape(batch, shape, 8), 4);
+    EXPECT_EQ(shape[0], N);
+    EXPECT_EQ(shape[1], C);
+    EXPECT_EQ(shape[2], H);
+    EXPECT_EQ(shape[3], W);
+    EXPECT_EQ(infer_tensor_dtype(batch), INFER_DTYPE_FLOAT32);
+
+    infer_tensor_free(batch);
+    for (int i = 0; i < N; ++i) infer_tensor_free(tensors[i]);
+}
+
+TEST(ApiPreprocessStackBatch, DataIsCorrectlyOrdered) {
+    // 2 tensors of shape [1,1,1]: values 7.0 and 13.0
+    InferTensor tensors[2] = {make_chw(1, 1, 1, 7.0f), make_chw(1, 1, 1, 13.0f)};
+    ASSERT_NE(tensors[0], nullptr);
+    ASSERT_NE(tensors[1], nullptr);
+
+    InferTensor batch = infer_preprocess_stack_batch(tensors, 2);
+    ASSERT_NE(batch, nullptr) << infer_last_error_string();
+
+    const auto* p = static_cast<const float*>(infer_tensor_data_ptr(batch));
+    EXPECT_FLOAT_EQ(p[0], 7.0f);
+    EXPECT_FLOAT_EQ(p[1], 13.0f);
+
+    infer_tensor_free(batch);
+    infer_tensor_free(tensors[0]);
+    infer_tensor_free(tensors[1]);
+}
+
 #endif // INFER_PREPROCESS_AVAILABLE
 
 // ─── LLM API (T-28) ──────────────────────────────────────────────────────────
