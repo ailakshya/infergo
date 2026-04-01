@@ -545,6 +545,92 @@ TEST(ApiPreprocessLetterbox, PaddingPixelsAre114) {
     infer_tensor_free(src);
 }
 
+// ─── ApiPreprocessNormalize (T-34) ──────────────────────────────────────────
+
+static const float kMean[3] = {0.485f, 0.456f, 0.406f};
+static const float kStd[3]  = {0.229f, 0.224f, 0.225f};
+
+TEST(ApiPreprocessNormalize, NullSrcReturnsNull) {
+    InferTensor t = infer_preprocess_normalize(nullptr, 255.0f, kMean, kStd);
+    EXPECT_EQ(t, nullptr);
+    EXPECT_NE(infer_last_error_string()[0], '\0');
+}
+
+TEST(ApiPreprocessNormalize, NullMeanOrStdReturnsNull) {
+    const int shape[] = {2, 2, 3};
+    InferTensor src = infer_tensor_alloc_cpu(shape, 3, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(src, nullptr);
+
+    EXPECT_EQ(infer_preprocess_normalize(src, 255.0f, nullptr, kStd), nullptr);
+    EXPECT_EQ(infer_preprocess_normalize(src, 255.0f, kMean, nullptr), nullptr);
+
+    infer_tensor_free(src);
+}
+
+TEST(ApiPreprocessNormalize, NonPositiveScaleReturnsNull) {
+    const int shape[] = {2, 2, 3};
+    InferTensor src = infer_tensor_alloc_cpu(shape, 3, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(src, nullptr);
+
+    EXPECT_EQ(infer_preprocess_normalize(src, 0.0f,  kMean, kStd), nullptr);
+    EXPECT_EQ(infer_preprocess_normalize(src, -1.0f, kMean, kStd), nullptr);
+
+    infer_tensor_free(src);
+}
+
+TEST(ApiPreprocessNormalize, OutputIsCHW) {
+    // Build a 2×2 HWC float32 tensor
+    const int shape[] = {2, 2, 3};
+    InferTensor src = infer_tensor_alloc_cpu(shape, 3, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(src, nullptr);
+    auto* p = static_cast<float*>(infer_tensor_data_ptr(src));
+    // Fill: pixel[h,w,c] = h*100 + w*10 + c  (values 0..122)
+    for (int h = 0; h < 2; ++h)
+        for (int w = 0; w < 2; ++w)
+            for (int c = 0; c < 3; ++c)
+                p[h*2*3 + w*3 + c] = static_cast<float>(h*100 + w*10 + c);
+
+    InferTensor out = infer_preprocess_normalize(src, 255.0f, kMean, kStd);
+    ASSERT_NE(out, nullptr) << infer_last_error_string();
+
+    // Output shape must be CHW: [3, 2, 2]
+    int out_shape[8] = {};
+    EXPECT_EQ(infer_tensor_shape(out, out_shape, 8), 3);
+    EXPECT_EQ(out_shape[0], 3);
+    EXPECT_EQ(out_shape[1], 2);
+    EXPECT_EQ(out_shape[2], 2);
+    EXPECT_EQ(infer_tensor_dtype(out), INFER_DTYPE_FLOAT32);
+
+    infer_tensor_free(out);
+    infer_tensor_free(src);
+}
+
+TEST(ApiPreprocessNormalize, ValuesMatchFormula) {
+    // 1×1 image, single pixel with known value
+    const int shape[] = {1, 1, 3};
+    InferTensor src = infer_tensor_alloc_cpu(shape, 3, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(src, nullptr);
+    auto* p = static_cast<float*>(infer_tensor_data_ptr(src));
+    // Set pixel to [255, 128, 0]
+    p[0] = 255.0f; p[1] = 128.0f; p[2] = 0.0f;
+
+    InferTensor out = infer_preprocess_normalize(src, 255.0f, kMean, kStd);
+    ASSERT_NE(out, nullptr) << infer_last_error_string();
+
+    const auto* q = static_cast<const float*>(infer_tensor_data_ptr(out));
+    // out[c,0,0] = (in[0,0,c] / 255 - mean[c]) / std[c]
+    const float expected_c0 = (255.0f / 255.0f - 0.485f) / 0.229f;
+    const float expected_c1 = (128.0f / 255.0f - 0.456f) / 0.224f;
+    const float expected_c2 = (  0.0f / 255.0f - 0.406f) / 0.225f;
+
+    EXPECT_NEAR(q[0], expected_c0, 1e-4f);
+    EXPECT_NEAR(q[1], expected_c1, 1e-4f);
+    EXPECT_NEAR(q[2], expected_c2, 1e-4f);
+
+    infer_tensor_free(out);
+    infer_tensor_free(src);
+}
+
 #endif // INFER_PREPROCESS_AVAILABLE
 
 // ─── LLM API (T-28) ──────────────────────────────────────────────────────────

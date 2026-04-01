@@ -278,6 +278,14 @@ InferTensor infer_preprocess_decode_image(const void* data, int nbytes);
 // Caller owns the returned tensor — call infer_tensor_free() when done.
 InferTensor infer_preprocess_letterbox(InferTensor src, int target_w, int target_h);
 
+// Normalize a [H, W, 3] float32 tensor to CHW layout.
+// Each channel c: out[c,h,w] = (in[h,w,c] / scale - mean[c]) / std[c]
+// mean and std must each point to exactly 3 floats.
+// Returns NULL on failure; call infer_last_error_string() for details.
+// Caller owns the returned tensor — call infer_tensor_free() when done.
+InferTensor infer_preprocess_normalize(InferTensor src, float scale,
+                                        const float* mean, const float* std);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

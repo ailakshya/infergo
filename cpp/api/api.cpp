@@ -729,6 +729,33 @@ InferTensor infer_preprocess_letterbox(InferTensor src, int target_w, int target
     }
 }
 
+InferTensor infer_preprocess_normalize(InferTensor src, float scale,
+                                        const float* mean, const float* std) {
+    try {
+        if (src == nullptr) {
+            infergo::set_last_error("infer_preprocess_normalize: null tensor");
+            return nullptr;
+        }
+        if (mean == nullptr || std == nullptr) {
+            infergo::set_last_error("infer_preprocess_normalize: null mean or std");
+            return nullptr;
+        }
+        if (scale <= 0.0f) {
+            infergo::set_last_error("infer_preprocess_normalize: scale must be positive");
+            return nullptr;
+        }
+        return static_cast<InferTensor>(
+            infergo::normalize(static_cast<infergo::Tensor*>(src), scale, mean, std)
+        );
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_preprocess_normalize: unknown exception");
+        return nullptr;
+    }
+}
+
 #else
 
 InferTensor infer_preprocess_decode_image(const void* /*data*/, int /*nbytes*/) {
@@ -738,6 +765,12 @@ InferTensor infer_preprocess_decode_image(const void* /*data*/, int /*nbytes*/) 
 
 InferTensor infer_preprocess_letterbox(InferTensor /*src*/, int /*target_w*/, int /*target_h*/) {
     infergo::set_last_error("infer_preprocess_letterbox: OpenCV not available in this build");
+    return nullptr;
+}
+
+InferTensor infer_preprocess_normalize(InferTensor /*src*/, float /*scale*/,
+                                        const float* /*mean*/, const float* /*std*/) {
+    infergo::set_last_error("infer_preprocess_normalize: OpenCV not available in this build");
     return nullptr;
 }
 
