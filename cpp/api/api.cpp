@@ -841,3 +841,38 @@ int infer_postprocess_classify(InferTensor logits, int top_k,
         return -1;
     }
 }
+
+int infer_postprocess_nms(InferTensor predictions,
+                          float conf_thresh, float iou_thresh,
+                          InferBox* out_boxes, int max_boxes) {
+    try {
+        if (predictions == nullptr) {
+            infergo::set_last_error("infer_postprocess_nms: null predictions tensor");
+            return -1;
+        }
+        if (out_boxes == nullptr || max_boxes <= 0) {
+            infergo::set_last_error("infer_postprocess_nms: null or zero out_boxes/max_boxes");
+            return -1;
+        }
+        auto boxes = infergo::nms(
+            static_cast<infergo::Tensor*>(predictions),
+            conf_thresh, iou_thresh
+        );
+        const int n = std::min(static_cast<int>(boxes.size()), max_boxes);
+        for (int i = 0; i < n; ++i) {
+            out_boxes[i].x1         = boxes[i].x1;
+            out_boxes[i].y1         = boxes[i].y1;
+            out_boxes[i].x2         = boxes[i].x2;
+            out_boxes[i].y2         = boxes[i].y2;
+            out_boxes[i].class_idx  = boxes[i].class_idx;
+            out_boxes[i].confidence = boxes[i].confidence;
+        }
+        return n;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_postprocess_nms: unknown exception");
+        return -1;
+    }
+}

@@ -303,12 +303,30 @@ typedef struct {
     float confidence;
 } InferClassResult;
 
+// Bounding box (absolute pixel coordinates, top-left / bottom-right).
+typedef struct {
+    float x1, y1;   // top-left corner
+    float x2, y2;   // bottom-right corner
+    int   class_idx;
+    float confidence;
+} InferBox;
+
 // Compute softmax over a 1-D float32 logits tensor and return the top_k entries
 // sorted by confidence descending into out_results[0..top_k).
 // out_results must be caller-allocated with at least top_k elements.
 // Returns the number of results written (min(top_k, n_classes)), or -1 on error.
 int infer_postprocess_classify(InferTensor logits, int top_k,
                                InferClassResult* out_results);
+
+// Run NMS on a YOLO output tensor of shape [1, num_detections, 4+num_classes].
+// Each detection row: [cx, cy, w, h, class0_score, class1_score, ...].
+// conf_thresh: minimum class score to keep a detection.
+// iou_thresh:  IoU threshold above which a box is suppressed.
+// out_boxes:   caller-allocated array of at least max_boxes elements.
+// Returns the number of boxes written, or -1 on error.
+int infer_postprocess_nms(InferTensor predictions,
+                          float conf_thresh, float iou_thresh,
+                          InferBox* out_boxes, int max_boxes);
 
 #ifdef __cplusplus
 } // extern "C"

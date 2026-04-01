@@ -928,3 +928,81 @@ TEST(ApiPostprocessClassify, TopKClipsToN) {
 
     infer_tensor_free(t);
 }
+
+// ─── ApiPostprocessNMS (T-38) ─────────────────────────────────────────────────
+
+// Helper: build [1, N, stride] float32 tensor from flat rows
+static InferTensor make_preds_c(const std::vector<std::vector<float>>& rows) {
+    const int N = static_cast<int>(rows.size());
+    const int stride = static_cast<int>(rows[0].size());
+    const int shape[] = {1, N, stride};
+    InferTensor t = infer_tensor_alloc_cpu(shape, 3, INFER_DTYPE_FLOAT32);
+    if (!t) return nullptr;
+    float* p = static_cast<float*>(infer_tensor_data_ptr(t));
+    for (const auto& row : rows)
+        for (float v : row) *p++ = v;
+    return t;
+}
+
+TEST(ApiPostprocessNMS, NullPredictionsReturnsError) {
+    InferBox buf[1];
+    EXPECT_EQ(infer_postprocess_nms(nullptr, 0.5f, 0.45f, buf, 1), -1);
+    EXPECT_NE(infer_last_error_string()[0], '\0');
+}
+
+TEST(ApiPostprocessNMS, NullOutBoxesReturnsError) {
+    InferTensor t = make_preds_c({{100,100,50,50,0.9f}});
+    ASSERT_NE(t, nullptr);
+    EXPECT_EQ(infer_postprocess_nms(t, 0.5f, 0.45f, nullptr, 1), -1);
+    infer_tensor_free(t);
+}
+
+TEST(ApiPostprocessNMS, OverlappingBoxesSuppressed) {
+    // Two nearly identical boxes → only highest-conf kept
+    InferTensor t = make_preds_c({
+        {100, 100, 80, 80, 0.95f, 0.05f},
+        {102, 102, 80, 80, 0.80f, 0.05f},
+    });
+    ASSERT_NE(t, nullptr);
+    InferBox buf[10];
+    const int n = infer_postprocess_nms(t, 0.5f, 0.45f, buf, 10);
+    EXPECT_EQ(n, 1);
+    EXPECT_NEAR(buf[0].confidence, 0.95f, 1e-5f);
+    infer_tensor_free(t);
+}
+
+TEST(ApiPostprocessNMS, NonOverlappingBoxesBothKept) {
+    InferTensor t = make_preds_c({
+        {100, 100, 40, 40, 0.9f},
+        {500, 500, 40, 40, 0.8f},
+    });
+    ASSERT_NE(t, nullptr);
+    InferBox buf[10];
+    EXPECT_EQ(infer_postprocess_nms(t, 0.5f, 0.45f, buf, 10), 2);
+    infer_tensor_free(t);
+}
+
+TEST(ApiPostprocessNMS, BoxCoordsAreX1Y1X2Y2) {
+    // cx=100 cy=100 w=60 h=40 → x1=70 y1=80 x2=130 y2=120
+    InferTensor t = make_preds_c({{100, 100, 60, 40, 0.9f}});
+    ASSERT_NE(t, nullptr);
+    InferBox buf[1];
+    ASSERT_EQ(infer_postprocess_nms(t, 0.5f, 0.45f, buf, 1), 1);
+    EXPECT_NEAR(buf[0].x1, 70.0f,  1e-4f);
+    EXPECT_NEAR(buf[0].y1, 80.0f,  1e-4f);
+    EXPECT_NEAR(buf[0].x2, 130.0f, 1e-4f);
+    EXPECT_NEAR(buf[0].y2, 120.0f, 1e-4f);
+    infer_tensor_free(t);
+}
+
+TEST(ApiPostprocessNMS, MaxBoxesLimitsOutput) {
+    InferTensor t = make_preds_c({
+        {100, 100, 30, 30, 0.9f},
+        {200, 200, 30, 30, 0.8f},
+        {300, 300, 30, 30, 0.7f},
+    });
+    ASSERT_NE(t, nullptr);
+    InferBox buf[2];
+    EXPECT_EQ(infer_postprocess_nms(t, 0.5f, 0.45f, buf, 2), 2);
+    infer_tensor_free(t);
+}
