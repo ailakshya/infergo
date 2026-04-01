@@ -107,3 +107,12 @@ endif()
 
 # cpp/api depends on infer_llm (if available) — must come after llama.cpp block
 add_subdirectory(cpp/api)
+
+# ─── Preprocessing (OpenCV) ───────────────────────────────────────────────────
+find_package(OpenCV QUIET COMPONENTS core imgcodecs imgproc)
+if(OpenCV_FOUND)
+    message(STATUS "OpenCV ${OpenCV_VERSION} found — building infer_preprocess")
+    add_subdirectory(cpp/preprocess)
+else()
+    message(STATUS "OpenCV not found — skipping infer_preprocess (install via vcpkg: opencv4)")
+endif()
