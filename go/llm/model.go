@@ -1,0 +1,147 @@
+// Package llm provides a Go wrapper for the infergo LLM C API.
+// It loads GGUF models via llama.cpp and exposes multi-sequence
+// batch inference for use in generation pipelines.
+package llm
+
+/*
+#cgo CFLAGS: -I${SRCDIR}/../../cpp/include
+#cgo LDFLAGS: -L${SRCDIR}/../../build/cpp/api -linfer_api -Wl,-rpath,${SRCDIR}/../../build/cpp/api
+
+#include "infer_api.h"
+#include <stdlib.h>
+*/
+import "C"
+
+import (
+	"errors"
+	"fmt"
+	"runtime"
+	"unsafe"
+)
+
+// Model wraps an InferLLM handle (opaque C pointer).
+// Always call Close when done to release C resources.
+type Model struct {
+	ptr       C.InferLLM
+	vocabSize int
+}
+
+// lastError returns the thread-local C error string as a Go error.
+func lastError() error {
+	msg := C.infer_last_error_string()
+	if msg == nil || C.GoString(msg) == "" {
+		return errors.New("unknown C error")
+	}
+	return errors.New(C.GoString(msg))
+}
+
+// Load creates an LLM engine from a GGUF model file.
+// nGPULayers: transformer layers to offload to GPU (use 999 for all).
+// ctxSize: total KV cache token budget across all sequences.
+// nSeqMax: max number of concurrent sequences.
+// nBatch: max tokens per decode call.
+func Load(path string, nGPULayers, ctxSize, nSeqMax, nBatch int) (*Model, error) {
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+
+	ptr := C.infer_llm_create(cPath, C.int(nGPULayers), C.int(ctxSize), C.int(nSeqMax), C.int(nBatch))
+	if ptr == nil {
+		return nil, fmt.Errorf("llm: load %q failed: %w", path, lastError())
+	}
+	m := &Model{
+		ptr:       ptr,
+		vocabSize: int(C.infer_llm_vocab_size(ptr)),
+	}
+	runtime.SetFinalizer(m, (*Model).Close)
+	return m, nil
+}
+
+// Close destroys the LLM engine and frees all C resources.
+// Safe to call multiple times.
+func (m *Model) Close() {
+	if m.ptr == nil {
+		return
+	}
+	C.infer_llm_destroy(m.ptr)
+	m.ptr = nil
+	runtime.SetFinalizer(m, nil)
+}
+
+// VocabSize returns the vocabulary size of the loaded model.
+func (m *Model) VocabSize() int { return m.vocabSize }
+
+// BOS returns the beginning-of-sequence token ID.
+func (m *Model) BOS() int32 {
+	if m.ptr == nil {
+		return -1
+	}
+	return int32(C.infer_llm_bos(m.ptr))
+}
+
+// EOS returns the end-of-sequence token ID.
+func (m *Model) EOS() int32 {
+	if m.ptr == nil {
+		return -1
+	}
+	return int32(C.infer_llm_eos(m.ptr))
+}
+
+// IsEOG returns true if the token is an end-of-generation token (EOS or EOT).
+func (m *Model) IsEOG(token int32) bool {
+	if m.ptr == nil {
+		return false
+	}
+	return C.infer_llm_is_eog(m.ptr, C.int(token)) != 0
+}
+
+// NewSequence creates a new inference sequence with the given prompt tokens.
+// The returned Sequence holds a KV cache slot; always call Close when done.
+// Returns an error if the KV slot pool is exhausted.
+func (m *Model) NewSequence(tokens []int32) (*Sequence, error) {
+	if m.ptr == nil {
+		return nil, errors.New("llm: NewSequence called on closed model")
+	}
+	if len(tokens) == 0 {
+		return nil, errors.New("llm: NewSequence requires at least one token")
+	}
+
+	cTokens := make([]C.int, len(tokens))
+	for i, t := range tokens {
+		cTokens[i] = C.int(t)
+	}
+
+	ptr := C.infer_seq_create(m.ptr, &cTokens[0], C.int(len(cTokens)))
+	if ptr == nil {
+		return nil, fmt.Errorf("llm: NewSequence failed: %w", lastError())
+	}
+
+	seq := &Sequence{ptr: ptr, model: m}
+	runtime.SetFinalizer(seq, (*Sequence).Close)
+	return seq, nil
+}
+
+// BatchDecode runs one decode step for all provided sequences in a single
+// forward pass through the model. After this call, each sequence's logits
+// are available via seq.Logits() or seq.SampleToken().
+func (m *Model) BatchDecode(seqs []*Sequence) error {
+	if m.ptr == nil {
+		return errors.New("llm: BatchDecode called on closed model")
+	}
+	if len(seqs) == 0 {
+		return nil
+	}
+
+	cSeqs := make([]C.InferSeq, len(seqs))
+	for i, s := range seqs {
+		if s == nil || s.ptr == nil {
+			return fmt.Errorf("llm: seqs[%d] is nil or closed", i)
+		}
+		cSeqs[i] = s.ptr
+	}
+
+	rc := C.infer_llm_batch_decode(m.ptr, &cSeqs[0], C.int(len(cSeqs)))
+	if rc != C.INFER_OK {
+		return fmt.Errorf("llm: BatchDecode failed: %w", lastError())
+	}
+	return nil
+}
