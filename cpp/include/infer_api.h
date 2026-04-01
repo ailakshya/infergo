@@ -272,6 +272,12 @@ InferError infer_seq_get_logits(InferSeq seq, float* out_logits, int vocab_size)
 // Caller owns the returned tensor — call infer_tensor_free() when done.
 InferTensor infer_preprocess_decode_image(const void* data, int nbytes);
 
+// Letterbox-resize a [H, W, 3] float32 tensor to exactly [target_h, target_w, 3].
+// Scales uniformly (preserving aspect ratio) then pads remaining space with 114.0.
+// Returns NULL on failure; call infer_last_error_string() for details.
+// Caller owns the returned tensor — call infer_tensor_free() when done.
+InferTensor infer_preprocess_letterbox(InferTensor src, int target_w, int target_h);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

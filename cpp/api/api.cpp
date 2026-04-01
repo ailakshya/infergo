@@ -707,10 +707,37 @@ InferTensor infer_preprocess_decode_image(const void* data, int nbytes) {
     }
 }
 
+InferTensor infer_preprocess_letterbox(InferTensor src, int target_w, int target_h) {
+    try {
+        if (src == nullptr) {
+            infergo::set_last_error("infer_preprocess_letterbox: null tensor");
+            return nullptr;
+        }
+        if (target_w <= 0 || target_h <= 0) {
+            infergo::set_last_error("infer_preprocess_letterbox: target dimensions must be positive");
+            return nullptr;
+        }
+        return static_cast<InferTensor>(
+            infergo::letterbox(static_cast<infergo::Tensor*>(src), target_w, target_h)
+        );
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_preprocess_letterbox: unknown exception");
+        return nullptr;
+    }
+}
+
 #else
 
 InferTensor infer_preprocess_decode_image(const void* /*data*/, int /*nbytes*/) {
     infergo::set_last_error("infer_preprocess_decode_image: OpenCV not available in this build");
+    return nullptr;
+}
+
+InferTensor infer_preprocess_letterbox(InferTensor /*src*/, int /*target_w*/, int /*target_h*/) {
+    infergo::set_last_error("infer_preprocess_letterbox: OpenCV not available in this build");
     return nullptr;
 }
 

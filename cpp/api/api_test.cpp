@@ -467,6 +467,84 @@ TEST(ApiPreprocessDecodeImage, FreeNullIsNoop) {
     infer_tensor_free(nullptr);  // must not crash
 }
 
+// ─── ApiPreprocessLetterbox (T-33) ──────────────────────────────────────────
+
+TEST(ApiPreprocessLetterbox, NullSrcReturnsNull) {
+    InferTensor t = infer_preprocess_letterbox(nullptr, 640, 640);
+    EXPECT_EQ(t, nullptr);
+    EXPECT_NE(infer_last_error_string()[0], '\0');
+}
+
+TEST(ApiPreprocessLetterbox, InvalidTargetDimsReturnNull) {
+    // Decode a real image first
+    InferTensor src = infer_preprocess_decode_image(
+        kWhiteJpeg, static_cast<int>(sizeof(kWhiteJpeg)));
+    ASSERT_NE(src, nullptr);
+
+    EXPECT_EQ(infer_preprocess_letterbox(src, 0, 640), nullptr);
+    EXPECT_EQ(infer_preprocess_letterbox(src, 640, 0), nullptr);
+    EXPECT_EQ(infer_preprocess_letterbox(src, -1, 640), nullptr);
+
+    infer_tensor_free(src);
+}
+
+TEST(ApiPreprocessLetterbox, OutputShapeMatchesTarget) {
+    InferTensor src = infer_preprocess_decode_image(
+        kWhiteJpeg, static_cast<int>(sizeof(kWhiteJpeg)));
+    ASSERT_NE(src, nullptr);
+
+    const int TW = 640, TH = 640;
+    InferTensor lb = infer_preprocess_letterbox(src, TW, TH);
+    ASSERT_NE(lb, nullptr) << infer_last_error_string();
+
+    int shape[8] = {};
+    const int ndim = infer_tensor_shape(lb, shape, 8);
+    EXPECT_EQ(ndim, 3);
+    EXPECT_EQ(shape[0], TH);   // H
+    EXPECT_EQ(shape[1], TW);   // W
+    EXPECT_EQ(shape[2], 3);    // channels
+
+    EXPECT_EQ(infer_tensor_dtype(lb), INFER_DTYPE_FLOAT32);
+
+    infer_tensor_free(lb);
+    infer_tensor_free(src);
+}
+
+TEST(ApiPreprocessLetterbox, PaddingPixelsAre114) {
+    // Use a 1×4 wide image so when placed in 4×4, top and bottom rows are padding
+    // Decode kWhiteJpeg (1×1) then test with a known-size constructed tensor instead:
+    // Build a [1, 4, 3] float32 tensor filled with 200.0 manually
+    const int shape[] = {1, 4, 3};
+    InferTensor src = infer_tensor_alloc_cpu(shape, 3, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(src, nullptr);
+
+    // Fill with 200.0
+    const int n = infer_tensor_nelements(src);
+    auto* p = static_cast<float*>(infer_tensor_data_ptr(src));
+    for (int i = 0; i < n; ++i) p[i] = 200.0f;
+
+    // Letterbox into 4×4: scale = min(4/4, 4/1) = 1.0 for width, 4.0 for height → scale=1.0
+    // scaled size = 4×1, pad_top = (4-1)/2 = 1, pad_bottom = 4-1-1 = 2
+    InferTensor lb = infer_preprocess_letterbox(src, 4, 4);
+    ASSERT_NE(lb, nullptr) << infer_last_error_string();
+
+    int out_shape[8] = {};
+    EXPECT_EQ(infer_tensor_shape(lb, out_shape, 8), 3);
+    EXPECT_EQ(out_shape[0], 4);
+    EXPECT_EQ(out_shape[1], 4);
+    EXPECT_EQ(out_shape[2], 3);
+
+    // Row 0 (pad row): all pixels should be 114
+    const auto* out = static_cast<const float*>(infer_tensor_data_ptr(lb));
+    // Row 0: pixels [0..3], each has 3 channels → indices 0..11
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_NEAR(out[0 * 4 * 3 + 0 * 3 + c], 114.0f, 1.0f) << "row0 col0 ch" << c;
+    }
+
+    infer_tensor_free(lb);
+    infer_tensor_free(src);
+}
+
 #endif // INFER_PREPROCESS_AVAILABLE
 
 // ─── LLM API (T-28) ──────────────────────────────────────────────────────────
