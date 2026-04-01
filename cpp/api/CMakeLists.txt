@@ -20,6 +20,8 @@ if(TARGET infer_preprocess)
     target_compile_definitions(infer_api PRIVATE INFER_PREPROCESS_AVAILABLE=1)
 endif()
 
+target_link_libraries(infer_api PRIVATE infer_postprocess)
+
 set_target_properties(infer_api PROPERTIES
     BUILD_RPATH "${CMAKE_SOURCE_DIR}/tokenizer-rs/target/release"
 )

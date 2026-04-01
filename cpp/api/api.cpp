@@ -8,6 +8,7 @@
 #ifdef INFER_PREPROCESS_AVAILABLE
 #include "../preprocess/preprocess.hpp"
 #endif
+#include "../postprocess/postprocess.hpp"
 
 #include <cstring>
 #include <exception>
@@ -806,3 +807,37 @@ InferTensor infer_preprocess_stack_batch(const InferTensor* /*tensors*/, int /*n
 }
 
 #endif // INFER_PREPROCESS_AVAILABLE
+
+// ─── Postprocessing API ───────────────────────────────────────────────────────
+
+int infer_postprocess_classify(InferTensor logits, int top_k,
+                               InferClassResult* out_results) {
+    try {
+        if (logits == nullptr) {
+            infergo::set_last_error("infer_postprocess_classify: null logits tensor");
+            return -1;
+        }
+        if (top_k <= 0) {
+            infergo::set_last_error("infer_postprocess_classify: top_k must be positive");
+            return -1;
+        }
+        if (out_results == nullptr) {
+            infergo::set_last_error("infer_postprocess_classify: null out_results");
+            return -1;
+        }
+        auto results = infergo::classify(
+            static_cast<infergo::Tensor*>(logits), top_k
+        );
+        for (int i = 0; i < static_cast<int>(results.size()); ++i) {
+            out_results[i].label_idx  = results[i].label_idx;
+            out_results[i].confidence = results[i].confidence;
+        }
+        return static_cast<int>(results.size());
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_postprocess_classify: unknown exception");
+        return -1;
+    }
+}

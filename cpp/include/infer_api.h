@@ -293,6 +293,23 @@ InferTensor infer_preprocess_normalize(InferTensor src, float scale,
 // Caller owns the returned tensor — call infer_tensor_free() when done.
 InferTensor infer_preprocess_stack_batch(const InferTensor* tensors, int n);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POSTPROCESSING API
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Classification result: one (label index, confidence) pair.
+typedef struct {
+    int   label_idx;
+    float confidence;
+} InferClassResult;
+
+// Compute softmax over a 1-D float32 logits tensor and return the top_k entries
+// sorted by confidence descending into out_results[0..top_k).
+// out_results must be caller-allocated with at least top_k elements.
+// Returns the number of results written (min(top_k, n_classes)), or -1 on error.
+int infer_postprocess_classify(InferTensor logits, int top_k,
+                               InferClassResult* out_results);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

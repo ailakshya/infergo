@@ -114,5 +114,8 @@ else()
     message(STATUS "OpenCV not found — skipping infer_preprocess (install via vcpkg: opencv4)")
 endif()
 
-# cpp/api depends on infer_llm and infer_preprocess (if available) — must come last
+# Postprocessing — pure C++, no external deps; must come before cpp/api
+add_subdirectory(cpp/postprocess)
+
+# cpp/api depends on infer_llm, infer_preprocess, infer_postprocess — must come last
 add_subdirectory(cpp/api)

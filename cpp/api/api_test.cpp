@@ -842,3 +842,89 @@ TEST(ApiLLM, IsEOGWorks) {
 }
 
 #endif // INFER_LLM_AVAILABLE
+
+// ─── ApiPostprocessClassify (T-37) ───────────────────────────────────────────
+
+TEST(ApiPostprocessClassify, NullLogitsReturnsError) {
+    InferClassResult buf[1];
+    EXPECT_EQ(infer_postprocess_classify(nullptr, 1, buf), -1);
+    EXPECT_NE(infer_last_error_string()[0], '\0');
+}
+
+TEST(ApiPostprocessClassify, NullOutResultsReturnsError) {
+    const int shape[] = {4};
+    InferTensor t = infer_tensor_alloc_cpu(shape, 1, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(t, nullptr);
+    EXPECT_EQ(infer_postprocess_classify(t, 2, nullptr), -1);
+    infer_tensor_free(t);
+}
+
+TEST(ApiPostprocessClassify, ZeroTopKReturnsError) {
+    const int shape[] = {4};
+    InferTensor t = infer_tensor_alloc_cpu(shape, 1, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(t, nullptr);
+    EXPECT_EQ(infer_postprocess_classify(t, 0, nullptr), -1);
+    infer_tensor_free(t);
+}
+
+TEST(ApiPostprocessClassify, UniformLogitsEqualProbs) {
+    const int shape[] = {4};
+    InferTensor t = infer_tensor_alloc_cpu(shape, 1, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(t, nullptr);
+    float* p = static_cast<float*>(infer_tensor_data_ptr(t));
+    p[0] = p[1] = p[2] = p[3] = 0.0f;
+
+    InferClassResult buf[4];
+    const int n = infer_postprocess_classify(t, 4, buf);
+    EXPECT_EQ(n, 4);
+    for (int i = 0; i < n; ++i)
+        EXPECT_NEAR(buf[i].confidence, 0.25f, 1e-5f);
+
+    infer_tensor_free(t);
+}
+
+TEST(ApiPostprocessClassify, DominantLogitHighConfidence) {
+    const int shape[] = {4};
+    InferTensor t = infer_tensor_alloc_cpu(shape, 1, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(t, nullptr);
+    float* p = static_cast<float*>(infer_tensor_data_ptr(t));
+    p[0] = 100.0f; p[1] = 0.0f; p[2] = 0.0f; p[3] = 0.0f;
+
+    InferClassResult buf[1];
+    const int n = infer_postprocess_classify(t, 1, buf);
+    EXPECT_EQ(n, 1);
+    EXPECT_EQ(buf[0].label_idx, 0);
+    EXPECT_NEAR(buf[0].confidence, 1.0f, 1e-5f);
+
+    infer_tensor_free(t);
+}
+
+TEST(ApiPostprocessClassify, ResultsSortedByConfidence) {
+    const int shape[] = {4};
+    InferTensor t = infer_tensor_alloc_cpu(shape, 1, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(t, nullptr);
+    float* p = static_cast<float*>(infer_tensor_data_ptr(t));
+    p[0] = 1.0f; p[1] = 5.0f; p[2] = 3.0f; p[3] = 2.0f;
+
+    InferClassResult buf[4];
+    const int n = infer_postprocess_classify(t, 4, buf);
+    ASSERT_EQ(n, 4);
+    EXPECT_EQ(buf[0].label_idx, 1);  // highest logit
+    for (int i = 1; i < n; ++i)
+        EXPECT_GE(buf[i-1].confidence, buf[i].confidence);
+
+    infer_tensor_free(t);
+}
+
+TEST(ApiPostprocessClassify, TopKClipsToN) {
+    const int shape[] = {3};
+    InferTensor t = infer_tensor_alloc_cpu(shape, 1, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(t, nullptr);
+    float* p = static_cast<float*>(infer_tensor_data_ptr(t));
+    p[0] = 1.0f; p[1] = 2.0f; p[2] = 3.0f;
+
+    InferClassResult buf[10];
+    EXPECT_EQ(infer_postprocess_classify(t, 10, buf), 3);
+
+    infer_tensor_free(t);
+}
