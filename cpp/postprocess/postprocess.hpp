@@ -29,4 +29,9 @@ std::vector<ClassResult> classify(const Tensor* logits, int top_k);
 std::vector<Box> nms(const Tensor* predictions,
                      float conf_thresh, float iou_thresh);
 
+// L2-normalize a float32 tensor in-place: each element divided by sqrt(sum of squares).
+// No-op if the L2 norm is zero (zero vector).
+// Throws std::invalid_argument on bad input.
+void normalize_embedding(Tensor* t);
+
 } // namespace infergo

@@ -876,3 +876,20 @@ int infer_postprocess_nms(InferTensor predictions,
         return -1;
     }
 }
+
+InferError infer_postprocess_normalize_embedding(InferTensor t) {
+    try {
+        if (t == nullptr) {
+            infergo::set_last_error("infer_postprocess_normalize_embedding: null tensor");
+            return INFER_ERR_NULL;
+        }
+        infergo::normalize_embedding(static_cast<infergo::Tensor*>(t));
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_INVALID;
+    } catch (...) {
+        infergo::set_last_error("infer_postprocess_normalize_embedding: unknown exception");
+        return INFER_ERR_UNKNOWN;
+    }
+}

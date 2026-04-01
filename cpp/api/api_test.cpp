@@ -1006,3 +1006,73 @@ TEST(ApiPostprocessNMS, MaxBoxesLimitsOutput) {
     EXPECT_EQ(infer_postprocess_nms(t, 0.5f, 0.45f, buf, 2), 2);
     infer_tensor_free(t);
 }
+
+// ─── ApiPostprocessNormalizeEmbedding (T-39) ──────────────────────────────────
+
+static float api_l2_norm(InferTensor t) {
+    const float* p = static_cast<const float*>(infer_tensor_data_ptr(t));
+    const int n = infer_tensor_nelements(t);
+    double s = 0.0;
+    for (int i = 0; i < n; ++i) s += static_cast<double>(p[i]) * static_cast<double>(p[i]);
+    return static_cast<float>(std::sqrt(s));
+}
+
+TEST(ApiPostprocessNormalizeEmbedding, NullTensorReturnsError) {
+    EXPECT_NE(infer_postprocess_normalize_embedding(nullptr), INFER_OK);
+    EXPECT_NE(infer_last_error_string()[0], '\0');
+}
+
+TEST(ApiPostprocessNormalizeEmbedding, L2NormIsOne) {
+    const int shape[] = {2};
+    InferTensor t = infer_tensor_alloc_cpu(shape, 1, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(t, nullptr);
+    float* p = static_cast<float*>(infer_tensor_data_ptr(t));
+    p[0] = 3.0f; p[1] = 4.0f;  // norm = 5
+
+    EXPECT_EQ(infer_postprocess_normalize_embedding(t), INFER_OK);
+    EXPECT_NEAR(api_l2_norm(t), 1.0f, 1e-6f);
+
+    infer_tensor_free(t);
+}
+
+TEST(ApiPostprocessNormalizeEmbedding, ValuesScaledCorrectly) {
+    const int shape[] = {2};
+    InferTensor t = infer_tensor_alloc_cpu(shape, 1, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(t, nullptr);
+    float* p = static_cast<float*>(infer_tensor_data_ptr(t));
+    p[0] = 3.0f; p[1] = 4.0f;
+
+    infer_postprocess_normalize_embedding(t);
+    EXPECT_NEAR(p[0], 0.6f, 1e-6f);
+    EXPECT_NEAR(p[1], 0.8f, 1e-6f);
+
+    infer_tensor_free(t);
+}
+
+TEST(ApiPostprocessNormalizeEmbedding, ZeroVectorUnchanged) {
+    const int shape[] = {3};
+    InferTensor t = infer_tensor_alloc_cpu(shape, 1, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(t, nullptr);
+    float* p = static_cast<float*>(infer_tensor_data_ptr(t));
+    p[0] = p[1] = p[2] = 0.0f;
+
+    EXPECT_EQ(infer_postprocess_normalize_embedding(t), INFER_OK);
+    EXPECT_FLOAT_EQ(p[0], 0.0f);
+
+    infer_tensor_free(t);
+}
+
+TEST(ApiPostprocessNormalizeEmbedding, InPlaceModifiesSameTensor) {
+    const int shape[] = {4};
+    InferTensor t = infer_tensor_alloc_cpu(shape, 1, INFER_DTYPE_FLOAT32);
+    ASSERT_NE(t, nullptr);
+    float* p = static_cast<float*>(infer_tensor_data_ptr(t));
+    p[0] = 1.0f; p[1] = 2.0f; p[2] = 3.0f; p[3] = 4.0f;
+
+    const void* ptr_before = infer_tensor_data_ptr(t);
+    infer_postprocess_normalize_embedding(t);
+    EXPECT_EQ(infer_tensor_data_ptr(t), ptr_before);  // same buffer
+    EXPECT_NEAR(api_l2_norm(t), 1.0f, 1e-6f);
+
+    infer_tensor_free(t);
+}

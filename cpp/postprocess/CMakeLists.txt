@@ -5,6 +5,7 @@
 add_library(infer_postprocess STATIC
     classify.cpp
     nms.cpp
+    normalize_embedding.cpp
 )
 
 target_include_directories(infer_postprocess
@@ -22,6 +23,7 @@ target_link_libraries(infer_postprocess
 add_executable(postprocess_test
     classify_test.cpp
     nms_test.cpp
+    normalize_embedding_test.cpp
 )
 
 target_include_directories(postprocess_test

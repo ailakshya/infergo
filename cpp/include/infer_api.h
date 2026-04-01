@@ -328,6 +328,10 @@ int infer_postprocess_nms(InferTensor predictions,
                           float conf_thresh, float iou_thresh,
                           InferBox* out_boxes, int max_boxes);
 
+// L2-normalize a float32 tensor in-place: divide each element by sqrt(sum of squares).
+// No-op if the L2 norm is zero. Returns INFER_OK on success, or -1 on error.
+InferError infer_postprocess_normalize_embedding(InferTensor t);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
