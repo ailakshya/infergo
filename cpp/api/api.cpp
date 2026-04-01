@@ -505,6 +505,46 @@ int infer_llm_is_eog(InferLLM llm, int token) {
     return static_cast<LLMHandle*>(llm)->engine.IsEOG(static_cast<int32_t>(token)) ? 1 : 0;
 }
 
+int infer_llm_tokenize(InferLLM llm, const char* text, int add_bos,
+                        int* out_ids, int max_tokens) {
+    try {
+        if (llm == nullptr || text == nullptr || out_ids == nullptr || max_tokens <= 0) {
+            infergo::set_last_error("infer_llm_tokenize: invalid argument");
+            return -1;
+        }
+        auto* h = static_cast<LLMHandle*>(llm);
+        const auto tokens = h->engine.Tokenize(text, add_bos != 0);
+        const int n = std::min(static_cast<int>(tokens.size()), max_tokens);
+        for (int i = 0; i < n; ++i) out_ids[i] = static_cast<int>(tokens[i]);
+        return n;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        return -1;
+    }
+}
+
+int infer_llm_token_to_piece(InferLLM llm, int token, char* out_buf, int buf_size) {
+    try {
+        if (llm == nullptr || out_buf == nullptr || buf_size <= 0) {
+            infergo::set_last_error("infer_llm_token_to_piece: invalid argument");
+            return -1;
+        }
+        auto* h = static_cast<LLMHandle*>(llm);
+        const std::string piece = h->engine.TokenToPiece(static_cast<int32_t>(token));
+        const int n = std::min(static_cast<int>(piece.size()), buf_size - 1);
+        std::memcpy(out_buf, piece.data(), static_cast<size_t>(n));
+        out_buf[n] = '\0';
+        return 0;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        return -1;
+    }
+}
+
 InferSeq infer_seq_create(InferLLM llm, const int* tokens, int n_tokens) {
     try {
         if (llm == nullptr || tokens == nullptr || n_tokens <= 0) {

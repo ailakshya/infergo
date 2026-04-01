@@ -171,4 +171,45 @@ bool LLMEngine::IsEOG(int32_t token) const noexcept {
         static_cast<llama_token>(token));
 }
 
+// ─── Tokenize ─────────────────────────────────────────────────────────────────
+
+std::vector<int32_t> LLMEngine::Tokenize(const std::string& text, bool add_bos) const {
+    if (model_ == nullptr) {
+        throw std::runtime_error("LLMEngine::Tokenize: model not loaded");
+    }
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    // First call with null buffer: returns -(number of tokens needed)
+    int32_t n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()),
+                                nullptr, 0, add_bos, /*parse_special=*/true);
+    if (n == 0) return {};
+    if (n > 0) {
+        // Unexpectedly fit in zero buffer — shouldn't happen, but handle it
+        n = -n;
+    }
+    std::vector<llama_token> tokens(static_cast<size_t>(-n));
+    const int32_t rc = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()),
+                                       tokens.data(), -n, add_bos, /*parse_special=*/true);
+    if (rc < 0) {
+        throw std::runtime_error("LLMEngine::Tokenize: tokenization failed");
+    }
+    return std::vector<int32_t>(tokens.begin(), tokens.begin() + rc);
+}
+
+// ─── TokenToPiece ─────────────────────────────────────────────────────────────
+
+std::string LLMEngine::TokenToPiece(int32_t token) const {
+    if (model_ == nullptr) {
+        throw std::runtime_error("LLMEngine::TokenToPiece: model not loaded");
+    }
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    char buf[256];
+    const int32_t n = llama_token_to_piece(vocab, static_cast<llama_token>(token),
+                                            buf, static_cast<int32_t>(sizeof(buf)),
+                                            /*lstrip=*/0, /*special=*/false);
+    if (n < 0) {
+        throw std::runtime_error("LLMEngine::TokenToPiece: buffer too small");
+    }
+    return std::string(buf, static_cast<size_t>(n));
+}
+
 } // namespace infergo

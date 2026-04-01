@@ -218,6 +218,17 @@ int infer_llm_eos(InferLLM llm);
 // Returns 1 if token is an end-of-generation token (EOS/EOT), 0 otherwise.
 int infer_llm_is_eog(InferLLM llm, int token);
 
+// Tokenize text using the model's built-in vocabulary.
+// add_bos: 1 = prepend BOS token.
+// out_ids: caller-allocated array of max_tokens ints.
+// Returns number of tokens written, or -1 on error.
+int infer_llm_tokenize(InferLLM llm, const char* text, int add_bos,
+                        int* out_ids, int max_tokens);
+
+// Convert a single token ID to its string piece (null-terminated in out_buf).
+// Returns 0 on success, -1 on error.
+int infer_llm_token_to_piece(InferLLM llm, int token, char* out_buf, int buf_size);
+
 // Create a new sequence with the given prompt tokens.
 // Allocates a KV cache slot; returns NULL if pool is full or llm is NULL.
 InferSeq infer_seq_create(InferLLM llm, const int* tokens, int n_tokens);

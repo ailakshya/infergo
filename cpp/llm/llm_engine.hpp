@@ -70,6 +70,15 @@ public:
     /// Returns true if token signals end-of-generation (EOS, EOT, etc.).
     bool IsEOG(int32_t token) const noexcept;
 
+    /// Tokenize text using the model's built-in vocabulary.
+    /// add_bos: prepend the BOS token when true.
+    /// Throws std::runtime_error if the model is not loaded.
+    std::vector<int32_t> Tokenize(const std::string& text, bool add_bos) const;
+
+    /// Convert a single token ID to its string piece (may include leading space).
+    /// Throws std::runtime_error if the model is not loaded.
+    std::string TokenToPiece(int32_t token) const;
+
 private:
     llama_model*   model_   = nullptr;
     llama_context* ctx_     = nullptr;

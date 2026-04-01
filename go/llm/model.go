@@ -120,6 +120,52 @@ func (m *Model) NewSequence(tokens []int32) (*Sequence, error) {
 	return seq, nil
 }
 
+// Tokenize converts text to token IDs using the model's built-in vocabulary.
+// addBOS: prepend the BOS token when true.
+// maxTokens: hard cap on output length (defaults to 4096 if <= 0).
+func (m *Model) Tokenize(text string, addBOS bool, maxTokens int) ([]int32, error) {
+	if m.ptr == nil {
+		return nil, errors.New("llm: Tokenize called on closed model")
+	}
+	if maxTokens <= 0 {
+		maxTokens = 4096
+	}
+
+	cText := C.CString(text)
+	defer C.free(unsafe.Pointer(cText))
+
+	addBOSInt := C.int(0)
+	if addBOS {
+		addBOSInt = 1
+	}
+
+	ids := make([]C.int, maxTokens)
+	n := C.infer_llm_tokenize(m.ptr, cText, addBOSInt, &ids[0], C.int(maxTokens))
+	if n < 0 {
+		return nil, fmt.Errorf("llm: Tokenize failed: %w", lastError())
+	}
+
+	out := make([]int32, int(n))
+	for i := range out {
+		out[i] = int32(ids[i])
+	}
+	return out, nil
+}
+
+// TokenToPiece converts a single token ID to its string piece.
+// Useful for streaming token-by-token output during generation.
+func (m *Model) TokenToPiece(id int32) (string, error) {
+	if m.ptr == nil {
+		return "", errors.New("llm: TokenToPiece called on closed model")
+	}
+	var buf [256]C.char
+	rc := C.infer_llm_token_to_piece(m.ptr, C.int(id), &buf[0], C.int(len(buf)))
+	if rc != 0 {
+		return "", fmt.Errorf("llm: TokenToPiece(%d) failed: %w", id, lastError())
+	}
+	return C.GoString(&buf[0]), nil
+}
+
 // BatchDecode runs one decode step for all provided sequences in a single
 // forward pass through the model. After this call, each sequence's logits
 // are available via seq.Logits() or seq.SampleToken().
