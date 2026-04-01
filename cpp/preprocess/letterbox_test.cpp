@@ -43,14 +43,20 @@ TEST(Letterbox, OutputShape) {
 }
 
 TEST(Letterbox, PaddingIs114) {
-    // 1×1 image letterboxed to 3×3 — corners must be padding (114)
-    Tensor* src = make_hwc(1, 1, 200.0f);
+    // Wide image [H=1, W=4] letterboxed to [4, 4]:
+    // scale = min(4/4, 4/1) = 1.0 → resized = [1, 4]
+    // pad_top = (4-1)/2 = 1 → rows 0 and 3 are padding
+    Tensor* src = make_hwc(1, 4, 200.0f);
     ASSERT_NE(src, nullptr);
-    Tensor* out = letterbox(src, 3, 3);
+    Tensor* out = letterbox(src, 4, 4);
     ASSERT_NE(out, nullptr);
+    EXPECT_EQ(out->shape[0], 4);
+    EXPECT_EQ(out->shape[1], 4);
     const float* data = static_cast<const float*>(out->data);
-    // Top-left pixel (0,0) is padding
+    // First row (row 0) is padding — all three channels should be 114
     EXPECT_FLOAT_EQ(data[0], 114.0f);
+    EXPECT_FLOAT_EQ(data[1], 114.0f);
+    EXPECT_FLOAT_EQ(data[2], 114.0f);
     tensor_free(src);
     tensor_free(out);
 }

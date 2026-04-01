@@ -16,6 +16,7 @@ add_library(infer_preprocess STATIC
 
 target_include_directories(infer_preprocess
     PUBLIC  ${CMAKE_SOURCE_DIR}/cpp/include
+            ${CMAKE_SOURCE_DIR}/cpp/tensor
             ${CMAKE_CURRENT_SOURCE_DIR}
     PRIVATE ${OpenCV_INCLUDE_DIRS}
 )
@@ -36,6 +37,7 @@ add_executable(preprocess_test
 
 target_include_directories(preprocess_test
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/cpp/tensor
             ${OpenCV_INCLUDE_DIRS}
 )
 

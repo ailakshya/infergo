@@ -4,7 +4,8 @@
 // Internal C++ API for the preprocessing pipeline.
 // None of these types cross the C boundary — they are wrapped in api.cpp.
 
-#include "tensor.hpp"   // infergo::Tensor
+#include "tensor.hpp"     // infergo::Tensor
+#include "infer_api.h"    // INFER_DTYPE_* constants
 
 #include <cstdint>
 #include <vector>
