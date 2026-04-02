@@ -301,7 +301,8 @@ def emit_markdown(results: list, args) -> str:
         f"**Model:** {os.path.basename(args.model_path) if args.model_path else 'llama3-8b-q4'}  ",
         f"**Hardware:** RTX 5070 Ti (16 GB VRAM) / same CPU for CPU runs  ",
         f"**infergo version:** Go 1.23, llama.cpp (same weights)  ",
-        f"**Python version:** llama-cpp-python (same weights)  ",
+        f"**infergo threads:** {args.infergo_threads if args.infergo_threads > 0 else 'auto (NumCPU/2)'}  ",
+        f"**Python version:** llama-cpp-python (same weights, n_threads=default)  ",
         "",
         "---",
         "",
@@ -367,6 +368,8 @@ def main():
     p.add_argument("--short-tokens",   type=int, default=64)
     p.add_argument("--long-tokens",    type=int, default=256)
     p.add_argument("--n-gpu-layers",   type=int, default=999)
+    p.add_argument("--infergo-threads", type=int, default=0,
+                   help="threads infergo was started with (0=auto); used for documentation only")
     p.add_argument("--infergo-only",   action="store_true")
     p.add_argument("--python-only",    action="store_true")
     p.add_argument("--out",            default="results_full.md")

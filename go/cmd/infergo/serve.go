@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -27,6 +28,7 @@ func runServe(args []string) {
 	port      := fs.Int("port", 9090, "HTTP listen port")
 	gpuLayers := fs.Int("gpu-layers", 999, "number of transformer layers to offload to GPU (LLM only)")
 	ctxSize   := fs.Int("ctx-size", 4096, "KV cache token budget (LLM only)")
+	threads   := fs.Int("threads", 0, "CPU threads for inference (0 = auto: physical cores / 2)")
 	minModels := fs.Int("min-models", 1, "minimum models required for /health/ready")
 	fs.Parse(args)
 
@@ -42,7 +44,7 @@ func runServe(args []string) {
 
 	// Load the model based on file extension
 	modelName := modelName(*modelPath)
-	if err := loadModel(reg, modelName, *modelPath, *provider, *gpuLayers, *ctxSize); err != nil {
+	if err := loadModel(reg, modelName, *modelPath, *provider, *gpuLayers, *ctxSize, *threads); err != nil {
 		log.Fatalf("failed to load model %q: %v", *modelPath, err)
 	}
 	log.Printf("loaded model %q (%s)", modelName, *modelPath)
@@ -83,11 +85,11 @@ func modelName(path string) string {
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
-func loadModel(reg *server.Registry, name, path, provider string, gpuLayers, ctxSize int) error {
+func loadModel(reg *server.Registry, name, path, provider string, gpuLayers, ctxSize, threads int) error {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".gguf":
-		return loadLLM(reg, name, path, gpuLayers, ctxSize)
+		return loadLLM(reg, name, path, gpuLayers, ctxSize, threads)
 	case ".onnx":
 		return loadONNX(reg, name, path, provider)
 	default:
@@ -151,8 +153,15 @@ func (a *llmAdapter) Generate(ctx context.Context, prompt string, maxTokens int,
 	return out.String(), promptToks, genToks, nil
 }
 
-func loadLLM(reg *server.Registry, name, path string, gpuLayers, ctxSize int) error {
-	m, err := llm.Load(path, gpuLayers, ctxSize, 4, 512)
+func loadLLM(reg *server.Registry, name, path string, gpuLayers, ctxSize, threads int) error {
+	if threads <= 0 {
+		threads = runtime.NumCPU() / 2
+		if threads < 1 {
+			threads = 1
+		}
+	}
+	log.Printf("using %d CPU threads for inference", threads)
+	m, err := llm.Load(path, gpuLayers, ctxSize, threads, 512)
 	if err != nil {
 		return err
 	}
