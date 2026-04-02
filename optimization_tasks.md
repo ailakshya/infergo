@@ -494,6 +494,18 @@ Enables Mac deployment without CUDA.
 
 ### OPT-21 — KEDA / HPA autoscaling metrics `[ ]` S
 
+---
+
+## PHASE E — Scalability & Multi-GPU
+
+> **Why Python breaks at scale:**
+> Python's GIL forces multiple worker processes — each loads the full model.
+> 10 concurrent users with an 8B model = 10 × 4.6 GB = 46 GB just for weights.
+> infergo uses goroutines — one process, one model copy, all concurrency handled natively.
+> The tasks below extend that to multiple GPUs and horizontal cluster scaling.
+
+### OPT-22 — PagedAttention KV cache `[ ]` XL
+
 **Scope:** Expose Prometheus metrics that KEDA uses to scale infergo pods.
 
 **New metrics:**
@@ -511,23 +523,221 @@ Enables Mac deployment without CUDA.
 
 ---
 
+---
+
+## PHASE E — Scalability & Multi-GPU
+
+> **Why Python breaks at scale and how infergo is different:**
+>
+> Python's GIL forces one model copy per worker process.
+> 10 concurrent users on an 8B model = 10 processes × 4.6 GB = **46 GB just for weights**.
+> infergo uses goroutines — one process, one model in memory, unlimited concurrency.
+> Phase E extends this to multiple GPUs and full cluster-level horizontal scaling.
+
+---
+
+### OPT-22 — PagedAttention KV cache `[ ]` XL
+
+**Problem:** Current KV cache allocates a fixed slot per sequence upfront
+(`KVCacheSlotManager`). Slots fragment — a 4096-token budget split across 4
+sequences wastes memory when sequences are short. vLLM's PagedAttention allocates
+KV memory in pages (blocks of 16 tokens), on demand, like virtual memory.
+
+**Impact:** 2–3× more sequences in the same VRAM → 2–3× more concurrent users
+before needing to scale out.
+
+**What changes:**
+- `cpp/llm/kv_paged.hpp/.cpp` — block allocator, free-list, sequence→block mapping
+- `cpp/llm/llm_engine.cpp` — pass block table to `llama_decode` via `llama_batch` pos array
+- Scheduler (OPT-2) updated to request/release pages per sequence
+- `go/llm/model.go` — expose page size + free page count for metrics
+
+**Test cases:**
+
+| ID | Test | Pass condition |
+|---|---|---|
+| OPT-22-T1 | Pages allocated on demand | 100-token sequence uses ≤ 7 pages of 16 tokens (not full 4096 slot) |
+| OPT-22-T2 | Pages freed on sequence close | Free page count returns to baseline after sequence done |
+| OPT-22-T3 | 2× concurrent sequences vs fixed slots | Same VRAM holds 2× active sequences vs OPT-10 baseline |
+| OPT-22-T4 | No positional errors | 1000 requests back-to-back: no KV positional errors |
+| OPT-22-T5 | OOM handled gracefully | When pages exhausted, new request gets 503, existing requests continue |
+| OPT-22-T6 | Throughput does not regress | CUDA tok/s within 5% of pre-paged baseline |
+
+---
+
+### OPT-23 — Tensor parallelism (multi-GPU, single node) `[ ]` XL
+
+**Problem:** Models larger than one GPU's VRAM (70B = ~40 GB) cannot run on a
+single RTX 5070 Ti (16 GB). Tensor parallelism splits each weight matrix across
+N GPUs — each GPU holds 1/N of the weights and computes 1/N of each layer.
+
+**What changes:**
+- Enable llama.cpp's built-in tensor split: `llama_model_params.tensor_split[N]`
+- `--tensor-split 0.5,0.5` flag: fraction of model on each GPU
+- `--n-gpu-layers` applies across all GPUs
+- Detect available GPUs via `cudaGetDeviceCount`
+
+**Test cases:**
+
+| ID | Test | Pass condition |
+|---|---|---|
+| OPT-23-T1 | 2-GPU load | `--tensor-split 0.5,0.5` loads model across 2 GPUs; both show VRAM usage |
+| OPT-23-T2 | 70B model fits in 2× 40 GB | Llama-3-70B-Q4 loads in 2× A100-40GB without OOM |
+| OPT-23-T3 | Throughput scales | 2-GPU tok/s ≥ 1.6× 1-GPU tok/s for same model |
+| OPT-23-T4 | Single GPU fallback | `--tensor-split` omitted: uses GPU 0 only, same as before |
+| OPT-23-T5 | Concurrent requests work | OPT-2 scheduler works unchanged with 2-GPU backend |
+
+---
+
+### OPT-24 — Pipeline parallelism (multi-GPU, model layers split) `[ ]` XL
+
+**Problem:** Tensor parallelism requires high-bandwidth NVLink between GPUs (PCIe
+is too slow for all-reduce). Pipeline parallelism splits layers across GPUs — GPU 0
+runs layers 0–15, GPU 1 runs layers 16–31 — with only activation tensors crossing
+the PCIe bus. Works on consumer GPUs without NVLink.
+
+**What changes:**
+- llama.cpp `--override-tensor` or manual layer assignment per GPU
+- `--pipeline-stages N` flag: assign layers 0..L/N to GPU 0, L/N..2L/N to GPU 1, etc.
+- Micro-batching to keep all GPUs busy (pipeline bubble reduction)
+
+**Test cases:**
+
+| ID | Test | Pass condition |
+|---|---|---|
+| OPT-24-T1 | 2-stage pipeline loads | Layers split evenly; both GPUs show VRAM usage |
+| OPT-24-T2 | Correctness | Output matches single-GPU run for same prompt (temperature=0) |
+| OPT-24-T3 | PCIe bandwidth sufficient | No timeout on 4× A5000 (PCIe, no NVLink) |
+| OPT-24-T4 | Throughput ≥ single GPU | 2-stage pipeline tok/s ≥ 0.9× single GPU (pipeline bubble ≤ 10%) |
+
+---
+
+### OPT-25 — Horizontal scaling: multi-node inference cluster `[ ]` XL
+
+**Problem:** Single-node inference (even multi-GPU) has a throughput ceiling. At
+very high load (1000+ req/s), you need multiple infergo instances behind a load
+balancer, with shared request routing and consistent model versioning.
+
+**Architecture:**
+```
+                    ┌─────────────┐
+clients ──► nginx / ├─ infergo-0  │ GPU node 0
+            Envoy   ├─ infergo-1  │ GPU node 1
+            LB      └─ infergo-2  │ GPU node 2
+                    consistent hash routing (by model)
+```
+
+**What changes:**
+- `infergo` remains stateless per request (sessions are per-request, not sticky)
+- Kubernetes `Deployment` with `--min-replicas 1 --max-replicas N`
+- KEDA `ScaledObject` watching `infergo_queue_depth` metric (OPT-21)
+- Helm chart in `deploy/helm/infergo/`
+- Health probes already in place (`/health/live`, `/health/ready`)
+
+**Test cases:**
+
+| ID | Test | Pass condition |
+|---|---|---|
+| OPT-25-T1 | Helm chart deploys | `helm install infergo deploy/helm/infergo/ --dry-run` exits 0 |
+| OPT-25-T2 | KEDA scales up | Queue depth > 10: new pod created within 30 s |
+| OPT-25-T3 | KEDA scales down | Queue depth = 0 for 5 min: pods scale to `minReplicas` |
+| OPT-25-T4 | No request loss during scale | 1000 requests during scale-up event: 0 failures |
+| OPT-25-T5 | Rolling update zero-downtime | `helm upgrade` with new model: old pods drain before terminating |
+| OPT-25-T6 | 3-node throughput | 3 pods × 142 tok/s ≥ 400 tok/s aggregate |
+
+---
+
+### OPT-26 — Disaggregated prefill / decode (Prefill-Decode separation) `[ ]` XL
+
+**Problem:** Prefill (processing the prompt) is compute-intensive (GEMM).
+Decode (generating tokens) is memory-bandwidth-bound (GEMV). Running both on the
+same GPU leaves one phase always underutilizing the hardware. Prefill-Decode
+separation (pioneered by Mooncake / Splitwise) uses dedicated prefill nodes and
+decode nodes — fully saturating each GPU's strengths.
+
+**Architecture:**
+```
+request ──► prefill node (fast GEMM, computes KV cache)
+                │ KV cache transferred via RDMA/NVLink
+                ▼
+            decode node (memory-BW saturated, streams tokens)
+```
+
+**What changes:**
+- `infergo-prefill` mode: runs only prompt processing, serializes KV cache to bytes
+- `infergo-decode` mode: receives KV cache, runs token generation
+- KV transfer protocol over gRPC (OPT-13)
+- Scheduler (OPT-2) aware of prefill/decode split
+
+**Test cases:**
+
+| ID | Test | Pass condition |
+|---|---|---|
+| OPT-26-T1 | KV cache serialization | Serialized KV for 512-token prompt ≤ 500 MB, transfers in ≤ 50 ms |
+| OPT-26-T2 | Prefill node throughput | Prefill node processes 200 prompts/s (vs 2 req/s in combined mode) |
+| OPT-26-T3 | Decode node throughput | Decode node runs 8 sequences concurrently with flat P50 |
+| OPT-26-T4 | End-to-end latency | TTFT ≤ prefill-only TTFT + transfer time + 20 ms |
+
+---
+
+### OPT-27 — Python vs infergo scalability benchmark `[ ]` M
+
+**Scope:** Head-to-head benchmark specifically designed to demonstrate Python's
+GIL bottleneck vs infergo's goroutine model at increasing concurrency.
+
+**Benchmark script:** `benchmarks/scalability/bench_scale.py`
+
+**Scenarios:**
+- Concurrency sweep: 1, 2, 4, 8, 16, 32 concurrent clients
+- Both infergo (after OPT-2) and llama-cpp-python (with `--workers N`)
+- Metrics: req/s, P50 latency, P99 latency, memory RSS per worker
+
+**Expected shape:**
+```
+tok/s
+  ▲
+  │   infergo ────────────── (flat, goroutines scale)
+  │   python ─────\          (peaks then degrades, GIL + process overhead)
+  │                \____
+  └────────────────────► concurrency
+```
+
+**Test cases:**
+
+| ID | Test | Pass condition |
+|---|---|---|
+| OPT-27-T1 | infergo tok/s flat from c=4 to c=32 | tok/s variance ≤ 10% across concurrency=4..32 |
+| OPT-27-T2 | Python tok/s peaks then drops | Python peak concurrency < infergo peak |
+| OPT-27-T3 | infergo RSS constant | infergo RSS does not grow with concurrency (one model copy) |
+| OPT-27-T4 | Python RSS grows linearly | Python RSS ≈ N × single-process RSS at N workers |
+| OPT-27-T5 | Results chart generated | `benchmark_scalability.png` shows diverging curves |
+
+---
+
 ## Execution order
 
 ```
+── Phase A: Performance (do first, unblock everything) ──
 OPT-1   CPU BLAS              ← quick win, independent
-OPT-2   continuous batching   ← biggest GPU impact, independent
-OPT-3   ONNX inference        ← prerequisite for OPT-4, OPT-5, OPT-6, OPT-7
+OPT-2   continuous batching   ← biggest single GPU impact, independent
+
+── Phase B: Core inference expansion ──
+OPT-3   ONNX inference        ← prerequisite for OPT-4..OPT-7
 OPT-6   image preprocessing   ← pairs with OPT-3
 OPT-7   BERT tokenizer        ← pairs with OPT-3
 OPT-4   embeddings API+bench  ← requires OPT-3 + OPT-7
 OPT-5   detection API+bench   ← requires OPT-3 + OPT-6
+
+── Phase C: Production serving ──
 OPT-8   multi-model serving   ← requires OPT-3
 OPT-9   hot-reload            ← requires OPT-8
 OPT-10  request queue         ← requires OPT-2
 OPT-11  API key auth          ← independent
 OPT-12  rate limiting         ← requires OPT-11
-OPT-13  gRPC API              ← requires OPT-3 + OPT-4 + OPT-5
+OPT-13  gRPC API              ← requires OPT-4 + OPT-5
 OPT-14  WebSocket streaming   ← requires OPT-2
+
+── Phase D: Ecosystem ──
 OPT-15  Go SDK                ← requires OPT-4 + OPT-5 + OPT-13
 OPT-16  HF model hub download ← independent
 OPT-17  multi-model LLM bench ← requires OPT-1 + OPT-2
@@ -535,19 +745,42 @@ OPT-18  OpenTelemetry tracing ← independent
 OPT-19  TensorRT backend      ← requires OPT-3
 OPT-20  CoreML backend        ← requires OPT-3
 OPT-21  KEDA metrics          ← requires OPT-10
+
+── Phase E: Scalability & Multi-GPU ──
+OPT-22  PagedAttention        ← requires OPT-2 (scheduler must exist)
+OPT-23  tensor parallelism    ← requires OPT-22, needs 2+ GPUs
+OPT-24  pipeline parallelism  ← alternative to OPT-23 for PCIe systems
+OPT-25  horizontal scaling    ← requires OPT-21 (KEDA metrics)
+OPT-26  prefill/decode split  ← requires OPT-2 + OPT-13 + OPT-25
+OPT-27  scalability benchmark ← requires OPT-2 + OPT-10 + OPT-22
 ```
 
 ---
 
 ## Completion targets
 
-| After completing | infergo is comparable to |
-|---|---|
-| OPT-1 + OPT-2 | vLLM (LLM serving performance) |
-| OPT-3 + OPT-4 + OPT-5 | ONNX Runtime server + sentence-transformers |
-| OPT-3 through OPT-12 | Triton Inference Server (features) |
-| OPT-3 through OPT-16 | Full Python ML serving stack (transformers + ultralytics + vLLM) in Go |
-| OPT-3 through OPT-21 | Production-grade, cloud-native Go inference platform |
+| After completing | infergo is comparable to | Python equivalent beaten |
+|---|---|---|
+| OPT-1 + OPT-2 | vLLM single-GPU LLM serving | llama-cpp-python, text-generation-inference |
+| OPT-3..OPT-7 | ONNX Runtime server + sentence-transformers | FastAPI + ONNX Runtime |
+| OPT-3..OPT-12 | Triton Inference Server (features) | Triton + Prometheus |
+| OPT-3..OPT-16 | Full Python ML serving stack | transformers + ultralytics + vLLM combined |
+| OPT-3..OPT-21 | Production cloud-native platform | vLLM + Triton + Ray Serve |
+| OPT-22..OPT-25 | Multi-GPU cluster inference | vLLM multi-GPU + Kubernetes |
+| OPT-26..OPT-27 | Disaggregated inference at data-center scale | Mooncake / Splitwise architecture |
+
+---
+
+## Why infergo wins at scale vs Python
+
+| Scale | Python bottleneck | infergo solution | Task |
+|---|---|---|---|
+| 10+ concurrent users | GIL → multi-process → N× memory | Goroutines, 1 process, 1 model copy | OPT-2 |
+| 50+ concurrent users | Queue depth unbounded, OOM | Request queue + 503 on overflow | OPT-10 |
+| 100+ concurrent users | KV cache fragmentation, wasted VRAM | PagedAttention, on-demand pages | OPT-22 |
+| Models > 1 GPU VRAM | vLLM + Ray required, complex setup | Tensor split flag, built-in | OPT-23 |
+| 1000+ req/s | Single node ceiling | Horizontal pods + KEDA autoscale | OPT-25 |
+| Massive prompt workloads | Decode bottleneck wastes prefill compute | Prefill/decode node separation | OPT-26 |
 
 ---
 
