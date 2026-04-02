@@ -218,6 +218,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Stream {
+		s.streamChatCompletions(w, r, req)
+		return
+	}
+
 	ref, err := s.registry.Get(req.Model)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
