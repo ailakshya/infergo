@@ -17,11 +17,7 @@
 
 ## The problem
 
-Every serious inference stack is Python-first. You get vLLM, FastAPI, PyTorch, and a 10 GB container image — plus Python's GIL, which forces you to run one model copy per worker:
-
-```
-10 concurrent users × 4.6 GB model = 46 GB just for weights
-```
+Every serious inference stack is Python-first. You get vLLM, FastAPI, PyTorch, and a 10 GB container image — plus Python's GIL, which forces you to run one model copy per worker process to handle concurrent users.
 
 Go services that need inference today must call a Python sidecar, pay for a hosted API, or write CGo bindings from scratch. None of those are good answers.
 

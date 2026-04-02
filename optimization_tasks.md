@@ -682,35 +682,33 @@ request ──► prefill node (fast GEMM, computes KV cache)
 
 ### OPT-27 — Python vs infergo scalability benchmark `[ ]` M
 
-**Scope:** Head-to-head benchmark specifically designed to demonstrate Python's
-GIL bottleneck vs infergo's goroutine model at increasing concurrency.
+**Scope:** Head-to-head benchmark that measures and proves Python's GIL memory
+bottleneck vs infergo's goroutine model at increasing concurrency. This benchmark
+exists to produce real measured numbers — not theoretical calculations.
+
+**What we need to prove with data:**
+- Python with N workers loads N copies of the model (RSS grows linearly with workers)
+- infergo serves N concurrent users with one model copy (RSS flat)
+- Concrete number: `N workers × 4.6 GB = N × 4.6 GB RSS` for Python vs `~4.6 GB flat` for infergo
 
 **Benchmark script:** `benchmarks/scalability/bench_scale.py`
 
 **Scenarios:**
 - Concurrency sweep: 1, 2, 4, 8, 16, 32 concurrent clients
-- Both infergo (after OPT-2) and llama-cpp-python (with `--workers N`)
-- Metrics: req/s, P50 latency, P99 latency, memory RSS per worker
-
-**Expected shape:**
-```
-tok/s
-  ▲
-  │   infergo ────────────── (flat, goroutines scale)
-  │   python ─────\          (peaks then degrades, GIL + process overhead)
-  │                \____
-  └────────────────────► concurrency
-```
+- infergo: single process, goroutines (after OPT-2)
+- Python: `llama-cpp-python` with `n_parallel=N` workers or gunicorn `--workers N`
+- Measure: req/s, P50 latency, P99 latency, **process RSS at each concurrency level**
 
 **Test cases:**
 
 | ID | Test | Pass condition |
 |---|---|---|
-| OPT-27-T1 | infergo tok/s flat from c=4 to c=32 | tok/s variance ≤ 10% across concurrency=4..32 |
-| OPT-27-T2 | Python tok/s peaks then drops | Python peak concurrency < infergo peak |
-| OPT-27-T3 | infergo RSS constant | infergo RSS does not grow with concurrency (one model copy) |
-| OPT-27-T4 | Python RSS grows linearly | Python RSS ≈ N × single-process RSS at N workers |
-| OPT-27-T5 | Results chart generated | `benchmark_scalability.png` shows diverging curves |
+| OPT-27-T1 | infergo tok/s flat c=1..32 | tok/s variance ≤ 10% across all concurrency levels |
+| OPT-27-T2 | Python tok/s degrades | Python req/s at c=16 ≤ Python req/s at c=4 |
+| OPT-27-T3 | infergo RSS constant | infergo RSS at c=32 within 5% of RSS at c=1 |
+| OPT-27-T4 | Python RSS grows with workers | Measured Python RSS at N workers ≈ N × single-worker RSS |
+| OPT-27-T5 | README claim backed by data | `N workers × model_size_gb` equation replaced with actual measured table in README |
+| OPT-27-T6 | Results chart generated | `benchmark_scalability.png` shows RSS and tok/s curves |
 
 ---
 
