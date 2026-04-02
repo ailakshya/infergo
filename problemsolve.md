@@ -305,3 +305,142 @@ There is no way to `go test` the inference path.
 - **Fine-tuning** — out of scope (LoRA adapters via llama.cpp may come later)
 - **Replacing Python entirely** — Python is the right tool for experimentation and training;
   infergo is the right tool for serving trained models in production Go services
+
+---
+
+## Progress Checklist
+
+Each problem has a definition of done. Check it off when the solution is measurably
+working — not just when the code exists.
+
+---
+
+### Problem 1 — GIL Wall (memory scales with users)
+
+- [ ] OPT-2: Continuous batching scheduler implemented
+- [ ] OPT-2: `go test -race ./go/...` exits 0 (no data races)
+- [ ] OPT-2: 4 concurrent clients at CUDA P50 ≤ 600 ms (was 1423 ms)
+- [ ] OPT-2: RSS does not grow with concurrency (1 model copy confirmed)
+- [ ] OPT-27: Scalability benchmark shows infergo RSS flat, Python RSS grows linearly
+- [ ] **PROBLEM 1 SOLVED** — infergo serves N users from 1 model copy
+
+---
+
+### Problem 2 — Latency Degrades Under Load
+
+- [ ] OPT-2: Scheduler batches all active sequences in one `BatchDecode` call
+- [ ] OPT-2: CUDA P50 ≤ 600 ms at concurrency=4 (was 1423 ms)
+- [ ] OPT-22: PagedAttention — P50 stays flat from concurrency=1 to concurrency=32
+- [ ] OPT-27: Benchmark chart shows infergo P50 flat line vs Python degrading curve
+- [ ] **PROBLEM 2 SOLVED** — P50 latency flat under any concurrency level
+
+---
+
+### Problem 3 — Cold Start Kills Autoscaling
+
+- [x] CUDA cold start measured: 456 ms (done — bench_full.py)
+- [x] CPU cold start measured: 6.4 s (done — bench_full.py)
+- [ ] OPT-16: `infergo pull` downloads model to local cache in ≤ 30 s
+- [ ] OPT-21: `infergo_queue_depth` metric exported for KEDA
+- [ ] OPT-25: Helm chart deploys; KEDA scales new pod from 0 → ready in ≤ 10 s
+- [ ] OPT-25: Zero requests lost during scale-up event (1000 req stress test)
+- [ ] **PROBLEM 3 SOLVED** — new pod ready in ≤ 10 s, autoscaling works
+
+---
+
+### Problem 4 — No Go-Native Inference Library
+
+- [x] LLM inference: `infergo serve --model llama3.gguf` works (done — T-29..T-47)
+- [x] OpenAI-compatible HTTP API: `/v1/chat/completions` (done — T-43..T-44)
+- [ ] OPT-3: ONNX Runtime inference: `infer_onnx_run()` C function implemented
+- [ ] OPT-4: `/v1/embeddings` endpoint returns correct vectors
+- [ ] OPT-5: `/v1/detect` endpoint returns bounding boxes
+- [ ] OPT-7: BERT tokenizer for embedding models
+- [ ] OPT-15: `go get github.com/ailakshya/infergo/client` — typed Go SDK
+- [ ] OPT-15: `client.Chat()`, `client.Embed()`, `client.Detect()` all work in tests
+- [ ] **PROBLEM 4 SOLVED** — full Go-native inference SDK published on pkg.go.dev
+
+---
+
+### Problem 5 — Memory Fragmentation → OOM Crashes
+
+- [x] KV cache slot manager: explicit allocation per sequence (done — T-24)
+- [x] KV cache freed on sequence close via `llama_memory_seq_rm` (done — bug fix)
+- [ ] OPT-22: PagedAttention block allocator — pages freed on sequence close
+- [ ] OPT-22: 1000 requests back-to-back: RSS stays within 5% of initial value
+- [ ] OPT-22: ASan confirms zero memory leaks after 1000 ONNX runs
+- [ ] **PROBLEM 5 SOLVED** — no memory fragmentation after 24 h continuous serving
+
+---
+
+### Problem 6 — Large Models Require vLLM + Ray
+
+- [ ] OPT-23: `--tensor-split 0.5,0.5` loads model across 2 GPUs
+- [ ] OPT-23: 2-GPU tok/s ≥ 1.6× 1-GPU tok/s for same model
+- [ ] OPT-23: Llama-3-70B-Q4 loads in 2× 40 GB GPU without OOM
+- [ ] OPT-24: `--pipeline-stages 2` works over PCIe (no NVLink required)
+- [ ] OPT-26: Prefill node + decode node architecture running end-to-end
+- [ ] **PROBLEM 6 SOLVED** — 70B model served with one flag, no Ray/vLLM needed
+
+---
+
+### Problem 7 — Container Bloat
+
+- [x] `Dockerfile.cpu` builds ≤ 2 GB image (done — T-49)
+- [x] `Dockerfile.cuda` builds ≤ 3 GB image (done — T-49)
+- [ ] OPT-25: Helm chart pulls image on new node in ≤ 20 s (measured in CI)
+- [ ] **PROBLEM 7 SOLVED** — image ≤ 3 GB; Python equivalent is 10+ GB
+
+---
+
+### Problem 8 — No Unified Serving Interface
+
+- [x] Single binary serves LLM (done — T-43..T-47)
+- [ ] OPT-8: `--model llm:llama3.gguf --model embed:nomic.onnx` both load in one process
+- [ ] OPT-8: Chat req routes to LLM; embedding req routes to ONNX — no cross-routing
+- [ ] OPT-8: `GET /v1/models` lists all loaded models with their types
+- [ ] OPT-9: `POST /v1/admin/reload` hot-swaps model without restart
+- [ ] **PROBLEM 8 SOLVED** — one binary, one port, all model types, no restart for reload
+
+---
+
+### Problem 9 — Observability Gaps
+
+- [x] Prometheus metrics: `infergo_requests_total`, `infergo_tokens_total` (done — T-45)
+- [x] Kubernetes health probes: `/health/live`, `/health/ready` (done — T-46)
+- [ ] OPT-18: OpenTelemetry spans emitted per request with `decode_ms` attribute
+- [ ] OPT-18: Jaeger UI shows full trace for chat completion request
+- [ ] OPT-21: `infergo_queue_depth` and `infergo_gpu_utilization_percent` exported
+- [ ] OPT-21: KEDA ScaledObject example validated in docs
+- [ ] **PROBLEM 9 SOLVED** — full Prometheus + OTel + KEDA integration verified
+
+---
+
+### Problem 10 — Hard to Unit Test Inference
+
+- [x] C++ gtest: 276/276 pass (`ctest`)
+- [x] ASan: 81 tests clean, zero leaks
+- [x] Go tests: `go test ./go/...` passes
+- [ ] OPT-3: `go test ./go/onnx/...` covers ONNX session create + run + close
+- [ ] OPT-15: `go test ./go/client/...` covers all SDK methods with mock server
+- [ ] CI pipeline: all tests run on every PR automatically
+- [ ] **PROBLEM 10 SOLVED** — `go test ./...` and `ctest` cover all inference paths
+
+---
+
+## Overall Progress
+
+```
+Problem 1  GIL wall              [ ] 0/5 done
+Problem 2  Latency under load    [ ] 0/4 done
+Problem 3  Cold start            [~] 2/6 done  (cold start measured)
+Problem 4  No Go library         [~] 2/8 done  (LLM + HTTP API done)
+Problem 5  Memory fragmentation  [~] 2/5 done  (KV slot manager done)
+Problem 6  Large model infra     [ ] 0/5 done
+Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done)
+Problem 8  No unified interface  [~] 1/5 done  (LLM serving done)
+Problem 9  Observability         [~] 2/6 done  (Prometheus + health done)
+Problem 10 Hard to test          [~] 3/5 done  (ctest + ASan + go test done)
+───────────────────────────────────────────────
+Total                            14/52 done  (27%)
+```
