@@ -23,18 +23,26 @@ Every serious inference stack is Python-first. You get vLLM, FastAPI, PyTorch, a
 10 concurrent users × 4.6 GB model = 46 GB just for weights
 ```
 
-Go services that need inference today must call a Python sidecar, pay for a hosted API, or write CGo bindings from scratch. **None of those are good answers.**
+Go services that need inference today must call a Python sidecar, pay for a hosted API, or write CGo bindings from scratch. None of those are good answers.
 
 infergo is a Go-native inference runtime that eliminates all three. One binary. One model copy in memory. Unlimited concurrent goroutines.
 
 ---
 
+# ── WHAT EXISTS TODAY ──────────────────────────────────────────
+
+---
+
 ## What infergo does today
 
-- **LLM inference** — serve any GGUF model (LLaMA 3, Mistral, Phi-3, Gemma 2) with an OpenAI-compatible API
-- **CUDA + CPU** — full GPU offload or CPU-only, same API either way
+- **LLM inference** — serve any GGUF model (LLaMA 3, Mistral, Phi-3, Gemma 2) via OpenAI-compatible API
+- **CUDA + CPU** — full GPU offload or CPU-only, same binary, same API
 - **OpenAI-compatible** — drop-in for any OpenAI SDK, LangChain, or `curl` command
-- **Production-ready** — Prometheus metrics, Kubernetes health probes, graceful shutdown
+- **Prometheus metrics** — `infergo_requests_total`, `infergo_tokens_total` out of the box
+- **Kubernetes health probes** — `/health/live` and `/health/ready` built in
+- **Graceful shutdown** — in-flight requests complete before the process exits
+- **CLI** — `infergo serve`, `infergo list-models`, `infergo benchmark`
+- **Docker** — CPU and CUDA multi-stage images, model weights via volume mount
 - **Small footprint** — ~22 MB Go binary, 1.8 GB Docker image (vs 10+ GB Python stack)
 
 ---
@@ -110,7 +118,7 @@ Full methodology and raw data: [`benchmarks/vs_python/results_full.md`](benchmar
 
 ### CUDA — infergo vs llama-cpp-python
 
-| Scenario | infergo | llama-cpp-python | infergo advantage |
+| Scenario | infergo | llama-cpp-python | Advantage |
 |---|---|---|---|
 | Short prompts — tok/s | **142** | 133 | +7% |
 | Short prompts — req/s | **2.7** | 2.1 | +29% |
@@ -120,12 +128,12 @@ Full methodology and raw data: [`benchmarks/vs_python/results_full.md`](benchmar
 
 ### CPU — infergo vs llama-cpp-python
 
-| Scenario | infergo | llama-cpp-python | infergo advantage |
+| Scenario | infergo | llama-cpp-python | Advantage |
 |---|---|---|---|
 | Short prompts — tok/s | **10** | 5 | **+100%** |
 | Cold start | **6.45 s** | 9.90 s | −35% |
 
-### Container size
+### Container footprint
 
 | | infergo | Python stack |
 |---|---|---|
@@ -138,9 +146,9 @@ Full methodology and raw data: [`benchmarks/vs_python/results_full.md`](benchmar
 ## CLI reference
 
 ```
-infergo serve       Start the inference server
-infergo list-models Query a running server for loaded models
-infergo benchmark   Run a load test against a running server
+infergo serve         Start the inference server
+infergo list-models   Query a running server for loaded models
+infergo benchmark     Run a load test against a running server
 ```
 
 ```
@@ -156,7 +164,7 @@ infergo serve flags:
 
 ---
 
-## HTTP API
+## HTTP API (today)
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -177,7 +185,6 @@ import (
     "github.com/ailakshya/infergo/server"
 )
 
-// Load model
 m, err := llm.Load("models/llama3-8b-q4.gguf",
     999,   // gpu layers
     4096,  // context size
@@ -187,7 +194,6 @@ m, err := llm.Load("models/llama3-8b-q4.gguf",
 if err != nil { log.Fatal(err) }
 defer m.Close()
 
-// Register and serve
 reg := server.NewRegistry()
 reg.Load("llama3", adapter)
 
@@ -207,117 +213,28 @@ HTTP clients (OpenAI SDK / curl / LangChain)
    infergo server  (Go — net/http, goroutines, Prometheus)
         │
         ▼
-   C API boundary  (infer_api.h — no C++ types cross here)
+   C API boundary  (infer_api.h — only C types cross here)
         │
         ▼
    C++ compute engine
-   ├── libinfer_llm        llama.cpp — LLM inference, KV cache, sampler
-   ├── libinfer_onnx       ONNX Runtime — embedding + detection models
-   ├── libinfer_tokenizer  HuggingFace tokenizers (Rust FFI)
-   └── libinfer_preprocess image decode / resize / normalize
+   ├── libinfer_llm         llama.cpp — LLM inference, KV cache, sampler
+   ├── libinfer_onnx        ONNX Runtime — embedding + detection models
+   ├── libinfer_tokenizer   HuggingFace tokenizers (Rust FFI)
+   └── libinfer_preprocess  image decode / resize / normalize
         │
         ▼
    Hardware: CUDA / CPU / CoreML / TensorRT
 ```
 
-The C API boundary is a hard rule: only C types cross it. This keeps CGo safe, lets
-the C++ layer be replaced without touching Go code, and makes every layer independently
-testable.
+The C API boundary is a strict rule — no C++ types cross it. This keeps CGo safe, makes every layer independently testable, and lets the compute engine be replaced without touching Go code.
 
 ---
 
-## Supported models
+## Supported models (today)
 
 | Type | Format | Models |
 |---|---|---|
-| LLM | GGUF | LLaMA 3, Mistral, Phi-3.5, Gemma 2, Qwen 2, any llama.cpp-compatible model |
-| Embedding | ONNX | nomic-embed-text, bge-m3, all-MiniLM-L6-v2 *(coming — OPT-4)* |
-| Detection | ONNX | YOLOv8n/s/m, YOLOv9, RT-DETR *(coming — OPT-5)* |
-
----
-
-## Optimization plan
-
-Active work tracked in [`optimization_tasks.md`](optimization_tasks.md) with test cases for every item.
-
-### Phase A — Performance (next up)
-
-| Task | What | Target |
-|---|---|---|
-| **OPT-1** | OpenBLAS for CPU prefill | CPU long-prompt tok/s ≥ Python baseline |
-| **OPT-2** | Continuous batching scheduler | CUDA P50 ≤ 600 ms at concurrency=4 (was 1423 ms); GPU util ≥ 85% |
-
-**OPT-2** is the single most impactful change. Today the server processes one request at a time behind a mutex because llama.cpp is not thread-safe. A scheduler goroutine will own the LLM exclusively, batch all waiting sequences into every `BatchDecode` call, and route tokens back to each HTTP handler — P50 latency stays flat as concurrency grows.
-
-### Phase B — Core inference expansion
-
-| Task | What | Unlocks |
-|---|---|---|
-| **OPT-3** | ONNX Runtime inference engine | Embedding + detection models |
-| **OPT-4** | `/v1/embeddings` endpoint | RAG, semantic search, vector DBs |
-| **OPT-5** | `/v1/detect` endpoint | YOLO object detection |
-| **OPT-6** | Image preprocessing pipeline | Correct YOLO input (letterbox, normalize) |
-| **OPT-7** | BERT/RoBERTa tokenizer | Correct embedding output |
-
-### Phase C — Production serving
-
-| Task | What |
-|---|---|
-| **OPT-8** | Multi-model: LLM + embedding + detection on one port |
-| **OPT-9** | Hot model reload without restart |
-| **OPT-10** | Request queue + priority scheduling + 503 on overflow |
-| **OPT-11** | API key authentication |
-| **OPT-12** | Per-key rate limiting |
-| **OPT-13** | gRPC API alongside HTTP |
-| **OPT-14** | WebSocket streaming |
-
-### Phase D — Ecosystem
-
-| Task | What |
-|---|---|
-| **OPT-15** | Go SDK: `client.Chat()`, `client.Embed()`, `client.Detect()` |
-| **OPT-16** | `infergo pull <hf-repo>` — HuggingFace model download |
-| **OPT-17** | Multi-model LLM benchmark (Llama 3 + Phi-3.5 + Gemma 2) |
-| **OPT-18** | OpenTelemetry distributed tracing |
-| **OPT-19** | TensorRT backend (1.5–2× faster detection) |
-| **OPT-20** | CoreML backend (Apple Silicon) |
-| **OPT-21** | KEDA autoscaling metrics |
-
-### Phase E — Scalability & multi-GPU
-
-| Task | What | Solves |
-|---|---|---|
-| **OPT-22** | PagedAttention KV cache | 2–3× more concurrent users per GPU |
-| **OPT-23** | Tensor parallelism (`--tensor-split`) | 70B+ models across 2+ GPUs, no Ray |
-| **OPT-24** | Pipeline parallelism | Multi-GPU over PCIe, no NVLink required |
-| **OPT-25** | Horizontal scaling + Helm chart | 1000+ req/s, KEDA auto-scale pods |
-| **OPT-26** | Prefill/decode node separation | Data-center scale, max GPU utilization |
-| **OPT-27** | Scalability benchmark vs Python | Proves GIL wall at concurrency=1..32 |
-
----
-
-## Future vision
-
-infergo's goal is to be the Go equivalent of the entire Python inference stack — no Python required at any layer.
-
-**After Phase A+B:** comparable to vLLM + ONNX Runtime server + sentence-transformers, in a single Go binary.
-
-**After Phase C+D:** comparable to NVIDIA Triton Inference Server — multi-model, multi-backend, production auth, tracing, gRPC.
-
-**After Phase E:** data-center-scale inference. Multi-GPU without Ray. Disaggregated prefill/decode. Kubernetes-native autoscaling. The architecture that frontier companies are building in Python today — in Go, with none of the GIL overhead.
-
-**Platform support:**
-
-| Platform | LLM (GGUF) | ONNX | Status |
-|---|---|---|---|
-| Linux x86-64 + CUDA | ✅ | ✅ | Fully supported |
-| Linux x86-64 CPU | ✅ | ✅ | Fully supported |
-| macOS ARM64 (Apple Silicon) | ✅ Metal | ✅ CoreML (OPT-20) | LLM working; ONNX coming |
-| Windows | planned | planned | Needs CGo + DLL build (OPT-28) |
-
-> **Why not Windows yet?** infergo uses CGo — Go's foreign function interface to C++. Pure Go binaries cross-compile trivially (`GOOS=windows go build`), but CGo requires the *target platform's* C++ compiler and built libraries. Windows support needs a separate CMake configuration, MSVC/MinGW toolchain, and `infer_api.dll` build. It is on the roadmap.
-
-Full progress tracking: [`problemsolve.md`](problemsolve.md) — 10 target problems, 52 checkpoints, current status.
+| LLM | GGUF | LLaMA 3, Mistral, Phi-3.5, Gemma 2, Qwen 2, any llama.cpp-compatible |
 
 ---
 
@@ -327,15 +244,12 @@ Full progress tracking: [`problemsolve.md`](problemsolve.md) — 10 target probl
 # C++ unit tests (276 cases)
 ctest --test-dir build --output-on-failure
 
-# Address sanitizer (memory safety)
+# Address sanitizer
 cmake -S . -B build-asan -DINFER_CUDA=OFF -DCMAKE_BUILD_TYPE=Debug -DASAN=ON
 cmake --build build-asan -j$(nproc)
 ctest --test-dir build-asan
 
-# Go tests
-cd go && go test ./...
-
-# Race detector
+# Go tests + race detector
 cd go && go test -race ./...
 
 # Benchmark vs Python
@@ -345,6 +259,163 @@ python benchmarks/vs_python/bench_full.py \
   --infergo-addr http://localhost:9090 \
   --device cuda
 ```
+
+---
+
+# ── WHAT IS BEING BUILT ────────────────────────────────────────
+
+---
+
+## Active optimization work
+
+Full task list with test cases and pass criteria: [`optimization_tasks.md`](optimization_tasks.md)
+
+### Phase A — Performance (in progress)
+
+These two tasks are the most impactful and are being worked on now.
+
+| Task | Problem being solved | Target metric |
+|---|---|---|
+| **OPT-1** OpenBLAS CPU prefill | CPU long-prompt is slower than Python because BLAS is disabled (`GGML_BLAS=OFF`). Python's llama-cpp-python links OpenBLAS and wins the prefill phase. | CPU long tok/s ≥ Python (11 tok/s) |
+| **OPT-2** Continuous batching | Today one mutex serializes all requests. At concurrency=4, P50 latency is 3× single-client. GPU utilization is ~25%. | P50 ≤ 600 ms at c=4; GPU util ≥ 85% |
+
+**OPT-2 in detail:** llama.cpp is not thread-safe — concurrent `llama_decode` calls crash. The fix is a scheduler goroutine that owns the LLM exclusively, batches all waiting sequences into every `BatchDecode` call, and routes tokens back to each handler via a per-request channel. P50 latency stays flat as concurrency grows. No C++ changes needed — Go layer only.
+
+### Phase B — Core inference expansion
+
+| Task | What it adds |
+|---|---|
+| **OPT-3** ONNX Runtime inference | Run any ONNX model — session create, input tensors, output tensors, memory cleanup |
+| **OPT-4** `/v1/embeddings` | Embedding API — nomic-embed-text, bge-m3, all-MiniLM-L6-v2 |
+| **OPT-5** `/v1/detect` | Detection API — YOLOv8n/s/m with bounding box JSON output |
+| **OPT-6** Image preprocessing | Letterbox resize, normalize, CHW layout for YOLO input |
+| **OPT-7** BERT tokenizer | WordPiece tokenizer with `[CLS]`/`[SEP]`/padding for embedding models |
+
+### Phase C — Production serving
+
+| Task | What it adds |
+|---|---|
+| **OPT-8** Multi-model serving | `--model llm:llama3.gguf --model embed:nomic.onnx` — all types on one port |
+| **OPT-9** Hot model reload | `POST /v1/admin/reload` — swap weights without restart |
+| **OPT-10** Request queue | Bounded queue + priority (`X-Priority` header) + 503 on overflow |
+| **OPT-11** API key auth | `Authorization: Bearer <key>` middleware |
+| **OPT-12** Rate limiting | Per-key token bucket, 429 + `Retry-After` |
+| **OPT-13** gRPC API | `service Infergo` proto — lower latency than HTTP+JSON for service-to-service |
+| **OPT-14** WebSocket streaming | `ws://host/v1/ws/chat` — alternative to SSE |
+
+### Phase D — Ecosystem
+
+| Task | What it adds |
+|---|---|
+| **OPT-15** Go SDK | `go get .../client` — typed `client.Chat()`, `client.Embed()`, `client.Detect()` |
+| **OPT-16** `infergo pull` | Download GGUF/ONNX from HuggingFace Hub with resume + SHA256 |
+| **OPT-17** Multi-model LLM bench | Benchmark across Llama 3 + Phi-3.5 + Gemma 2 |
+| **OPT-18** OpenTelemetry | Distributed traces: parse → queue → decode → respond |
+| **OPT-19** TensorRT backend | `--provider tensorrt` — 1.5–2× faster detection vs CUDA ONNX Runtime |
+| **OPT-20** CoreML backend | `--provider coreml` — Apple Silicon ONNX models |
+| **OPT-21** KEDA metrics | `infergo_queue_depth`, `infergo_gpu_utilization_percent` for autoscaling |
+
+---
+
+# ── FUTURE TARGETS & HYPOTHESES ───────────────────────────────
+
+---
+
+## Scalability roadmap (Phase E)
+
+These are the targets that take infergo from single-GPU serving to data-center scale.
+Each is a significant architectural change; implementation begins after Phase A–D is complete.
+
+### OPT-22 — PagedAttention KV cache
+
+**Hypothesis:** Current fixed-slot KV allocation wastes VRAM when sequences are short.
+Block-level allocation (16 tokens per page, on demand) should fit 2–3× more concurrent
+sequences into the same VRAM, directly multiplying throughput without new hardware.
+
+**Target:** Same VRAM holds 2–3× active sequences vs fixed-slot baseline.
+
+### OPT-23 — Tensor parallelism (multi-GPU)
+
+**Hypothesis:** llama.cpp's built-in `tensor_split` parameter can shard weight matrices
+across N GPUs with a single flag, no Ray, no NCCL tuning. For models larger than one
+GPU's VRAM (70B+ at Q4 = ~40 GB), this is the only way to serve them on consumer hardware.
+
+**Target:** `--tensor-split 0.5,0.5` serves Llama-3-70B on 2× 24 GB GPUs.
+2-GPU tok/s ≥ 1.6× single GPU.
+
+### OPT-24 — Pipeline parallelism
+
+**Hypothesis:** Tensor parallelism requires all-reduce across GPUs on every layer —
+high NVLink bandwidth needed. Pipeline parallelism only passes activations between
+stages, making it viable over PCIe. GPU 0 runs layers 0–15, GPU 1 runs 16–31;
+infergo micro-batches to keep both busy.
+
+**Target:** Correct output on 2× PCIe GPUs (no NVLink); throughput ≥ 0.9× single GPU.
+
+### OPT-25 — Horizontal scaling + Helm chart
+
+**Hypothesis:** infergo is stateless per-request (no sticky sessions). Multiple pods
+behind a standard Kubernetes load balancer should scale linearly. KEDA watching
+`infergo_queue_depth` should auto-scale pods within 30 seconds of a traffic spike.
+
+**Target:** 3 pods × 142 tok/s ≥ 400 tok/s aggregate. Zero request loss during scale-up.
+
+### OPT-26 — Prefill/decode node separation
+
+**Hypothesis:** Prefill (processing the prompt) is compute-bound (GEMM); decode
+(generating tokens) is memory-bandwidth-bound (GEMV). Running both on the same GPU
+means each phase underutilises the hardware. Separating them — dedicated prefill nodes
+feed KV cache to dedicated decode nodes — should fully saturate both GPU types.
+This is the architecture Mooncake and Splitwise have proven at scale.
+
+**Target:** Prefill node processes 200 prompts/s. Decode node runs 8 concurrent
+sequences with flat latency. End-to-end TTFT ≤ prefill-only + transfer + 20 ms.
+
+---
+
+## Long-term vision
+
+| Milestone | infergo is comparable to |
+|---|---|
+| Phase A + B done | vLLM + ONNX Runtime server + sentence-transformers — in one Go binary |
+| Phase C + D done | NVIDIA Triton Inference Server — multi-model, auth, tracing, gRPC |
+| Phase E done | Full Python ML serving stack (vLLM + Ray Serve + Triton) — no Python, no GIL |
+
+---
+
+## Platform support
+
+| Platform | Status | Notes |
+|---|---|---|
+| Linux x86-64 + CUDA | **Supported** | Primary development target |
+| Linux x86-64 CPU | **Supported** | Full feature parity with CUDA build |
+| macOS ARM64 (Apple Silicon) | **Supported (LLM)** | Metal via llama.cpp; ONNX CoreML — OPT-20 |
+| Windows x86-64 | **Planned** | See below |
+
+### Windows support
+
+Pure Go binaries cross-compile trivially with `GOOS=windows go build`. infergo cannot,
+because it uses CGo — Go's foreign function interface to C++. CGo requires the *target
+platform's* C++ compiler and pre-built native libraries. To build for Windows, you need:
+
+- MSVC or MinGW-w64 toolchain on a Windows machine
+- CMake Windows configuration (different flags, different CUDA paths)
+- `infer_api.dll` instead of `libinfer_api.so`
+- Windows CUDA runtime paths (`%CUDA_PATH%` vs `/usr/local/cuda`)
+
+This is straightforward engineering — llama.cpp builds on Windows today — but requires
+explicit work and a Windows CI runner. Tracked as **OPT-28** on the roadmap.
+GPU inference production workloads almost exclusively run on Linux, so Linux is the
+priority. Windows support is meaningful for local developer tooling and desktop inference.
+
+---
+
+## Progress tracking
+
+| Document | What it contains |
+|---|---|
+| [`optimization_tasks.md`](optimization_tasks.md) | All 27 optimization tasks with test cases and pass criteria |
+| [`problemsolve.md`](problemsolve.md) | 10 target problems, solution map, 52-item progress checklist |
 
 ---
 
