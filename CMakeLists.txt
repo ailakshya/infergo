@@ -55,17 +55,25 @@ endif()
 # CMAKE_CUDA_ARCHITECTURES must be set before enable_language(CUDA).
 # Default: "native" (auto-detect from installed GPU).
 # Override: cmake -DCMAKE_CUDA_ARCHITECTURES=120
+# Disable entirely: cmake -DINFER_CUDA=OFF (useful for ASan / CPU-only builds)
+option(INFER_CUDA "Enable CUDA support" ON)
+
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES "native")
 endif()
 
-find_package(CUDAToolkit QUIET)
-if(CUDAToolkit_FOUND)
-    enable_language(CUDA)
-    message(STATUS "CUDA ${CUDAToolkit_VERSION} found — GPU builds enabled (arch=${CMAKE_CUDA_ARCHITECTURES})")
-    set(INFER_CUDA_AVAILABLE TRUE)
+if(INFER_CUDA)
+    find_package(CUDAToolkit QUIET)
+    if(CUDAToolkit_FOUND)
+        enable_language(CUDA)
+        message(STATUS "CUDA ${CUDAToolkit_VERSION} found — GPU builds enabled (arch=${CMAKE_CUDA_ARCHITECTURES})")
+        set(INFER_CUDA_AVAILABLE TRUE)
+    else()
+        message(STATUS "CUDA not found — building CPU-only")
+        set(INFER_CUDA_AVAILABLE FALSE)
+    endif()
 else()
-    message(STATUS "CUDA not found — building CPU-only")
+    message(STATUS "CUDA disabled via -DINFER_CUDA=OFF — building CPU-only")
     set(INFER_CUDA_AVAILABLE FALSE)
 endif()
 
