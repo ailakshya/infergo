@@ -1,0 +1,70 @@
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS builder
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        ninja-build \
+        git \
+        ca-certificates \
+        golang-1.23 \
+        libopencv-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/usr/lib/go-1.23/bin:${PATH}"
+
+WORKDIR /src
+COPY . .
+
+# Build C++ shared library (CPU only — no CUDA, no OpenCV GPU)
+RUN cmake -S . -B build \
+        -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DINFER_CUDA=OFF \
+        -DINFER_TENSORRT=OFF \
+    && cmake --build build --target infer_api -j$(nproc)
+
+# Build Go binary (statically link against infer_api.so)
+RUN CGO_ENABLED=1 \
+    CGO_CFLAGS="-I/src/cpp/include" \
+    CGO_LDFLAGS="-L/src/build/cpp/api -linfer_api -Wl,-rpath,/usr/local/lib/infergo" \
+    go build -C go \
+        -ldflags "-s -w" \
+        -o /out/infergo \
+        ./cmd/infergo
+
+# Copy the shared library to a known path
+RUN cp /src/build/cpp/api/libinfer_api.so /out/libinfer_api.so
+
+
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Minimal runtime deps: libstdc++, libgomp (OpenMP for llama.cpp), libopencv core
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libstdc++6 \
+        libgomp1 \
+        libopencv-core406t64 \
+        libopencv-imgproc406t64 \
+        libopencv-imgcodecs406t64 \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy binary and shared library
+COPY --from=builder /out/infergo          /usr/local/bin/infergo
+COPY --from=builder /out/libinfer_api.so  /usr/local/lib/infergo/libinfer_api.so
+
+RUN ldconfig
+
+# Models are mounted at runtime — do not bake weights into the image
+VOLUME ["/models"]
+
+EXPOSE 9090
+
+ENTRYPOINT ["infergo"]
+CMD ["serve", "--model", "/models/model.gguf", "--provider", "cpu", "--port", "9090"]

@@ -1,0 +1,31 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+
+# Go cache
+go/vendor/
+go/.cache/
+
+# Dataset / model weights — mount at runtime via -v
+benchmarks/vs_python/results_*.md
+**/*.gguf
+**/*.onnx
+**/*.pt
+**/*.bin
+**/*.safetensors
+dataset/
+datasets/
+
+# Dev files
+.git/
+.gitignore
+*.md
+docs/
+examples/
+tokenizer-rs/target/
+
+# IDE
+.vscode/
+.idea/

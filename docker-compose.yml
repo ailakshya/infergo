@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+  infergo-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: infergo:cpu
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./models:/models:ro
+    restart: unless-stopped
+
+  infergo-cuda:
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+    image: infergo:cuda
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./models:/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
