@@ -10,7 +10,7 @@ import (
 
 func runListModels(args []string) {
 	fs := flag.NewFlagSet("list-models", flag.ExitOnError)
-	addr := fs.String("addr", "http://localhost:8080", "address of a running infergo server")
+	addr := fs.String("addr", "http://localhost:9090", "address of a running infergo server")
 	fs.Parse(args)
 
 	resp, err := http.Get(*addr + "/v1/models")

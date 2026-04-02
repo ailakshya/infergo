@@ -15,7 +15,7 @@ import (
 
 func runBenchmark(args []string) {
 	fs := flag.NewFlagSet("benchmark", flag.ExitOnError)
-	addr        := fs.String("addr", "http://localhost:8080", "address of a running infergo server")
+	addr        := fs.String("addr", "http://localhost:9090", "address of a running infergo server")
 	model       := fs.String("model", "", "model name to benchmark (required)")
 	requests    := fs.Int("requests", 100, "total number of requests to send")
 	concurrency := fs.Int("concurrency", 4, "number of parallel workers")

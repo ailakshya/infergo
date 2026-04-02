@@ -23,7 +23,7 @@ func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	modelPath := fs.String("model", "", "path to model file (.gguf for LLM, .onnx for ONNX)")
 	provider  := fs.String("provider", "cpu", "execution provider: cpu|cuda|tensorrt|coreml")
-	port      := fs.Int("port", 8080, "HTTP listen port")
+	port      := fs.Int("port", 9090, "HTTP listen port")
 	gpuLayers := fs.Int("gpu-layers", 999, "number of transformer layers to offload to GPU (LLM only)")
 	ctxSize   := fs.Int("ctx-size", 4096, "KV cache token budget (LLM only)")
 	minModels := fs.Int("min-models", 1, "minimum models required for /health/ready")

@@ -2,8 +2,8 @@
 //
 // Usage:
 //
-//	infergo serve    --model <path> [--provider cpu|cuda] [--port 8080]
-//	infergo list-models [--addr http://localhost:8080]
+//	infergo serve    --model <path> [--provider cpu|cuda] [--port 9090]
+//	infergo list-models [--addr http://localhost:9090]
 //	infergo benchmark --model <path> --requests 1000 [--concurrency 8]
 package main
 
@@ -44,9 +44,9 @@ func printUsage() {
 
 Usage:
   infergo serve       --model <path> [--provider cpu|cuda|tensorrt|coreml]
-                      [--port 8080] [--gpu-layers 999] [--ctx-size 4096]
-  infergo list-models [--addr http://localhost:8080]
-  infergo benchmark   --addr http://localhost:8080 --requests 1000
+                      [--port 9090] [--gpu-layers 999] [--ctx-size 4096]
+  infergo list-models [--addr http://localhost:9090]
+  infergo benchmark   --addr http://localhost:9090 --requests 1000
                       [--concurrency 8] [--prompt "..."]
 
 Subcommands:
