@@ -5,6 +5,7 @@
 #include "../llm/kv_cache.hpp"
 #include "../llm/llm_engine.hpp"
 #include "../llm/infer_sequence.hpp"
+#include "../../vendor/llama.cpp/include/llama.h"
 #ifdef INFER_PREPROCESS_AVAILABLE
 #include "../preprocess/preprocess.hpp"
 #endif
@@ -451,10 +452,23 @@ struct LLMHandle {
 struct SeqHandle {
     infergo::InferSequence  seq;
     std::vector<float>      logits;  // updated by infer_llm_batch_decode
+    llama_context*          ctx;     // needed to clear KV cache on destroy
+
     SeqHandle(infergo::KVCacheSlotManager& mgr,
               std::vector<int32_t> tokens,
-              int32_t eos)
-        : seq(mgr, std::move(tokens), eos) {}
+              int32_t eos,
+              llama_context* ctx_)
+        : seq(mgr, std::move(tokens), eos), ctx(ctx_) {}
+
+    ~SeqHandle() {
+        // Remove this sequence's KV cache entries so the slot can be reused
+        // by future requests without stale positional data.
+        if (ctx != nullptr) {
+            llama_memory_seq_rm(llama_get_memory(ctx),
+                                static_cast<llama_seq_id>(seq.SlotID()),
+                                -1, -1);
+        }
+    }
 };
 
 InferLLM infer_llm_create(const char* path,
@@ -558,7 +572,8 @@ InferSeq infer_seq_create(InferLLM llm, const int* tokens, int n_tokens) {
         auto* h = static_cast<LLMHandle*>(llm);
         std::vector<int32_t> tok_vec(tokens, tokens + n_tokens);
         auto* s = new SeqHandle(h->slots, std::move(tok_vec),
-                                static_cast<int32_t>(h->engine.EOS()));
+                                static_cast<int32_t>(h->engine.EOS()),
+                                h->engine.Context());
         return static_cast<InferSeq>(s);
     } catch (const std::exception& e) {
         infergo::set_last_error(e.what());

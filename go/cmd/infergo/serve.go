@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -94,14 +95,20 @@ func loadModel(reg *server.Registry, name, path, provider string, gpuLayers, ctx
 	}
 }
 
-// llmAdapter bridges go/llm.Model → server.LLMModel
+// llmAdapter bridges go/llm.Model → server.LLMModel.
+// llama.cpp is not thread-safe: BatchDecode must be called from one goroutine
+// at a time. mu serializes all Generate calls.
 type llmAdapter struct {
-	m *llm.Model
+	m  *llm.Model
+	mu sync.Mutex
 }
 
 func (a *llmAdapter) Close() { a.m.Close() }
 
 func (a *llmAdapter) Generate(ctx context.Context, prompt string, maxTokens int, temp float32) (string, int, int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	tokens, err := a.m.Tokenize(prompt, true, 4096)
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("tokenize: %w", err)

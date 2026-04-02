@@ -79,6 +79,9 @@ public:
     /// Throws std::runtime_error if the model is not loaded.
     std::string TokenToPiece(int32_t token) const;
 
+    /// Returns the raw llama_context* (needed by SeqHandle to clear KV cache).
+    llama_context* Context() const noexcept { return ctx_; }
+
 private:
     llama_model*   model_   = nullptr;
     llama_context* ctx_     = nullptr;
