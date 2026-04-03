@@ -32,7 +32,7 @@ llama-cpp-python links OpenBLAS and runs prefill ~10% faster.
 
 ---
 
-### OPT-2 — GPU/CPU: Continuous batching scheduler `[ ]` L
+### OPT-2 — GPU/CPU: Continuous batching scheduler `[~]` L
 
 **Problem:** `llmAdapter.Generate()` holds a mutex for the full request. P50 under
 concurrency=4 is 3× single-client latency. GPU utilization ~25%.
