@@ -298,7 +298,7 @@ func newEmbeddingBatcher(a *embeddingAdapter) *embeddingBatcher {
 		adapter:  a,
 		queue:    make(chan embedBatchItem, 256),
 		maxBatch: 32,
-		maxWait:  10 * time.Millisecond,
+		maxWait:  2 * time.Millisecond,
 	}
 	go b.run()
 	return b
