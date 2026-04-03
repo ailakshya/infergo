@@ -114,9 +114,9 @@ func loadLLM(reg *server.Registry, name, path string, gpuLayers, ctxSize, thread
 	return reg.Load(name, newSchedulerModel(m))
 }
 
-// onnxAdapter wraps an ONNX session for the server.Model interface.
-// Full inference capability requires knowing the model's I/O spec;
-// this adapter registers the model so it appears in /v1/models.
+// onnxAdapter is a placeholder for ONNX models that lack a recognized
+// pipeline (no tokenizer.json for embedding, no preprocess for detection).
+// It registers the model in /v1/models without real inference capability.
 type onnxAdapter struct {
 	path string
 }
@@ -128,5 +128,17 @@ func loadONNX(reg *server.Registry, name, path, provider string) error {
 	if _, err := os.Stat(path); err != nil {
 		return fmt.Errorf("model file not found: %w", err)
 	}
+
+	// If tokenizer.json exists near the model, treat as an embedding model.
+	if tok := findTokenizerJSON(filepath.Dir(path), 2); tok != "" {
+		log.Printf("found tokenizer.json at %s — loading as embedding model", tok)
+		adapter, err := loadEmbedding(path, provider)
+		if err != nil {
+			return fmt.Errorf("load embedding model: %w", err)
+		}
+		return reg.Load(name, adapter)
+	}
+
+	// Fall back to plain ONNX placeholder (appears in /v1/models only).
 	return reg.Load(name, &onnxAdapter{path: path})
 }
