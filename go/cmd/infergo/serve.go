@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -29,6 +28,7 @@ func runServe(args []string) {
 	gpuLayers := fs.Int("gpu-layers", 999, "number of transformer layers to offload to GPU (LLM only)")
 	ctxSize   := fs.Int("ctx-size", 4096, "KV cache token budget (LLM only)")
 	threads   := fs.Int("threads", 0, "CPU threads for inference (0 = auto: physical cores / 2)")
+	maxSeqs   := fs.Int("max-seqs", 16, "max concurrent sequences / KV cache slots (LLM only)")
 	minModels := fs.Int("min-models", 1, "minimum models required for /health/ready")
 	fs.Parse(args)
 
@@ -44,7 +44,7 @@ func runServe(args []string) {
 
 	// Load the model based on file extension
 	modelName := modelName(*modelPath)
-	if err := loadModel(reg, modelName, *modelPath, *provider, *gpuLayers, *ctxSize, *threads); err != nil {
+	if err := loadModel(reg, modelName, *modelPath, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs); err != nil {
 		log.Fatalf("failed to load model %q: %v", *modelPath, err)
 	}
 	log.Printf("loaded model %q (%s)", modelName, *modelPath)
@@ -85,11 +85,11 @@ func modelName(path string) string {
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
-func loadModel(reg *server.Registry, name, path, provider string, gpuLayers, ctxSize, threads int) error {
+func loadModel(reg *server.Registry, name, path, provider string, gpuLayers, ctxSize, threads, maxSeqs int) error {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".gguf":
-		return loadLLM(reg, name, path, gpuLayers, ctxSize, threads)
+		return loadLLM(reg, name, path, gpuLayers, ctxSize, threads, maxSeqs)
 	case ".onnx":
 		return loadONNX(reg, name, path, provider)
 	default:
@@ -97,75 +97,19 @@ func loadModel(reg *server.Registry, name, path, provider string, gpuLayers, ctx
 	}
 }
 
-// llmAdapter bridges go/llm.Model → server.LLMModel.
-// llama.cpp is not thread-safe: BatchDecode must be called from one goroutine
-// at a time. mu serializes all Generate calls.
-type llmAdapter struct {
-	m  *llm.Model
-	mu sync.Mutex
-}
-
-func (a *llmAdapter) Close() { a.m.Close() }
-
-func (a *llmAdapter) Generate(ctx context.Context, prompt string, maxTokens int, temp float32) (string, int, int, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	tokens, err := a.m.Tokenize(prompt, true, 4096)
-	if err != nil {
-		return "", 0, 0, fmt.Errorf("tokenize: %w", err)
-	}
-	promptToks := len(tokens)
-
-	seq, err := a.m.NewSequence(tokens)
-	if err != nil {
-		return "", 0, 0, fmt.Errorf("new sequence: %w", err)
-	}
-	defer seq.Close()
-
-	var out strings.Builder
-	genToks := 0
-
-	for genToks < maxTokens && !seq.IsDone() {
-		select {
-		case <-ctx.Done():
-			return out.String(), promptToks, genToks, ctx.Err()
-		default:
-		}
-		if err := a.m.BatchDecode([]*llm.Sequence{seq}); err != nil {
-			return out.String(), promptToks, genToks, fmt.Errorf("batch decode: %w", err)
-		}
-		tok, err := seq.SampleToken(temp, 0.9)
-		if err != nil {
-			return out.String(), promptToks, genToks, fmt.Errorf("sample token: %w", err)
-		}
-		if a.m.IsEOG(tok) {
-			break
-		}
-		piece, err := a.m.TokenToPiece(tok)
-		if err != nil {
-			return out.String(), promptToks, genToks, fmt.Errorf("token to piece: %w", err)
-		}
-		out.WriteString(piece)
-		seq.AppendToken(tok)
-		genToks++
-	}
-	return out.String(), promptToks, genToks, nil
-}
-
-func loadLLM(reg *server.Registry, name, path string, gpuLayers, ctxSize, threads int) error {
+func loadLLM(reg *server.Registry, name, path string, gpuLayers, ctxSize, threads, maxSeqs int) error {
 	if threads <= 0 {
 		threads = runtime.NumCPU() / 2
 		if threads < 1 {
 			threads = 1
 		}
 	}
-	log.Printf("using %d CPU threads for inference", threads)
-	m, err := llm.Load(path, gpuLayers, ctxSize, threads, 512)
+	log.Printf("using %d CPU threads, %d max concurrent sequences", threads, maxSeqs)
+	m, err := llm.Load(path, gpuLayers, ctxSize, maxSeqs, 512)
 	if err != nil {
 		return err
 	}
-	return reg.Load(name, &llmAdapter{m: m})
+	return reg.Load(name, newSchedulerModel(m))
 }
 
 // onnxAdapter wraps an ONNX session for the server.Model interface.
