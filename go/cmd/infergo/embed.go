@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"github.com/ailakshya/infergo/onnx"
+	"github.com/ailakshya/infergo/server"
 	"github.com/ailakshya/infergo/tensor"
 	"github.com/ailakshya/infergo/tokenizer"
 )
@@ -397,9 +398,16 @@ func findTokenizerJSON(dir string, maxDepth int) string {
 	return ""
 }
 
-// loadEmbedding creates an embeddingBatcher from an ONNX model path.
+// loadEmbedding creates an embedding model from an ONNX model path.
 // It searches for tokenizer.json near the model file (up to 2 dirs up).
-func loadEmbedding(modelPath, provider string) (*embeddingBatcher, error) {
+//
+// Provider selection:
+//   - "cpu": returns *embeddingAdapter directly. ONNX Runtime is thread-safe —
+//     concurrent Run() calls across goroutines already saturate CPU cores, so a
+//     batcher goroutine would only serialize work and hurt throughput.
+//   - "cuda" / "tensorrt": returns *embeddingBatcher. GPU kernels benefit from
+//     batched [N, seqLen] calls — fewer launches, better tensor-core utilization.
+func loadEmbedding(modelPath, provider string) (server.EmbeddingModel, error) {
 	sess, err := onnx.NewSession(provider, 0)
 	if err != nil {
 		return nil, fmt.Errorf("loadEmbedding: new session: %w", err)
@@ -422,5 +430,8 @@ func loadEmbedding(modelPath, provider string) (*embeddingBatcher, error) {
 	}
 
 	adapter := &embeddingAdapter{sess: sess, tok: tok}
-	return newEmbeddingBatcher(adapter), nil
+	if provider == "cuda" || provider == "tensorrt" {
+		return newEmbeddingBatcher(adapter), nil
+	}
+	return adapter, nil
 }
