@@ -7,7 +7,7 @@
 
 ## PHASE A — Performance Optimizations
 
-### OPT-1 — CPU: OpenBLAS for BLAS-accelerated prefill `[ ]` S
+### OPT-1 — CPU: OpenBLAS for BLAS-accelerated prefill `[~]` S
 
 **Problem:** `GGML_BLAS=OFF` in current build. Long-prompt prefill (512 tokens) is
 slow because GGML uses scalar kernels for the prompt-processing GEMM. Python's
