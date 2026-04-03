@@ -26,7 +26,7 @@ func runServe(args []string) {
 	provider  := fs.String("provider", "cpu", "execution provider: cpu|cuda|tensorrt|coreml")
 	port      := fs.Int("port", 9090, "HTTP listen port")
 	gpuLayers := fs.Int("gpu-layers", 999, "number of transformer layers to offload to GPU (LLM only)")
-	ctxSize   := fs.Int("ctx-size", 4096, "KV cache token budget (LLM only)")
+	ctxSize   := fs.Int("ctx-size", 16384, "total KV cache tokens (divided by --max-seqs to get per-sequence budget)")
 	threads   := fs.Int("threads", 0, "CPU threads for inference (0 = auto: physical cores / 2)")
 	maxSeqs   := fs.Int("max-seqs", 16, "max concurrent sequences / KV cache slots (LLM only)")
 	minModels := fs.Int("min-models", 1, "minimum models required for /health/ready")
