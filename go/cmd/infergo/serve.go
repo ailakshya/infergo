@@ -105,7 +105,9 @@ func loadLLM(reg *server.Registry, name, path string, gpuLayers, ctxSize, thread
 		}
 	}
 	log.Printf("using %d CPU threads, %d max concurrent sequences", threads, maxSeqs)
-	m, err := llm.Load(path, gpuLayers, ctxSize, maxSeqs, 512)
+	// n_batch=2048: max tokens per llama_decode call.
+	// 512 was too small for long prompts with chat-template overhead.
+	m, err := llm.Load(path, gpuLayers, ctxSize, maxSeqs, 2048)
 	if err != nil {
 		return err
 	}
