@@ -143,8 +143,8 @@ for ax, (title, dev, sc) in zip(axes.flat, scenarios):
         continue
 
     cats = ["P50", "P99"]
-    ig_vals = [ig[5], ig[8]]
-    py_vals = [py[5], py[8]]
+    ig_vals = [ig[6], ig[8]]   # ig[6]=p50_ms, ig[8]=p99_ms
+    py_vals = [py[6], py[8]]
     x = np.arange(len(cats))
 
     b_ig = ax.bar(x - 0.2, ig_vals, 0.35, color=COLORS["infergo"], alpha=ALPHA, label="infergo", zorder=3)
@@ -170,7 +170,7 @@ for ax, (title, dev, sc) in zip(axes.flat, scenarios):
     pct = (ig_vals[0] - py_vals[0]) / py_vals[0] * 100 if py_vals[0] else 0
     sign = "+" if pct >= 0 else ""
     color = "#b91c1c" if pct >= 0 else "#16a34a"   # higher latency = red
-    note = "higher latency\n(mutex queuing)" if pct > 0 else "lower latency"
+    note = "higher latency\n(batching interleaves requests)" if pct > 0 else "lower latency"
     ax.text(0.5, 0.92, f"P50 {sign}{pct:.0f}%\n({note})", transform=ax.transAxes,
             ha="center", fontsize=8, color=color, fontweight="bold",
             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec=color, lw=1))
