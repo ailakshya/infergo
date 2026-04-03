@@ -21,11 +21,11 @@ OUT = os.path.dirname(__file__)
 
 # (backend, device, scenario, req_s, tok_s, mean_ms, p50_ms, p95_ms, p99_ms)
 DATA = [
-    # CUDA short
-    ("infergo",  "CUDA", "short",  2.7, 142, 1429, 1423, 1793, 1802),
+    # CUDA short (post OPT-2 continuous batching)
+    ("infergo",  "CUDA", "short",  3.8, 200, 1053, 1185, 1451, 1472),
     ("python",   "CUDA", "short",  2.1, 133,  469,  465,  481,  486),
-    # CUDA long
-    ("infergo",  "CUDA", "long",   0.6, 144, 1775, 1771, 1789, 1796),
+    # CUDA long (post OPT-2: ctx-size + n_batch fix)
+    ("infergo",  "CUDA", "long",   0.6, 143, 1787, 1782, 1803, 1807),
     ("python",   "CUDA", "long",   0.5, 131, 1935, 1928, 1969, 1971),
     # CPU short
     ("infergo",  "CPU",  "short",  0.2,  10, 5462, 6494, 6571, 6571),
@@ -36,7 +36,7 @@ DATA = [
 ]
 
 COLD = [
-    ("infergo", "CUDA",  456),
+    ("infergo", "CUDA",  451),
     ("python",  "CUDA",  494),
     ("infergo", "CPU",  6450),
     ("python",  "CPU",  9897),
@@ -186,7 +186,7 @@ fig, ax = plt.subplots(figsize=(8, 5))
 fig.suptitle("infergo vs llama-cpp-python — Cold Start Latency", fontsize=13, fontweight="bold")
 
 labels = ["CUDA", "CPU"]
-ig_cs  = [456,  6450]
+ig_cs  = [451,  6450]
 py_cs  = [494,  9897]
 x = np.arange(len(labels))
 
@@ -224,17 +224,17 @@ fig, ax = plt.subplots(figsize=(10, 6))
 fig.suptitle("infergo vs llama-cpp-python — % Impact (infergo advantage)", fontsize=13, fontweight="bold")
 
 metrics = [
-    ("CUDA\nshort tok/s",   +7),
-    ("CUDA\nlong tok/s",   +10),
-    ("CUDA\nshort req/s",  +29),
-    ("CUDA\nlong req/s",   +20),
-    ("CUDA\ncold start",    -8),   # negative = infergo is faster (lower)
+    ("CUDA\nshort tok/s",   +50),   # 133→200 tok/s (+50%, OPT-2 continuous batching)
+    ("CUDA\nlong tok/s",    +9),    # 131→143 tok/s (+9%)
+    ("CUDA\nshort req/s",  +81),   # 2.1→3.8 req/s (+81%)
+    ("CUDA\nlong req/s",   +20),   # 0.5→0.6 req/s (+20%)
+    ("CUDA\ncold start",    -9),   # negative = infergo is faster (lower)
     ("CPU\nshort tok/s",  +100),
     ("CPU\nshort req/s",  +100),
     ("CPU\ncold start",   -35),
-    ("P50 latency\n(CUDA short)", +206),  # infergo P50 3x higher due to mutex
+    ("P50 latency\n(CUDA short)", +155),  # 465→1185ms; expected at concurrency=4
 ]
-# Note: latency higher for infergo is a disadvantage (mutex queuing)
+# Note: P50 latency higher for infergo is expected (continuous batching interleaves 4 requests)
 
 labels, vals = zip(*metrics)
 colors = ["#16a34a" if v > 0 else "#b91c1c" for v in vals]
@@ -271,8 +271,8 @@ neg_patch = mpatches.Patch(color="#b91c1c", alpha=ALPHA, label="infergo disadvan
 ax.legend(handles=[pos_patch, neg_patch], fontsize=10, loc="upper left")
 
 # Annotation for P50 latency bar
-ax.annotate("Mutex serialization:\nconcurrent requests queue,\nraising observed P50",
-            xy=(x[-1], vals[-1]), xytext=(x[-1]-1.8, vals[-1]-60),
+ax.annotate("Continuous batching:\nconcurrency=4 interleaves requests,\nso P50 = ~4× single-req latency.\nWill narrow with PagedAttention (OPT-22).",
+            xy=(x[-1], vals[-1]), xytext=(x[-1]-2.2, vals[-1]-60),
             arrowprops=dict(arrowstyle="->", color="#b91c1c"),
             fontsize=8.5, color="#b91c1c")
 
