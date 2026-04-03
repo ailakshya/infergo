@@ -71,7 +71,7 @@ HTTP handlers ──► request channel ──► scheduler goroutine ──► 
 
 ## PHASE B — Core Inference Expansion
 
-### OPT-3 — ONNX Runtime inference engine `[ ]` L
+### OPT-3 — ONNX Runtime inference engine `[~]` L
 
 **Scope:** Real ONNX session execution. Prerequisite for OPT-4, OPT-5, OPT-6.
 Current `onnxAdapter` only registers the model path — does not run inference.
