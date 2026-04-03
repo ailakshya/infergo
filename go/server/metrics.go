@@ -104,6 +104,8 @@ func (m *Metrics) SetGPUMemory(deviceID int, bytes int64) {
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
 // responseRecorder captures the status code written by a handler.
+// It forwards Flush() to the underlying ResponseWriter when available,
+// so SSE streaming works through the metrics middleware.
 type responseRecorder struct {
 	http.ResponseWriter
 	status int
@@ -112,6 +114,13 @@ type responseRecorder struct {
 func (r *responseRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+// Flush implements http.Flusher by forwarding to the underlying writer.
+func (r *responseRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func (r *responseRecorder) statusClass() string {
