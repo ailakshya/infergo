@@ -266,13 +266,18 @@ func TestRun_MiniLM_OutputShape(t *testing.T) {
 	// Inputs: input_ids, attention_mask, token_type_ids — all [1, 8] int64
 	const batchSize, seqLen = 1, 8
 	shape := []int{batchSize, seqLen}
+	// Zero-initialize all inputs — tensor_alloc_cpu uses malloc (not calloc),
+	// so we must explicitly clear before setting individual elements.
+	zeros := make([]int64, batchSize*seqLen)
 	inputs := make([]*tensor.Tensor, 3)
 	for i := range inputs {
 		inp, err := tensor.NewTensorCPU(shape, tensor.Int64)
 		if err != nil {
 			t.Fatalf("NewTensorCPU input[%d]: %v", i, err)
 		}
-		// fill with zeros (valid padding tokens)
+		if err := inp.CopyFrom(unsafe.Pointer(&zeros[0]), len(zeros)*8); err != nil {
+			t.Fatalf("zero-init input[%d]: %v", i, err)
+		}
 		inputs[i] = inp
 	}
 	defer func() {
@@ -281,14 +286,15 @@ func TestRun_MiniLM_OutputShape(t *testing.T) {
 		}
 	}()
 
-	// Set input_ids to 101 (CLS) + 102 (SEP) + zeros
+	// Set input_ids to 101 (CLS) + 102 (SEP), rest zero (padding)
 	ids := (*[8]int64)(inputs[0].DataPtr())
 	ids[0] = 101
 	ids[1] = 102
-	// attention_mask: ones for real tokens, zeros for padding
+	// attention_mask: 1 for real tokens, 0 for padding
 	mask := (*[8]int64)(inputs[1].DataPtr())
 	mask[0] = 1
 	mask[1] = 1
+	// token_type_ids: all zeros (single-sentence, no segment B)
 
 	outputs, err := s.Run(inputs)
 	if err != nil {
