@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"time"
 	"unsafe"
 
 	"github.com/ailakshya/infergo/onnx"
@@ -137,6 +138,247 @@ func (a *embeddingAdapter) Embed(_ context.Context, input string) ([]float32, er
 	return pooled, nil
 }
 
+// embedBatch runs a batched ONNX inference on N texts in one call.
+// Input tensors: [N, maxSeqLen] int64 (padded with zeros).
+// Output: N unit-norm embedding vectors.
+func (a *embeddingAdapter) embedBatch(texts []string) ([][]float32, error) {
+	n := len(texts)
+	if n == 0 {
+		return nil, nil
+	}
+
+	// 1. Tokenize all texts, track maxSeqLen.
+	encs := make([]tokenizer.Encoding, n)
+	maxSeqLen := 0
+	for i, text := range texts {
+		enc, err := a.tok.Encode(text, true, 512)
+		if err != nil {
+			return nil, fmt.Errorf("embedBatch: tokenize[%d]: %w", i, err)
+		}
+		encs[i] = enc
+		if len(enc.IDs) > maxSeqLen {
+			maxSeqLen = len(enc.IDs)
+		}
+	}
+	if maxSeqLen == 0 {
+		return nil, errors.New("embedBatch: all sequences are empty")
+	}
+
+	// 2. Allocate [N, maxSeqLen] int64 tensors.
+	shape := []int{n, maxSeqLen}
+	totalElems := n * maxSeqLen
+
+	inputIDs, err := tensor.NewTensorCPU(shape, tensor.Int64)
+	if err != nil {
+		return nil, fmt.Errorf("embedBatch: alloc input_ids: %w", err)
+	}
+	defer inputIDs.Free()
+
+	attMask, err := tensor.NewTensorCPU(shape, tensor.Int64)
+	if err != nil {
+		return nil, fmt.Errorf("embedBatch: alloc attention_mask: %w", err)
+	}
+	defer attMask.Free()
+
+	tokenTypeIDs, err := tensor.NewTensorCPU(shape, tensor.Int64)
+	if err != nil {
+		return nil, fmt.Errorf("embedBatch: alloc token_type_ids: %w", err)
+	}
+	defer tokenTypeIDs.Free()
+
+	// 3. Zero-initialize all three tensors (tensor uses malloc, not calloc).
+	zeros := make([]int64, totalElems)
+	byteLen := totalElems * 8
+	if err := inputIDs.CopyFrom(unsafe.Pointer(&zeros[0]), byteLen); err != nil {
+		return nil, fmt.Errorf("embedBatch: zero input_ids: %w", err)
+	}
+	if err := attMask.CopyFrom(unsafe.Pointer(&zeros[0]), byteLen); err != nil {
+		return nil, fmt.Errorf("embedBatch: zero attention_mask: %w", err)
+	}
+	if err := tokenTypeIDs.CopyFrom(unsafe.Pointer(&zeros[0]), byteLen); err != nil {
+		return nil, fmt.Errorf("embedBatch: zero token_type_ids: %w", err)
+	}
+
+	// 4. Fill input_ids and attention_mask row by row; padding stays 0.
+	idsPtr := unsafe.Slice((*int64)(inputIDs.DataPtr()), totalElems)
+	maskPtr := unsafe.Slice((*int64)(attMask.DataPtr()), totalElems)
+	for i, enc := range encs {
+		rowStart := i * maxSeqLen
+		for j, id := range enc.IDs {
+			idsPtr[rowStart+j] = int64(id)
+			maskPtr[rowStart+j] = int64(enc.AttentionMask[j])
+		}
+	}
+
+	// 5. Run ONNX — output[0] is [N, maxSeqLen, hiddenDim].
+	outputs, err := a.sess.Run([]*tensor.Tensor{inputIDs, attMask, tokenTypeIDs})
+	if err != nil {
+		return nil, fmt.Errorf("embedBatch: onnx run: %w", err)
+	}
+	defer func() {
+		for _, o := range outputs {
+			o.Free()
+		}
+	}()
+	if len(outputs) == 0 {
+		return nil, errors.New("embedBatch: no outputs from model")
+	}
+
+	hidden := outputs[0]
+	shp := hidden.Shape()
+	if len(shp) != 3 {
+		return nil, fmt.Errorf("embedBatch: expected 3-dim output, got shape %v", shp)
+	}
+	hiddenDim := shp[2]
+	data := unsafe.Slice((*float32)(hidden.DataPtr()), hidden.NElements())
+
+	// 6. For each sequence: masked mean pool then L2 normalize.
+	results := make([][]float32, n)
+	for i, enc := range encs {
+		seqLen := len(enc.IDs)
+		pooled := make([]float32, hiddenDim)
+		var maskSum float32
+		rowBase := i * maxSeqLen * hiddenDim
+		for j := 0; j < seqLen; j++ {
+			m := float32(enc.AttentionMask[j])
+			maskSum += m
+			tokenBase := rowBase + j*hiddenDim
+			for k := 0; k < hiddenDim; k++ {
+				pooled[k] += data[tokenBase+k] * m
+			}
+		}
+		if maskSum > 0 {
+			for k := range pooled {
+				pooled[k] /= maskSum
+			}
+		}
+
+		// L2 normalize
+		var norm float32
+		for _, v := range pooled {
+			norm += v * v
+		}
+		if norm > 0 {
+			norm = float32(math.Sqrt(float64(norm)))
+			for k := range pooled {
+				pooled[k] /= norm
+			}
+		}
+		results[i] = pooled
+	}
+
+	return results, nil
+}
+
+// ─── Batcher types ────────────────────────────────────────────────────────────
+
+type embedResult struct {
+	vec []float32
+	err error
+}
+
+type embedBatchItem struct {
+	text string
+	out  chan<- embedResult
+}
+
+// embeddingBatcher collects concurrent Embed requests and dispatches them to
+// embedBatch in groups, reducing ONNX call overhead.
+type embeddingBatcher struct {
+	adapter  *embeddingAdapter
+	queue    chan embedBatchItem
+	maxBatch int
+	maxWait  time.Duration
+}
+
+// newEmbeddingBatcher creates a batcher wrapping the given adapter and starts
+// the background dispatch goroutine.
+func newEmbeddingBatcher(a *embeddingAdapter) *embeddingBatcher {
+	b := &embeddingBatcher{
+		adapter:  a,
+		queue:    make(chan embedBatchItem, 256),
+		maxBatch: 32,
+		maxWait:  10 * time.Millisecond,
+	}
+	go b.run()
+	return b
+}
+
+// Close shuts down the underlying adapter. The queue goroutine will drain
+// naturally once the process exits.
+func (b *embeddingBatcher) Close() {
+	b.adapter.Close()
+}
+
+// Embed satisfies server.EmbeddingModel. It enqueues the request and waits for
+// the batcher to process it (or for ctx to be cancelled).
+func (b *embeddingBatcher) Embed(ctx context.Context, text string) ([]float32, error) {
+	out := make(chan embedResult, 1)
+	item := embedBatchItem{text: text, out: out}
+
+	select {
+	case b.queue <- item:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	select {
+	case res := <-out:
+		return res.vec, res.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// run is the background goroutine that collects items and calls embedBatch.
+func (b *embeddingBatcher) run() {
+	for {
+		// Block until at least one item arrives.
+		first, ok := <-b.queue
+		if !ok {
+			return
+		}
+
+		items := []embedBatchItem{first}
+
+		// Collect more items until maxBatch or maxWait.
+		timer := time.NewTimer(b.maxWait)
+	collect:
+		for len(items) < b.maxBatch {
+			select {
+			case item, ok := <-b.queue:
+				if !ok {
+					timer.Stop()
+					break collect
+				}
+				items = append(items, item)
+			case <-timer.C:
+				break collect
+			}
+		}
+		timer.Stop()
+
+		// Build text slice and run batched inference.
+		texts := make([]string, len(items))
+		for i, it := range items {
+			texts[i] = it.text
+		}
+
+		vecs, err := b.adapter.embedBatch(texts)
+
+		// Dispatch results back to callers.
+		for i, it := range items {
+			if err != nil {
+				it.out <- embedResult{err: err}
+			} else {
+				it.out <- embedResult{vec: vecs[i]}
+			}
+		}
+	}
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 // findTokenizerJSON searches for tokenizer.json starting at dir and walking up
 // to maxDepth parent directories. Returns the path if found, "" otherwise.
 func findTokenizerJSON(dir string, maxDepth int) string {
@@ -155,9 +397,9 @@ func findTokenizerJSON(dir string, maxDepth int) string {
 	return ""
 }
 
-// loadEmbedding creates an embeddingAdapter from an ONNX model path.
+// loadEmbedding creates an embeddingBatcher from an ONNX model path.
 // It searches for tokenizer.json near the model file (up to 2 dirs up).
-func loadEmbedding(modelPath, provider string) (*embeddingAdapter, error) {
+func loadEmbedding(modelPath, provider string) (*embeddingBatcher, error) {
 	sess, err := onnx.NewSession(provider, 0)
 	if err != nil {
 		return nil, fmt.Errorf("loadEmbedding: new session: %w", err)
@@ -179,5 +421,6 @@ func loadEmbedding(modelPath, provider string) (*embeddingAdapter, error) {
 		return nil, fmt.Errorf("loadEmbedding: load tokenizer: %w", err)
 	}
 
-	return &embeddingAdapter{sess: sess, tok: tok}, nil
+	adapter := &embeddingAdapter{sess: sess, tok: tok}
+	return newEmbeddingBatcher(adapter), nil
 }
