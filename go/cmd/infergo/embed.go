@@ -298,7 +298,7 @@ func newEmbeddingBatcher(a *embeddingAdapter) *embeddingBatcher {
 		adapter:  a,
 		queue:    make(chan embedBatchItem, 256),
 		maxBatch: 32,
-		maxWait:  2 * time.Millisecond,
+		maxWait:  0, // opportunistic: drain queue immediately, no deliberate wait
 	}
 	go b.run()
 	return b
@@ -341,22 +341,22 @@ func (b *embeddingBatcher) run() {
 
 		items := []embedBatchItem{first}
 
-		// Collect more items until maxBatch or maxWait.
-		timer := time.NewTimer(b.maxWait)
+		// Non-blocking drain: pick up any requests already queued.
+		// Zero wait — if nothing is queued right now, fire immediately.
+		// This gives batch size > 1 when requests arrive concurrently,
+		// with zero added latency for serial requests.
 	collect:
 		for len(items) < b.maxBatch {
 			select {
 			case item, ok := <-b.queue:
 				if !ok {
-					timer.Stop()
 					break collect
 				}
 				items = append(items, item)
-			case <-timer.C:
+			default:
 				break collect
 			}
 		}
-		timer.Stop()
 
 		// Build text slice and run batched inference.
 		texts := make([]string, len(items))
