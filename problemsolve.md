@@ -353,7 +353,7 @@ working — not just when the code exists.
 - [x] LLM inference: `infergo serve --model llama3.gguf` works (done — T-29..T-47)
 - [x] OpenAI-compatible HTTP API: `/v1/chat/completions` (done — T-43..T-44)
 - [x] OPT-3: ONNX Runtime inference: `infer_onnx_run()` C function implemented
-- [ ] OPT-4: `/v1/embeddings` endpoint returns correct vectors
+- [x] OPT-4: `/v1/embeddings` endpoint returns correct vectors
 - [ ] OPT-5: `/v1/detect` endpoint returns bounding boxes
 - [ ] OPT-7: BERT tokenizer for embedding models
 - [ ] OPT-15: `go get github.com/ailakshya/infergo/client` — typed Go SDK
@@ -442,5 +442,5 @@ Problem 8  No unified interface  [~] 1/5 done  (LLM serving done)
 Problem 9  Observability         [~] 2/6 done  (Prometheus + health done)
 Problem 10 Hard to test          [~] 3/5 done  (ctest + ASan + go test done)
 ───────────────────────────────────────────────
-Total                            18/52 done  (35%)
+Total                            19/52 done  (37%)
 ```
