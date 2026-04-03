@@ -317,9 +317,9 @@ working — not just when the code exists.
 
 ### Problem 1 — GIL Wall (memory scales with users)
 
-- [ ] OPT-2: Continuous batching scheduler implemented
-- [ ] OPT-2: `go test -race ./go/...` exits 0 (no data races)
-- [ ] OPT-2: 4 concurrent clients at CUDA P50 ≤ 600 ms (was 1423 ms)
+- [x] OPT-2: Continuous batching scheduler implemented
+- [x] OPT-2: `go test -race ./go/...` exits 0 (no data races)
+- [ ] OPT-2: 4 concurrent clients at CUDA P50 ≤ 600 ms (was 1423 ms; got 1185 ms — needs OPT-22)
 - [ ] OPT-2: RSS does not grow with concurrency (1 model copy confirmed)
 - [ ] OPT-27: Scalability benchmark shows infergo RSS flat, Python RSS grows linearly
 - [ ] **PROBLEM 1 SOLVED** — infergo serves N users from 1 model copy
@@ -328,8 +328,8 @@ working — not just when the code exists.
 
 ### Problem 2 — Latency Degrades Under Load
 
-- [ ] OPT-2: Scheduler batches all active sequences in one `BatchDecode` call
-- [ ] OPT-2: CUDA P50 ≤ 600 ms at concurrency=4 (was 1423 ms)
+- [x] OPT-2: Scheduler batches all active sequences in one `BatchDecode` call
+- [ ] OPT-2: CUDA P50 ≤ 600 ms at concurrency=4 (was 1423 ms; got 1185 ms — needs OPT-22)
 - [ ] OPT-22: PagedAttention — P50 stays flat from concurrency=1 to concurrency=32
 - [ ] OPT-27: Benchmark chart shows infergo P50 flat line vs Python degrading curve
 - [ ] **PROBLEM 2 SOLVED** — P50 latency flat under any concurrency level
@@ -431,8 +431,8 @@ working — not just when the code exists.
 ## Overall Progress
 
 ```
-Problem 1  GIL wall              [ ] 0/5 done
-Problem 2  Latency under load    [ ] 0/4 done
+Problem 1  GIL wall              [~] 2/5 done  (scheduler + race-free; P50 partial, needs OPT-22)
+Problem 2  Latency under load    [~] 1/4 done  (scheduler batching done; P50 partial, needs OPT-22)
 Problem 3  Cold start            [~] 2/6 done  (cold start measured)
 Problem 4  No Go library         [~] 2/8 done  (LLM + HTTP API done)
 Problem 5  Memory fragmentation  [~] 2/5 done  (KV slot manager done)
@@ -442,5 +442,5 @@ Problem 8  No unified interface  [~] 1/5 done  (LLM serving done)
 Problem 9  Observability         [~] 2/6 done  (Prometheus + health done)
 Problem 10 Hard to test          [~] 3/5 done  (ctest + ASan + go test done)
 ───────────────────────────────────────────────
-Total                            14/52 done  (27%)
+Total                            17/52 done  (33%)
 ```

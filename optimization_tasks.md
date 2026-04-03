@@ -32,7 +32,9 @@ llama-cpp-python links OpenBLAS and runs prefill ~10% faster.
 
 ---
 
-### OPT-2 — GPU/CPU: Continuous batching scheduler `[~]` L
+### OPT-2 — GPU/CPU: Continuous batching scheduler `[x]` L
+
+**Result:** 2026-04-03 — scheduler implemented; 142 tok/s → 200 tok/s (+41%), long prompts fixed (ctx-size 4096→16384; llama.cpp divides n_ctx by n_seq_max for per-seq budget). T1-T3, T5-T8 PASS; T4 P50=1185ms (target 600ms not met — needs OPT-22 PagedAttention for true interleaving at scale).
 
 **Problem:** `llmAdapter.Generate()` holds a mutex for the full request. P50 under
 concurrency=4 is 3× single-client latency. GPU utilization ~25%.
@@ -54,16 +56,16 @@ HTTP handlers ──► request channel ──► scheduler goroutine ──► 
 
 **Test cases:**
 
-| ID | Test | Pass condition |
+| ID | Test | Result |
 |---|---|---|
-| OPT-2-T1 | Single request through scheduler | Returns correct text, no deadlock |
-| OPT-2-T2 | 4 concurrent requests complete | All goroutines get non-empty responses, no panic |
-| OPT-2-T3 | Race detector clean | `go test -race ./go/...` exits 0 |
-| OPT-2-T4 | P50 latency drops | `bench_full.py --device cuda --concurrency 4`: P50 ≤ 600 ms (was 1423 ms) |
-| OPT-2-T5 | Throughput does not regress | CUDA short `tok/s ≥ 140` |
-| OPT-2-T6 | SSE streaming works | `curl -N` with `"stream":true` emits `data:` lines per token |
-| OPT-2-T7 | Graceful shutdown | SIGTERM with 4 in-flight requests: all complete before exit |
-| OPT-2-T8 | Client disconnect frees KV slot | Disconnect mid-stream: sequence removed, slot reused on next request |
+| OPT-2-T1 | Single request through scheduler | PASS — correct text, no deadlock |
+| OPT-2-T2 | 4 concurrent requests complete | PASS — all goroutines get non-empty responses |
+| OPT-2-T3 | Race detector clean | PASS — `go test -race ./go/...` exits 0 |
+| OPT-2-T4 | P50 latency drops | PARTIAL — P50=1185ms (target ≤600ms; requires OPT-22 for further gains) |
+| OPT-2-T5 | Throughput does not regress | PASS — 200 tok/s (target ≥140 tok/s) |
+| OPT-2-T6 | SSE streaming works | PASS — `curl -N` emits `data:` lines per token |
+| OPT-2-T7 | Graceful shutdown | PASS — SIGTERM with 4 in-flight: all complete before exit |
+| OPT-2-T8 | Client disconnect frees KV slot | PASS — disconnect mid-stream: slot reused on next request |
 
 ---
 
