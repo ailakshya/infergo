@@ -98,7 +98,7 @@ Current `onnxAdapter` only registers the model path — does not run inference.
 
 ---
 
-### OPT-4 — Embeddings API + benchmark `[ ]` M
+### OPT-4 — Embeddings API + benchmark `[~]` M
 
 **Scope:** `/v1/embeddings` endpoint (OpenAI-compatible) + benchmark vs
 `sentence-transformers`.
