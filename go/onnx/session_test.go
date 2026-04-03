@@ -1,11 +1,17 @@
 package onnx_test
 
 import (
+	"sync"
 	"testing"
 	"unsafe"
 
 	"github.com/ailakshya/infergo/onnx"
 	"github.com/ailakshya/infergo/tensor"
+)
+
+const (
+	miniLMModel = "/home/lakshya/cgo/models/all-MiniLM-L6-v2/onnx/model.onnx"
+	yoloModel   = "/home/lakshya/cgo/models/yolov8n.onnx"
 )
 
 // scale.onnx: y = x * 2, input "x" [1,4] float32, output "y" [1,4] float32
@@ -238,5 +244,168 @@ func TestRun_OutputsOwnedByCaller(t *testing.T) {
 			o.Free()
 		}
 		in.Free()
+	}
+}
+
+// ─── T2: all-MiniLM-L6-v2 embedding shape ────────────────────────────────────
+
+// TestRun_MiniLM_OutputShape verifies that the all-MiniLM-L6-v2 ONNX model
+// runs end-to-end and produces last_hidden_state with the expected last
+// dimension of 384.
+func TestRun_MiniLM_OutputShape(t *testing.T) {
+	s, err := onnx.NewSession("cpu", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if err := s.Load(miniLMModel); err != nil {
+		t.Skipf("miniLM model not available: %v", err)
+	}
+
+	// Inputs: input_ids, attention_mask, token_type_ids — all [1, 8] int64
+	const batchSize, seqLen = 1, 8
+	shape := []int{batchSize, seqLen}
+	inputs := make([]*tensor.Tensor, 3)
+	for i := range inputs {
+		inp, err := tensor.NewTensorCPU(shape, tensor.Int64)
+		if err != nil {
+			t.Fatalf("NewTensorCPU input[%d]: %v", i, err)
+		}
+		// fill with zeros (valid padding tokens)
+		inputs[i] = inp
+	}
+	defer func() {
+		for _, inp := range inputs {
+			inp.Free()
+		}
+	}()
+
+	// Set input_ids to 101 (CLS) + 102 (SEP) + zeros
+	ids := (*[8]int64)(inputs[0].DataPtr())
+	ids[0] = 101
+	ids[1] = 102
+	// attention_mask: ones for real tokens, zeros for padding
+	mask := (*[8]int64)(inputs[1].DataPtr())
+	mask[0] = 1
+	mask[1] = 1
+
+	outputs, err := s.Run(inputs)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer func() {
+		for _, o := range outputs {
+			o.Free()
+		}
+	}()
+
+	if len(outputs) != 1 {
+		t.Fatalf("expected 1 output, got %d", len(outputs))
+	}
+
+	shapeOut := outputs[0].Shape()
+	if len(shapeOut) != 3 {
+		t.Fatalf("expected 3-dim output, got ndim=%d shape=%v", len(shapeOut), shapeOut)
+	}
+	if shapeOut[0] != 1 || shapeOut[1] != seqLen || shapeOut[2] != 384 {
+		t.Errorf("output shape: got %v, want [1, %d, 384]", shapeOut, seqLen)
+	}
+}
+
+// ─── T3: yolov8n detection shape ─────────────────────────────────────────────
+
+// TestRun_YOLOv8n_OutputShape verifies that yolov8n on a 640×640 zero image
+// produces output shape [1, 84, 8400].
+func TestRun_YOLOv8n_OutputShape(t *testing.T) {
+	s, err := onnx.NewSession("cpu", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if err := s.Load(yoloModel); err != nil {
+		t.Skipf("yolov8n model not available: %v", err)
+	}
+
+	// Input: [1, 3, 640, 640] float32 zeros
+	inp, err := tensor.NewTensorCPU([]int{1, 3, 640, 640}, tensor.Float32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inp.Free()
+
+	outputs, err := s.Run([]*tensor.Tensor{inp})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer func() {
+		for _, o := range outputs {
+			o.Free()
+		}
+	}()
+
+	if len(outputs) != 1 {
+		t.Fatalf("expected 1 output, got %d", len(outputs))
+	}
+
+	shapeOut := outputs[0].Shape()
+	if len(shapeOut) != 3 || shapeOut[0] != 1 || shapeOut[1] != 84 || shapeOut[2] != 8400 {
+		t.Errorf("output shape: got %v, want [1, 84, 8400]", shapeOut)
+	}
+}
+
+// ─── T7: Concurrent sessions ──────────────────────────────────────────────────
+
+// TestRun_ConcurrentSessions runs 4 goroutines each creating a session and
+// calling Run simultaneously — verifies no crash, no data race.
+func TestRun_ConcurrentSessions(t *testing.T) {
+	var wg sync.WaitGroup
+	errs := make(chan error, 4)
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s, err := onnx.NewSession("cpu", 0)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer s.Close()
+
+			if err := s.Load(testModel); err != nil {
+				errs <- err
+				return
+			}
+
+			in, err := tensor.NewTensorCPU([]int{1, 4}, tensor.Float32)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer in.Free()
+
+			src := []float32{1.0, 2.0, 3.0, 4.0}
+			if err := in.CopyFrom(unsafe.Pointer(&src[0]), 16); err != nil {
+				errs <- err
+				return
+			}
+
+			outs, err := s.Run([]*tensor.Tensor{in})
+			if err != nil {
+				errs <- err
+				return
+			}
+			for _, o := range outs {
+				o.Free()
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent run error: %v", err)
 	}
 }
