@@ -130,9 +130,9 @@ func (s *schedulerModel) enqueue(ctx context.Context, tokens []int32, maxTokens 
 	if maxTokens <= 0 {
 		maxTokens = 256
 	}
-	if temp == 0 {
-		temp = 0.7
-	}
+	// Do NOT override temp=0 — zero means greedy (argmax) sampling,
+	// which is O(N) vs O(N log N) for top-p. Callers that want stochastic
+	// sampling must set temp > 0 explicitly.
 	req := &schedRequest{
 		ctx:       ctx,
 		tokens:    tokens,
