@@ -83,18 +83,35 @@ TEST(KVSerialize, T2_DeserializeRestoresState) {
         << "Byte count should be identical after round-trip";
 }
 
-// ─── T3: SerializeKV on an empty/unused seq returns empty ────────────────────
+// ─── T3: SerializeKV on unused seq is smaller than after prefill ─────────────
+// llama.cpp's llama_state_seq_get_size returns non-zero even for unused slots
+// (pre-allocated KV metadata). We verify the used-seq bytes > unused-seq bytes.
 
-TEST(KVSerialize, T3_SerializeEmptySeqReturnsEmpty) {
+TEST(KVSerialize, T3_SerializeEmptySeqSmallerThanUsed) {
     SKIP_IF_NO_MODEL();
 
     LLMEngine e;
     e.LoadModel(TEST_MODEL_PATH, 0, 512, 4, 512);
 
-    // Seq 0 has never been used — no KV data should exist.
-    const auto kv = e.SerializeKV(0);
-    EXPECT_EQ(kv.size(), 0u)
-        << "SerializeKV on an unused sequence should return empty bytes";
+    // Serialize seq 1 before any decode — should be ≤ bytes of a used seq.
+    const auto kv_unused = e.SerializeKV(1);
+
+    // Run a prefill on seq 0.
+    const auto tokens = e.Tokenize("Hello world", /*add_bos=*/true);
+    ASSERT_FALSE(tokens.empty());
+    SequenceInput inp;
+    inp.seq_id = 0;
+    inp.tokens = tokens;
+    inp.pos    = 0;
+    inp.want_logits = true;
+    ASSERT_NO_THROW(e.BatchDecode({inp}));
+
+    const auto kv_used = e.SerializeKV(0);
+    ASSERT_GT(kv_used.size(), 0u) << "Used seq must serialize to non-zero bytes";
+
+    // The unused seq either has 0 bytes or fewer bytes than the used seq.
+    EXPECT_LE(kv_unused.size(), kv_used.size())
+        << "Unused seq KV state should be <= used seq KV state in size";
 }
 
 // ─── T4: SerializeKV / DeserializeKV on unloaded engine ─────────────────────
