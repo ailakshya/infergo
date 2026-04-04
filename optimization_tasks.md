@@ -609,7 +609,9 @@ N GPUs — each GPU holds 1/N of the weights and computes 1/N of each layer.
 
 ---
 
-### OPT-24 — Pipeline parallelism (multi-GPU, model layers split) `[ ]` XL
+### OPT-24 — Pipeline parallelism (multi-GPU, model layers split) `[~]` XL
+
+**Result:** 2026-04-04 — --pipeline-stages flag implemented with LLAMA_SPLIT_MODE_LAYER; single-stage smoke test passes on gpu_dev; multi-GPU tests hardware-blocked (need 2+ GPUs)
 
 **Problem:** Tensor parallelism requires high-bandwidth NVLink between GPUs (PCIe
 is too slow for all-reduce). Pipeline parallelism splits layers across GPUs — GPU 0
@@ -617,18 +619,21 @@ runs layers 0–15, GPU 1 runs layers 16–31 — with only activation tensors c
 the PCIe bus. Works on consumer GPUs without NVLink.
 
 **What changes:**
-- llama.cpp `--override-tensor` or manual layer assignment per GPU
-- `--pipeline-stages N` flag: assign layers 0..L/N to GPU 0, L/N..2L/N to GPU 1, etc.
-- Micro-batching to keep all GPUs busy (pipeline bubble reduction)
+- `LLMEngine::LoadModelPipeline()` in `cpp/llm/llm_engine.cpp` — even layer fractions with `LLAMA_SPLIT_MODE_LAYER`
+- `infer_llm_create_pipeline()` C API in `cpp/api/api.cpp` and `cpp/include/infer_api.h`
+- `llm.LoadPipeline()` Go binding in `go/llm/model.go`
+- `--pipeline-stages N` CLI flag in `go/cmd/infergo/serve.go`; takes priority over `--tensor-split` when N>1
+- Tests in `go/cmd/infergo/pipeline_test.go`
 
 **Test cases:**
 
 | ID | Test | Pass condition |
 |---|---|---|
-| OPT-24-T1 | 2-stage pipeline loads | Layers split evenly; both GPUs show VRAM usage |
-| OPT-24-T2 | Correctness | Output matches single-GPU run for same prompt (temperature=0) |
-| OPT-24-T3 | PCIe bandwidth sufficient | No timeout on 4× A5000 (PCIe, no NVLink) |
-| OPT-24-T4 | Throughput ≥ single GPU | 2-stage pipeline tok/s ≥ 0.9× single GPU (pipeline bubble ≤ 10%) |
+| OPT-24-T0 | Single-stage smoke test | PASS — --pipeline-stages 1 starts, serves /health/ready, generates text |
+| OPT-24-T1 | 2-stage pipeline loads | SKIP — requires 2 GPUs |
+| OPT-24-T2 | Correctness | SKIP — requires 2 GPUs |
+| OPT-24-T3 | PCIe bandwidth sufficient | SKIP — requires 2 GPUs |
+| OPT-24-T4 | Throughput ≥ single GPU | SKIP — requires 2 GPUs |
 
 ---
 
