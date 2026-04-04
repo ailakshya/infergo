@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	infergogrpc "github.com/ailakshya/infergo/grpc"
 	"github.com/ailakshya/infergo/llm"
 	"github.com/ailakshya/infergo/onnx"
 	"github.com/ailakshya/infergo/server"
@@ -61,6 +62,7 @@ func runServe(args []string) {
 	maxQueue     := fs.Int("max-queue", 100, "max in-flight requests (active+waiting); 503 beyond this")
 	maxActive    := fs.Int("max-active", 0, "max concurrent request handlers (0 = same as --max-queue)")
 	otlpEndpoint := fs.String("otlp-endpoint", "", "OTLP HTTP endpoint for tracing (e.g. localhost:4318; empty = disabled)")
+	grpcPort     := fs.Int("grpc-port", 9091, "gRPC listen port (0 = disabled)")
 	fs.Parse(args)
 
 	if *apiKey == "" {
@@ -91,7 +93,7 @@ func runServe(args []string) {
 	// Load all specified models.
 	for _, spec := range models {
 		name, path := parseModelSpec(spec)
-		if err := loadModel(reg, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs); err != nil {
+		if err := loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs); err != nil {
 			log.Fatalf("failed to load model %q: %v", spec, err)
 		}
 		log.Printf("loaded model %q (%s)", name, path)
@@ -103,7 +105,7 @@ func runServe(args []string) {
 
 	// Inject the hot-reload function so POST /v1/admin/reload works.
 	apiSrv.SetReloader(func(name, path string) error {
-		return loadModel(reg, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs)
+		return loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs)
 	})
 
 	var v1Handler http.Handler = server.WrapTracing(metrics.WrapServer(apiSrv), "infergo.v1")
@@ -126,6 +128,19 @@ func runServe(args []string) {
 	addr := fmt.Sprintf(":%d", *port)
 	httpSrv := &http.Server{Addr: addr, Handler: mux}
 
+	// Start gRPC server if --grpc-port > 0.
+	var grpcSrvInst *infergogrpc.Server
+	if *grpcPort > 0 {
+		grpcSrvInst = infergogrpc.New(newGRPCRegistry(reg))
+		go func() {
+			grpcAddr := fmt.Sprintf(":%d", *grpcPort)
+			log.Printf("gRPC listening on %s", grpcAddr)
+			if err := grpcSrvInst.Serve(grpcAddr); err != nil {
+				log.Printf("gRPC server error: %v", err)
+			}
+		}()
+	}
+
 	// Graceful shutdown on SIGINT/SIGTERM
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -139,6 +154,9 @@ func runServe(args []string) {
 
 	<-stop
 	log.Println("shutting down…")
+	if grpcSrvInst != nil {
+		grpcSrvInst.Stop()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	httpSrv.Shutdown(ctx)
@@ -152,11 +170,11 @@ func modelName(path string) string {
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
-func loadModel(reg *server.Registry, name, path, provider string, gpuLayers, ctxSize, threads, maxSeqs int) error {
+func loadModel(reg *server.Registry, metrics *server.Metrics, name, path, provider string, gpuLayers, ctxSize, threads, maxSeqs int) error {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".gguf":
-		return loadLLM(reg, name, path, gpuLayers, ctxSize, threads, maxSeqs)
+		return loadLLM(reg, metrics, name, path, gpuLayers, ctxSize, threads, maxSeqs)
 	case ".onnx":
 		return loadONNX(reg, name, path, provider)
 	default:
@@ -164,7 +182,7 @@ func loadModel(reg *server.Registry, name, path, provider string, gpuLayers, ctx
 	}
 }
 
-func loadLLM(reg *server.Registry, name, path string, gpuLayers, ctxSize, threads, maxSeqs int) error {
+func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, gpuLayers, ctxSize, threads, maxSeqs int) error {
 	if threads <= 0 {
 		threads = runtime.NumCPU() / 2
 		if threads < 1 {
@@ -178,7 +196,7 @@ func loadLLM(reg *server.Registry, name, path string, gpuLayers, ctxSize, thread
 	if err != nil {
 		return err
 	}
-	return reg.Load(name, newSchedulerModel(m))
+	return reg.Load(name, newSchedulerModel(m, metrics.ActiveSequences))
 }
 
 // onnxAdapter is a placeholder for ONNX models that lack a recognized

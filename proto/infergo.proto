@@ -1,0 +1,38 @@
+syntax = "proto3";
+package infergo.v1;
+option go_package = "github.com/ailakshya/infergo/grpc/pb";
+
+service Infergo {
+  rpc ChatCompletion(ChatRequest) returns (stream ChatChunk);
+  rpc Embed(EmbedRequest) returns (EmbedResponse);
+  rpc Detect(DetectRequest) returns (DetectResponse);
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+}
+
+message Message { string role = 1; string content = 2; }
+message ChatRequest {
+  string model = 1;
+  repeated Message messages = 2;
+  int32 max_tokens = 3;
+  float temperature = 4;
+}
+message ChatChunk { string token = 1; bool done = 2; }
+
+message EmbedRequest { string model = 1; string input = 2; }
+message EmbedResponse { repeated float values = 1; }
+
+message DetectRequest {
+  string model = 1;
+  bytes image_bytes = 2;
+  float conf_thresh = 3;
+  float iou_thresh = 4;
+}
+message Detection {
+  float x1 = 1; float y1 = 2; float x2 = 3; float y2 = 4;
+  int32 class_id = 5; float confidence = 6;
+}
+message DetectResponse { repeated Detection detections = 1; }
+
+message ListModelsRequest {}
+message ModelInfo { string name = 1; }
+message ListModelsResponse { repeated ModelInfo models = 1; }
