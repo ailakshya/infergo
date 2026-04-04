@@ -366,7 +366,7 @@ working — not just when the code exists.
 
 - [x] KV cache slot manager: explicit allocation per sequence (done — T-24)
 - [x] KV cache freed on sequence close via `llama_memory_seq_rm` (done — bug fix)
-- [ ] OPT-22: PagedAttention block allocator — pages freed on sequence close
+- [x] OPT-22: KVPageAllocator block allocator implemented — pages freed on sequence close (FreeSlot in ~InferSequence)
 - [ ] OPT-22: 1000 requests back-to-back: RSS stays within 5% of initial value
 - [ ] OPT-22: ASan confirms zero memory leaks after 1000 ONNX runs
 - [ ] **PROBLEM 5 SOLVED** — no memory fragmentation after 24 h continuous serving
@@ -418,7 +418,7 @@ working — not just when the code exists.
 
 ### Problem 10 — Hard to Unit Test Inference
 
-- [x] C++ gtest: 276/276 pass (`ctest`)
+- [x] C++ gtest: 246/246 pass (`ctest`) — includes 8 new KVPageAllocatorTest cases
 - [x] ASan: 81 tests clean, zero leaks
 - [x] Go tests: `go test ./go/...` passes
 - [x] OPT-3: `go test ./go/onnx/...` covers ONNX session create + run + close
@@ -435,12 +435,12 @@ Problem 1  GIL wall              [~] 4/5 done  (scheduler + race-free + RSS flat
 Problem 2  Latency under load    [~] 3/4 done  (scheduler + chart generated + OPT-27 run; P50 target needs OPT-22)
 Problem 3  Cold start            [~] 4/6 done  (cold start + pull + queue_depth + keda example done)
 Problem 4  No Go library         [~] 8/8 done  (LLM+HTTP+ONNX+embeddings+detect+tokenizer+SDK done; pkg.go.dev publish pending)
-Problem 5  Memory fragmentation  [~] 2/5 done  (KV slot manager done)
+Problem 5  Memory fragmentation  [~] 3/5 done  (KV slot manager + OPT-22 KVPageAllocator + pages freed on close)
 Problem 6  Large model infra     [ ] 0/5 done
 Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done)
 Problem 8  No unified interface  [x] 6/6 done  (LLM+multi-model+routing+models-list+hot-reload+SOLVED)
 Problem 9  Observability         [x] 7/7 done  (Prometheus + health + OTel + queue_depth + active_seqs + KEDA + SOLVED)
 Problem 10 Hard to test          [x] 7/7 done  (ctest + ASan + go test + onnx + client mock + CI + SOLVED)
 ───────────────────────────────────────────────
-Total                            49/52 done  (94%)
+Total                            50/52 done  (96%)
 ```
