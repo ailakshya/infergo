@@ -131,6 +131,65 @@ void LLMEngine::LoadModelSplit(const std::string& path,
     vocab_size_ = llama_vocab_n_tokens(vocab);
 }
 
+// ─── LoadModelPipeline ────────────────────────────────────────────────────────
+
+void LLMEngine::LoadModelPipeline(const std::string& path,
+                                   int n_gpu_layers,
+                                   int ctx_size,
+                                   int n_seq_max,
+                                   int n_batch,
+                                   int n_stages)
+{
+    // Clean up any previously loaded model
+    if (batch_initialized_) { llama_batch_free(batch_); batch_initialized_ = false; }
+    if (ctx_)   { llama_free(ctx_);           ctx_   = nullptr; }
+    if (model_) { llama_model_free(model_);   model_ = nullptr; }
+
+    // Model params
+    llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = n_gpu_layers;
+
+    // Apply pipeline (layer) split when more than one stage is requested.
+    // Build even fractions: split[i] = 1.0 / n_stages for each GPU.
+    std::vector<float> split_fracs;
+    if (n_stages > 1) {
+        split_fracs.resize(static_cast<size_t>(n_stages), 1.0f / static_cast<float>(n_stages));
+        mparams.tensor_split = split_fracs.data();
+        mparams.split_mode   = LLAMA_SPLIT_MODE_LAYER;
+    }
+
+    model_ = llama_model_load_from_file(path.c_str(), mparams);
+    if (model_ == nullptr) {
+        throw std::runtime_error(
+            "LLMEngine::LoadModelPipeline: failed to load model from '" + path + "'");
+    }
+
+    // Context params
+    llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx      = static_cast<uint32_t>(ctx_size);
+    cparams.n_batch    = static_cast<uint32_t>(n_batch);
+    cparams.n_ubatch   = static_cast<uint32_t>(n_batch);
+    cparams.n_seq_max  = static_cast<uint32_t>(n_seq_max);
+    cparams.offload_kqv = true;
+    cparams.no_perf     = true;
+
+    ctx_ = llama_init_from_model(model_, cparams);
+    if (ctx_ == nullptr) {
+        llama_model_free(model_);
+        model_ = nullptr;
+        throw std::runtime_error("LLMEngine::LoadModelPipeline: failed to create llama_context");
+    }
+
+    // Pre-allocate batch
+    n_batch_ = n_batch;
+    batch_ = llama_batch_init(n_batch, /*embd=*/0, /*n_seq_max=*/1);
+    batch_initialized_ = true;
+
+    // Cache vocab size
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    vocab_size_ = llama_vocab_n_tokens(vocab);
+}
+
 // ─── BatchDecode ─────────────────────────────────────────────────────────────
 
 std::vector<SequenceLogits> LLMEngine::BatchDecode(
@@ -268,6 +327,45 @@ std::string LLMEngine::TokenToPiece(int32_t token) const {
         throw std::runtime_error("LLMEngine::TokenToPiece: buffer too small");
     }
     return std::string(buf, static_cast<size_t>(n));
+}
+
+// ─── KV serialization ────────────────────────────────────────────────────────
+
+std::vector<uint8_t> LLMEngine::SerializeKV(int seq_id) const {
+    if (ctx_ == nullptr) {
+        return {};
+    }
+
+    // Query the exact byte count needed for this sequence's KV state.
+    const size_t needed = llama_state_seq_get_size(ctx_,
+                                                    static_cast<llama_seq_id>(seq_id));
+    if (needed == 0) {
+        return {};
+    }
+
+    std::vector<uint8_t> buf(needed);
+    const size_t written = llama_state_seq_get_data(ctx_,
+                                                     buf.data(),
+                                                     buf.size(),
+                                                     static_cast<llama_seq_id>(seq_id));
+    if (written == 0) {
+        return {};
+    }
+
+    buf.resize(written);
+    return buf;
+}
+
+bool LLMEngine::DeserializeKV(int seq_id, const uint8_t* data, size_t nbytes) {
+    if (ctx_ == nullptr || data == nullptr || nbytes == 0) {
+        return false;
+    }
+
+    const size_t consumed = llama_state_seq_set_data(ctx_,
+                                                      data,
+                                                      nbytes,
+                                                      static_cast<llama_seq_id>(seq_id));
+    return consumed > 0;
 }
 
 } // namespace infergo

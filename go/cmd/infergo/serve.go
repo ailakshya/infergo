@@ -64,7 +64,8 @@ func runServe(args []string) {
 	maxActive    := fs.Int("max-active", 0, "max concurrent request handlers (0 = same as --max-queue)")
 	otlpEndpoint := fs.String("otlp-endpoint", "", "OTLP HTTP endpoint for tracing (e.g. localhost:4318; empty = disabled)")
 	grpcPort     := fs.Int("grpc-port", 9091, "gRPC listen port (0 = disabled)")
-	tensorSplitStr := fs.String("tensor-split", "", "comma-separated GPU fractions for tensor parallelism (e.g. 0.5,0.5); empty = single GPU")
+	tensorSplitStr  := fs.String("tensor-split", "", "comma-separated GPU fractions for tensor parallelism (e.g. 0.5,0.5); empty = single GPU")
+	pipelineStages  := fs.Int("pipeline-stages", 1, "number of pipeline stages for layer-split multi-GPU inference (1 = single GPU, N>1 = N GPUs with LLAMA_SPLIT_MODE_LAYER)")
 	fs.Parse(args)
 
 	if *apiKey == "" {
@@ -102,7 +103,7 @@ func runServe(args []string) {
 	// Load all specified models.
 	for _, spec := range models {
 		name, path := parseModelSpec(spec)
-		if err := loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit); err != nil {
+		if err := loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit, *pipelineStages); err != nil {
 			log.Fatalf("failed to load model %q: %v", spec, err)
 		}
 		log.Printf("loaded model %q (%s)", name, path)
@@ -114,7 +115,7 @@ func runServe(args []string) {
 
 	// Inject the hot-reload function so POST /v1/admin/reload works.
 	apiSrv.SetReloader(func(name, path string) error {
-		return loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit)
+		return loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit, *pipelineStages)
 	})
 
 	var v1Handler http.Handler = server.WrapTracing(metrics.WrapServer(apiSrv), "infergo.v1")
@@ -179,11 +180,11 @@ func modelName(path string) string {
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
-func loadModel(reg *server.Registry, metrics *server.Metrics, name, path, provider string, gpuLayers, ctxSize, threads, maxSeqs int, tensorSplit []float32) error {
+func loadModel(reg *server.Registry, metrics *server.Metrics, name, path, provider string, gpuLayers, ctxSize, threads, maxSeqs int, tensorSplit []float32, pipelineStages int) error {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".gguf":
-		return loadLLM(reg, metrics, name, path, gpuLayers, ctxSize, threads, maxSeqs, tensorSplit)
+		return loadLLM(reg, metrics, name, path, gpuLayers, ctxSize, threads, maxSeqs, tensorSplit, pipelineStages)
 	case ".onnx":
 		return loadONNX(reg, name, path, provider)
 	default:
@@ -191,7 +192,7 @@ func loadModel(reg *server.Registry, metrics *server.Metrics, name, path, provid
 	}
 }
 
-func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, gpuLayers, ctxSize, threads, maxSeqs int, tensorSplit []float32) error {
+func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, gpuLayers, ctxSize, threads, maxSeqs int, tensorSplit []float32, pipelineStages int) error {
 	if threads <= 0 {
 		threads = runtime.NumCPU() / 2
 		if threads < 1 {
@@ -205,7 +206,11 @@ func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, g
 		m   *llm.Model
 		err error
 	)
-	if len(tensorSplit) > 0 {
+	// --pipeline-stages takes priority over --tensor-split when both are set.
+	if pipelineStages > 1 {
+		log.Printf("pipeline parallelism across %d GPU stage(s) (LLAMA_SPLIT_MODE_LAYER)", pipelineStages)
+		m, err = llm.LoadPipeline(path, gpuLayers, ctxSize, maxSeqs, 2048, pipelineStages)
+	} else if len(tensorSplit) > 0 {
 		log.Printf("tensor split across %d GPU(s): %v", len(tensorSplit), tensorSplit)
 		m, err = llm.LoadSplit(path, gpuLayers, ctxSize, maxSeqs, 2048, tensorSplit)
 	} else {

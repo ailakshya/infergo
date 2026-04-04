@@ -536,6 +536,38 @@ InferLLM infer_llm_create_split(const char* path,
     }
 }
 
+InferLLM infer_llm_create_pipeline(const char* path,
+                                    int         n_gpu_layers,
+                                    int         ctx_size,
+                                    int         n_seq_max,
+                                    int         n_batch,
+                                    int         n_stages)
+{
+    try {
+        if (path == nullptr) {
+            infergo::set_last_error("infer_llm_create_pipeline: null path");
+            return nullptr;
+        }
+        if (n_seq_max <= 0) {
+            infergo::set_last_error("infer_llm_create_pipeline: n_seq_max must be > 0");
+            return nullptr;
+        }
+        if (n_stages < 1) {
+            infergo::set_last_error("infer_llm_create_pipeline: n_stages must be >= 1");
+            return nullptr;
+        }
+        auto* h = new LLMHandle(n_seq_max, ctx_size);
+        h->engine.LoadModelPipeline(path, n_gpu_layers, ctx_size, n_seq_max, n_batch, n_stages);
+        return static_cast<InferLLM>(h);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_llm_create_pipeline: unknown exception");
+        return nullptr;
+    }
+}
+
 void infer_llm_destroy(InferLLM llm) {
     if (llm == nullptr) return;
     try { delete static_cast<LLMHandle*>(llm); } catch (...) {}

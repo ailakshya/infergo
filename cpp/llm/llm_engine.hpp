@@ -65,6 +65,16 @@ public:
                         const float* tensor_split,
                         int          n_split);
 
+    /// Load a GGUF model with pipeline parallelism across n_stages GPUs.
+    /// Layers are distributed evenly using LLAMA_SPLIT_MODE_LAYER.
+    /// n_stages=1 is identical to LoadModel() (single GPU, no split).
+    void LoadModelPipeline(const std::string& path,
+                           int n_gpu_layers,
+                           int ctx_size,
+                           int n_seq_max,
+                           int n_batch,
+                           int n_stages);
+
     /// Process one decode step for a set of sequences.
     /// Each entry in inputs describes which tokens to process and at what position.
     /// Returns logits for every sequence that had want_logits=true.
@@ -92,6 +102,14 @@ public:
 
     /// Returns the raw llama_context* (needed by SeqHandle to clear KV cache).
     llama_context* Context() const noexcept { return ctx_; }
+
+    /// Serialize the KV cache for a specific sequence to a byte buffer.
+    /// Returns the serialized bytes; empty on failure (model not loaded or seq invalid).
+    std::vector<uint8_t> SerializeKV(int seq_id) const;
+
+    /// Deserialize KV cache bytes into a specific sequence slot.
+    /// Returns true on success, false on failure (model not loaded, bad data, etc.).
+    bool DeserializeKV(int seq_id, const uint8_t* data, size_t nbytes);
 
 private:
     llama_model*   model_   = nullptr;

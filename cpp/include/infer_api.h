@@ -214,6 +214,16 @@ InferLLM infer_llm_create_split(const char* path,
                                  const float* tensor_split,
                                  int          n_split);
 
+// Create LLM with pipeline parallelism across n_stages GPUs.
+// Layers are distributed evenly using LLAMA_SPLIT_MODE_LAYER.
+// n_stages=1 is identical to infer_llm_create (single GPU).
+InferLLM infer_llm_create_pipeline(const char* path,
+                                    int         n_gpu_layers,
+                                    int         ctx_size,
+                                    int         n_seq_max,
+                                    int         n_batch,
+                                    int         n_stages);
+
 // Destroy LLM engine. Safe to call with NULL.
 void infer_llm_destroy(InferLLM llm);
 
@@ -342,6 +352,30 @@ int infer_postprocess_nms(InferTensor predictions,
 // L2-normalize a float32 tensor in-place: divide each element by sqrt(sum of squares).
 // No-op if the L2 norm is zero. Returns INFER_OK on success, or -1 on error.
 InferError infer_postprocess_normalize_embedding(InferTensor t);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// KV CACHE SERIALIZATION API
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Serialize the KV cache for a sequence slot.
+//
+// Two-call protocol:
+//   1. Call with out_buf=NULL to query the required buffer size.
+//      Returns the required byte count, or -1 on error (llm is NULL or ctx unloaded).
+//   2. Call with a caller-allocated out_buf of at least out_buf_size bytes.
+//      Returns the number of bytes actually written, or -1 on error.
+//
+// seq_id: the sequence slot ID (from infer_seq_slot_id()).
+int infer_llm_kv_serialize(InferLLM llm, int seq_id,
+                            uint8_t* out_buf, int out_buf_size);
+
+// Deserialize KV cache bytes into a sequence slot.
+// seq_id:  the destination sequence slot.
+// data:    pointer to the serialized bytes (from a previous infer_llm_kv_serialize call).
+// nbytes:  length of data in bytes.
+// Returns 0 on success, -1 on error.
+int infer_llm_kv_deserialize(InferLLM llm, int seq_id,
+                              const uint8_t* data, int nbytes);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // KV PAGE METRICS

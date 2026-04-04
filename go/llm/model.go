@@ -82,6 +82,25 @@ func LoadSplit(path string, nGPULayers, ctxSize, nSeqMax, nBatch int, tensorSpli
 	return m, nil
 }
 
+// LoadPipeline creates an LLM engine with pipeline parallelism across n_stages GPUs.
+// Layers are distributed evenly using LLAMA_SPLIT_MODE_LAYER.
+// n_stages=1 is equivalent to Load() (single GPU, no split).
+func LoadPipeline(path string, nGPULayers, ctxSize, nSeqMax, nBatch, nStages int) (*Model, error) {
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+
+	ptr := C.infer_llm_create_pipeline(cPath, C.int(nGPULayers), C.int(ctxSize), C.int(nSeqMax), C.int(nBatch), C.int(nStages))
+	if ptr == nil {
+		return nil, fmt.Errorf("llm: load pipeline %q failed: %w", path, lastError())
+	}
+	m := &Model{
+		ptr:       ptr,
+		vocabSize: int(C.infer_llm_vocab_size(ptr)),
+	}
+	runtime.SetFinalizer(m, (*Model).Close)
+	return m, nil
+}
+
 // Close destroys the LLM engine and frees all C resources.
 // Safe to call multiple times.
 func (m *Model) Close() {
