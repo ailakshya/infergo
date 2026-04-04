@@ -358,7 +358,7 @@ working — not just when the code exists.
 - [x] OPT-7: BERT tokenizer for embedding models (go/tokenizer wraps HF tokenizers)
 - [x] OPT-15: `go get github.com/ailakshya/infergo/client` — typed Go SDK
 - [x] OPT-15: `client.Chat()`, `client.Embed()`, `client.Detect()` all work in tests
-- [ ] **PROBLEM 4 SOLVED** — full Go-native inference SDK published on pkg.go.dev
+- [x] **PROBLEM 4 SOLVED** — v0.1.0 tagged + published on pkg.go.dev (2026-04-04); Awesome Go PR submitted (avelino/awesome-go#6200)
 
 ---
 
@@ -435,7 +435,7 @@ working — not just when the code exists.
 Problem 1  GIL wall              [~] 4/5 done  (scheduler + race-free + RSS flat + OPT-27 run; P50=1307ms with batch tuning, target ≤600ms not yet met)
 Problem 2  Latency under load    [~] 4/5 done  (scheduler + OPT-22 P50 improvement measured + chart + OPT-27; P50=1307ms with batch flags, target ≤600ms not yet met)
 Problem 3  Cold start            [~] 4/6 done  (cold start + pull + queue_depth + keda example done)
-Problem 4  No Go library         [~] 8/8 done  (LLM+HTTP+ONNX+embeddings+detect+tokenizer+SDK done; pkg.go.dev publish pending)
+Problem 4  No Go library         [x] 9/9 done  (LLM+HTTP+ONNX+embeddings+detect+tokenizer+SDK+pkg.go.dev+Awesome Go PR — SOLVED 2026-04-04)
 Problem 5  Memory fragmentation  [x] 5/5 done  (KV slot manager + OPT-22 allocator + pages freed + ASan 1000 ONNX runs + RSS +0.3% PASS — SOLVED 2026-04-04)
 Problem 6  Large model infra     [~] 0/6 done  (implementations complete; all tests pending AWS multi-GPU/EKS cluster)
 Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done)
@@ -443,5 +443,5 @@ Problem 8  No unified interface  [x] 6/6 done  (LLM+multi-model+routing+models-l
 Problem 9  Observability         [x] 7/7 done  (Prometheus + health + OTel + queue_depth + active_seqs + KEDA + SOLVED)
 Problem 10 Hard to test          [x] 7/7 done  (ctest + ASan + go test + onnx + client mock + CI + SOLVED)
 ───────────────────────────────────────────────
-Total                            47/52 done  (90%) — remaining: P50 target (1307ms; target ≤600ms), Problem 6 AWS multi-GPU tests, Problem 3/7 EKS tests, pkg.go.dev publish
+Total                            49/54 done  (91%) — SOLVED: P4 (pkg.go.dev v0.1.0 + Awesome Go PR), P5 (RSS +0.3% PASS); remaining: P50 ≤600ms (1063ms, needs V100), P6 AWS multi-GPU, P3/P7 EKS
 ```
