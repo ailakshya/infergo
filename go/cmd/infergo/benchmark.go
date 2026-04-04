@@ -98,6 +98,7 @@ func runBenchmark(args []string) {
 	}
 
 	p50 := percentile(latencies, 50)
+	p95 := percentile(latencies, 95)
 	p99 := percentile(latencies, 99)
 	mean := mean(latencies)
 	rps := float64(success) / total.Seconds()
@@ -109,6 +110,7 @@ func runBenchmark(args []string) {
 	fmt.Printf("  Throughput:   %.1f req/s\n", rps)
 	fmt.Printf("  Latency mean: %.0f ms\n", mean)
 	fmt.Printf("  Latency P50:  %.0f ms\n", p50)
+	fmt.Printf("  Latency P95:  %.0f ms\n", p95)
 	fmt.Printf("  Latency P99:  %.0f ms\n", p99)
 	fmt.Printf("──────────────────────────────────────────────────\n\n")
 }

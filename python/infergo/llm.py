@@ -33,6 +33,10 @@ def _sample_token(
     If temperature == 0, returns the argmax (greedy).
     Otherwise applies temperature scaling followed by top-p nucleus sampling.
     """
+    # Convert ctypes array to a plain Python list once — avoids repeated slow
+    # ctypes attribute lookups during iteration over 128k-element vocab.
+    logits = list(logits)
+
     if temperature == 0.0:
         # Greedy: pick the highest logit directly.
         best = 0
@@ -397,13 +401,23 @@ class LLM:
         Applies a simple ChatML-style system/user/assistant template and
         returns the model's response as a string.
 
+        Uses the LLaMA 3 Instruct chat template (ChatML header format).
+
         Template (with system)::
 
-            <|system|>{system}</s><|user|>{message}</s><|assistant|>
+            <|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+            {system}<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+            {message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
 
         Template (without system)::
 
-            <|user|>{message}</s><|assistant|>
+            <|begin_of_text|><|start_header_id|>user<|end_header_id|>
+
+            {message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
 
         Parameters
         ----------
@@ -418,12 +432,18 @@ class LLM:
         """
         if system is not None:
             prompt = (
-                f"<|system|>{system}</s>"
-                f"<|user|>{message}</s>"
-                f"<|assistant|>"
+                f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
+                f"{system}<|eot_id|>"
+                f"<|start_header_id|>user<|end_header_id|>\n\n"
+                f"{message}<|eot_id|>"
+                f"<|start_header_id|>assistant<|end_header_id|>\n\n"
             )
         else:
-            prompt = f"<|user|>{message}</s><|assistant|>"
+            prompt = (
+                f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"
+                f"{message}<|eot_id|>"
+                f"<|start_header_id|>assistant<|end_header_id|>\n\n"
+            )
 
         return self.generate(
             prompt,
