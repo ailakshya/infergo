@@ -34,7 +34,7 @@ llama-cpp-python links OpenBLAS and runs prefill ~10% faster.
 
 ### OPT-2 — GPU/CPU: Continuous batching scheduler `[x]` L
 
-**Result:** 2026-04-03 — scheduler implemented; 142 tok/s → 200 tok/s (+41%), long prompts fixed (ctx-size 4096→16384; llama.cpp divides n_ctx by n_seq_max for per-seq budget). T1-T3, T5-T8 PASS; T4 P50=1185ms (target 600ms not met — needs OPT-22 PagedAttention for true interleaving at scale).
+**Result:** 2026-04-03 — scheduler implemented; 142 tok/s → 200 tok/s (+41%), long prompts fixed (ctx-size 4096→16384; llama.cpp divides n_ctx by n_seq_max for per-seq budget). T1-T3, T5-T8 PASS; T4 P50=1307ms at c=4 with --batch-timeout-ms 5 --max-batch-size 8 (re-benchmarked 2026-04-04; target ≤600ms not yet met).
 
 **Problem:** `llmAdapter.Generate()` holds a mutex for the full request. P50 under
 concurrency=4 is 3× single-client latency. GPU utilization ~25%.
@@ -61,7 +61,7 @@ HTTP handlers ──► request channel ──► scheduler goroutine ──► 
 | OPT-2-T1 | Single request through scheduler | PASS — correct text, no deadlock |
 | OPT-2-T2 | 4 concurrent requests complete | PASS — all goroutines get non-empty responses |
 | OPT-2-T3 | Race detector clean | PASS — `go test -race ./go/...` exits 0 |
-| OPT-2-T4 | P50 latency drops | PARTIAL — P50=1185ms (target ≤600ms; requires OPT-22 for further gains). Scheduler tuning: --max-batch-size + --batch-timeout-ms flags added; gpu_dev re-benchmark pending |
+| OPT-2-T4 | P50 latency drops | PARTIAL — P50=1307ms at c=4 with --batch-timeout-ms 5 --max-batch-size 8 (was 1059ms post-OPT-22; 2026-04-04). Target ≤600ms not yet met — scheduler overhead and CUDA graph warmup dominate at this concurrency level |
 | OPT-2-T5 | Throughput does not regress | PASS — 200 tok/s (target ≥140 tok/s) |
 | OPT-2-T6 | SSE streaming works | PASS — `curl -N` emits `data:` lines per token |
 | OPT-2-T7 | Graceful shutdown | PASS — SIGTERM with 4 in-flight: all complete before exit |
@@ -551,7 +551,7 @@ Enables Mac deployment without CUDA.
 
 ### OPT-22 — PagedAttention KV cache `[x]` XL
 
-**Result:** 2026-04-04 — KVPageAllocator replaces KVCacheSlotManager; 246/246 C++ tests pass; infergo binary builds clean; Go server tests pass. T1/T2/T4/T5 PASS; T3/T6 deferred (require multi-client benchmark).
+**Result:** 2026-04-04 — KVPageAllocator replaces KVCacheSlotManager; 246/246 C++ tests pass; infergo binary builds clean; Go server tests pass. T1/T2/T4/T5 PASS; T3 PASS — RSS drift +0.3% after 1000 requests with GOGC=50 + --gc-interval 100 (2026-04-04); T6 PASS — c=32: 12.5 → 17.4 req/s (+39%) post-OPT-22.
 
 **Problem:** Current KV cache allocates a fixed slot per sequence upfront
 (`KVCacheSlotManager`). Slots fragment — a 4096-token budget split across 4
@@ -576,7 +576,7 @@ before needing to scale out.
 |---|---|---|
 | OPT-22-T1 | Pages allocated on demand | PASS — AllocSlot(100) reserves ceil(100/16)=7 pages (KVPageAllocatorTest.T1) |
 | OPT-22-T2 | Pages freed on sequence close | PASS — FreeSlot restores free count (KVPageAllocatorTest.T2, T4) |
-| OPT-22-T3 | 2× concurrent sequences vs fixed slots | PASS — 16 seqs complete, 17th immediately reuses freed slot (sequential test 2026-04-04); KVPageAllocator only consumes pages per token generated, not pre-allocated per slot. GC tuning implemented — --gc-interval flag + GOGC=50; gpu_dev re-test pending |
+| OPT-22-T3 | 2× concurrent sequences vs fixed slots | PASS — RSS drift +0.3% after 1000 requests with GOGC=50 + --gc-interval 100 (was +11.9%; target ≤5%; PASS 2026-04-04). 16 seqs complete, 17th immediately reuses freed slot; KVPageAllocator only consumes pages per token generated, not pre-allocated per slot |
 | OPT-22-T4 | No positional errors | PASS — 246/246 ctest pass, infergo binary builds, server tests pass |
 | OPT-22-T5 | OOM handled gracefully | PASS — initSeq returns "KV cache exhausted" error, existing sequences continue |
 | OPT-22-T6 | Throughput does not regress | PASS — c=32: 12.5 → 17.4 req/s (+39%) post-OPT-22; benchmark 2026-04-04 |

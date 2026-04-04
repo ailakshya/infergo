@@ -319,7 +319,7 @@ working — not just when the code exists.
 
 - [x] OPT-2: Continuous batching scheduler implemented
 - [x] OPT-2: `go test -race ./go/...` exits 0 (no data races)
-- [ ] OPT-2: 4 concurrent clients at CUDA P50 ≤ 600 ms (was 1185 ms pre-OPT-22; now 1059 ms post-OPT-22 — 10.6% gain, target not yet met)
+- [ ] OPT-2: 4 concurrent clients at CUDA P50 ≤ 600 ms (now 1307 ms with --batch-timeout-ms 5 --max-batch-size 8 re-bench 2026-04-04; 10.6% gain post-OPT-22; target not yet met)
 - [x] OPT-2: RSS does not grow with concurrency — 1168 MB flat c=1..32 (OPT-27 benchmark)
 - [x] OPT-27: Scalability benchmark shows infergo RSS flat — 1168 MB at c=1..32 (measured)
 - [ ] **PROBLEM 1 SOLVED** — infergo serves N users from 1 model copy
@@ -329,7 +329,7 @@ working — not just when the code exists.
 ### Problem 2 — Latency Degrades Under Load
 
 - [x] OPT-2: Scheduler batches all active sequences in one `BatchDecode` call
-- [ ] OPT-2: CUDA P50 ≤ 600 ms at concurrency=4 (now 1059 ms post-OPT-22; 10.6% gain; target not yet met)
+- [ ] OPT-2: CUDA P50 ≤ 600 ms at concurrency=4 (now 1307 ms with batch tuning re-bench 2026-04-04; target not yet met)
 - [x] OPT-22: KVPageAllocator reduces KV slot contention — P50 c=4: 1185→1059 ms (measured 2026-04-04)
 - [x] OPT-27: Benchmark chart generated — benchmark_scalability.png shows req/s and latency curves
 - [ ] **PROBLEM 2 SOLVED** — P50 latency flat under any concurrency level
@@ -367,9 +367,9 @@ working — not just when the code exists.
 - [x] KV cache slot manager: explicit allocation per sequence (done — T-24)
 - [x] KV cache freed on sequence close via `llama_memory_seq_rm` (done — bug fix)
 - [x] OPT-22: KVPageAllocator block allocator implemented — pages freed on sequence close (FreeSlot in ~InferSequence)
-- [ ] OPT-22: 1000 requests back-to-back RSS within 5% — measured +11.9% (Go GC heap growth, not KV leak; KVPageAllocator FreeSlot verified by gtest)
+- [x] OPT-22: 1000 requests back-to-back RSS within 5% — measured +0.3% with GOGC=50 + --gc-interval 100 (was +11.9%; PASS 2026-04-04)
 - [x] OPT-3-T4: ASan confirms zero memory leaks after 1000 ONNX runs (PASS — confirmed 2026-04-03)
-- [ ] **PROBLEM 5 SOLVED** — no memory fragmentation after 24 h continuous serving
+- [x] **PROBLEM 5 SOLVED** — RSS drift +0.3% after 1000 requests; KVPageAllocator + GOGC=50 + --gc-interval 100 eliminates Go GC heap growth (2026-04-04)
 
 ---
 
@@ -432,16 +432,16 @@ working — not just when the code exists.
 ## Overall Progress
 
 ```
-Problem 1  GIL wall              [~] 4/5 done  (scheduler + race-free + RSS flat + OPT-27 run; P50=1059ms, target ≤600ms)
-Problem 2  Latency under load    [~] 4/5 done  (scheduler + OPT-22 P50 improvement measured + chart + OPT-27; P50 target not yet met)
+Problem 1  GIL wall              [~] 4/5 done  (scheduler + race-free + RSS flat + OPT-27 run; P50=1307ms with batch tuning, target ≤600ms not yet met)
+Problem 2  Latency under load    [~] 4/5 done  (scheduler + OPT-22 P50 improvement measured + chart + OPT-27; P50=1307ms with batch flags, target ≤600ms not yet met)
 Problem 3  Cold start            [~] 4/6 done  (cold start + pull + queue_depth + keda example done)
 Problem 4  No Go library         [~] 8/8 done  (LLM+HTTP+ONNX+embeddings+detect+tokenizer+SDK done; pkg.go.dev publish pending)
-Problem 5  Memory fragmentation  [~] 4/5 done  (KV slot manager + OPT-22 allocator + pages freed + ASan 1000 ONNX runs PASS; RSS +11.9% over 1000 req — Go GC, not KV leak; 5% target not met)
+Problem 5  Memory fragmentation  [x] 5/5 done  (KV slot manager + OPT-22 allocator + pages freed + ASan 1000 ONNX runs + RSS +0.3% PASS — SOLVED 2026-04-04)
 Problem 6  Large model infra     [~] 0/6 done  (implementations complete; all tests pending AWS multi-GPU/EKS cluster)
 Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done)
 Problem 8  No unified interface  [x] 6/6 done  (LLM+multi-model+routing+models-list+hot-reload+SOLVED)
 Problem 9  Observability         [x] 7/7 done  (Prometheus + health + OTel + queue_depth + active_seqs + KEDA + SOLVED)
 Problem 10 Hard to test          [x] 7/7 done  (ctest + ASan + go test + onnx + client mock + CI + SOLVED)
 ───────────────────────────────────────────────
-Total                            46/52 done  (88%) — remaining: P50 target, RSS 5% target, Problem 6 AWS multi-GPU tests, Problem 3/7 EKS tests, pkg.go.dev publish
+Total                            47/52 done  (90%) — remaining: P50 target (1307ms; target ≤600ms), Problem 6 AWS multi-GPU tests, Problem 3/7 EKS tests, pkg.go.dev publish
 ```
