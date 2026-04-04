@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -157,10 +158,16 @@ type errorResponse struct {
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
+// ReloadFunc is called by handleAdminReload to swap in a new model weight file.
+// It must be safe to call concurrently and should load the new model into the
+// registry under name, atomically replacing any existing entry.
+type ReloadFunc func(name, path string) error
+
 // Server holds the HTTP mux and model registry.
 type Server struct {
 	mux      *http.ServeMux
 	registry *Registry
+	reload   ReloadFunc // optional; nil = reload not configured
 }
 
 // NewServer creates a Server backed by the given Registry and registers all routes.
@@ -174,7 +181,15 @@ func NewServer(reg *Registry) *Server {
 	s.mux.HandleFunc("POST /v1/embeddings", s.handleEmbeddings)
 	s.mux.HandleFunc("POST /v1/detect", s.handleDetect)
 	s.mux.HandleFunc("GET /v1/models", s.handleModels)
+	s.mux.HandleFunc("POST /v1/admin/reload", s.handleAdminReload)
+	s.mux.Handle("GET /v1/ws/chat", s.HandleWSChat())
 	return s
+}
+
+// SetReloader injects the function that performs the actual model hot-swap.
+// Call this once after NewServer, before serving traffic.
+func (s *Server) SetReloader(f ReloadFunc) {
+	s.reload = f
 }
 
 // ServeHTTP implements http.Handler.
@@ -194,6 +209,13 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	var resp errorResponse
 	resp.Error.Message = msg
 	resp.Error.Type = "invalid_request_error"
+	writeJSON(w, status, resp)
+}
+
+func writeReloadError(w http.ResponseWriter, status int, msg string) {
+	var resp errorResponse
+	resp.Error.Message = msg
+	resp.Error.Type = "reload_error"
 	writeJSON(w, status, resp)
 }
 
@@ -457,4 +479,57 @@ func buildPrompt(messages []ChatMessage) string {
 
 func decodeBase64(s string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(s)
+}
+
+// ─── Admin handlers ───────────────────────────────────────────────────────────
+
+// ReloadRequest is the body for POST /v1/admin/reload.
+type ReloadRequest struct {
+	Model string `json:"model"`
+	Path  string `json:"path"`
+}
+
+// ReloadResponse is the success body for POST /v1/admin/reload.
+type ReloadResponse struct {
+	Status string `json:"status"`
+	Model  string `json:"model"`
+	Path   string `json:"path"`
+}
+
+func (s *Server) handleAdminReload(w http.ResponseWriter, r *http.Request) {
+	if s.reload == nil {
+		writeReloadError(w, http.StatusNotImplemented, "reload not configured")
+		return
+	}
+
+	var req ReloadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeReloadError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if req.Model == "" {
+		writeReloadError(w, http.StatusBadRequest, "model field is required")
+		return
+	}
+	if req.Path == "" {
+		writeReloadError(w, http.StatusBadRequest, "path field is required")
+		return
+	}
+
+	// Validate file exists before calling the reloader.
+	if _, err := os.Stat(req.Path); err != nil {
+		writeReloadError(w, http.StatusBadRequest, "model file not found: "+err.Error())
+		return
+	}
+
+	if err := s.reload(req.Model, req.Path); err != nil {
+		writeReloadError(w, http.StatusInternalServerError, "reload failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ReloadResponse{
+		Status: "ok",
+		Model:  req.Model,
+		Path:   req.Path,
+	})
 }
