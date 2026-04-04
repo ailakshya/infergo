@@ -5,7 +5,6 @@ infergo.llm — High-level LLM class wrapping the infergo C API via ctypes.
 from __future__ import annotations
 
 import ctypes
-import math
 from typing import Iterator
 
 from ._lib import lib
@@ -28,58 +27,37 @@ def _sample_token(
     top_p: float,
 ) -> int:
     """
-    Sample a token from logits.
+    Sample a token from logits using numpy (C-backed, vectorised).
 
     If temperature == 0, returns the argmax (greedy).
-    Otherwise applies temperature scaling followed by top-p nucleus sampling.
+    Otherwise applies temperature scaling + softmax + top-p nucleus sampling.
+    All heavy operations run in numpy C loops — no Python iteration over vocab.
     """
-    # Convert ctypes array to a plain Python list once — avoids repeated slow
-    # ctypes attribute lookups during iteration over 128k-element vocab.
-    logits = list(logits)
+    import numpy as np
+
+    # Zero-copy view directly into the ctypes buffer — no data is copied.
+    arr = np.frombuffer(logits, dtype=np.float32)
 
     if temperature == 0.0:
-        # Greedy: pick the highest logit directly.
-        best = 0
-        best_val = logits[0]
-        for i in range(1, vocab_size):
-            if logits[i] > best_val:
-                best_val = logits[i]
-                best = i
-        return best
+        return int(np.argmax(arr))
 
-    # --- Temperature scaling + softmax ---
-    # Find max for numerical stability.
-    max_logit = max(logits[i] for i in range(vocab_size))
-    exps = [math.exp((logits[i] - max_logit) / temperature) for i in range(vocab_size)]
-    total = sum(exps)
-    probs = [e / total for e in exps]
+    # Temperature scaling + numerically-stable softmax (all in C via numpy).
+    arr = arr / temperature
+    arr -= arr.max()          # subtract max for numerical stability
+    np.exp(arr, out=arr)      # in-place exp
+    arr /= arr.sum()          # normalise to probabilities
 
-    # --- Top-p (nucleus) sampling ---
-    # Sort tokens by descending probability.
-    indexed = sorted(range(vocab_size), key=lambda i: probs[i], reverse=True)
-    cumulative = 0.0
-    nucleus: list[tuple[int, float]] = []
-    for idx in indexed:
-        cumulative += probs[idx]
-        nucleus.append((idx, probs[idx]))
-        if cumulative >= top_p:
-            break
+    # Top-p nucleus sampling: sort descending, cumsum, cut at top_p.
+    sorted_idx = np.argsort(arr)[::-1]          # indices sorted by prob desc
+    sorted_probs = arr[sorted_idx]
+    cumsum = np.cumsum(sorted_probs)
+    # Keep tokens up to and including the one that pushes cumsum past top_p.
+    cutoff = int(np.searchsorted(cumsum, top_p)) + 1
+    nucleus_idx = sorted_idx[:cutoff]
+    nucleus_probs = sorted_probs[:cutoff]
+    nucleus_probs = nucleus_probs / nucleus_probs.sum()  # re-normalise
 
-    # Re-normalise within the nucleus.
-    nucleus_total = sum(p for _, p in nucleus)
-    nucleus_probs = [p / nucleus_total for _, p in nucleus]
-
-    # Draw from the nucleus.
-    import random
-    r = random.random()
-    cumulative = 0.0
-    for (token_id, _), p in zip(nucleus, nucleus_probs):
-        cumulative += p
-        if r <= cumulative:
-            return token_id
-
-    # Fallback (floating-point edge case): return the most probable token.
-    return nucleus[0][0]
+    return int(np.random.choice(nucleus_idx, p=nucleus_probs))
 
 
 # ---------------------------------------------------------------------------

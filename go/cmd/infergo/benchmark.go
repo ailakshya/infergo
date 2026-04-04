@@ -30,8 +30,9 @@ func runBenchmark(args []string) {
 	}
 
 	type result struct {
-		latency time.Duration
-		err     error
+		latency   time.Duration
+		tokensTok int
+		err       error
 	}
 
 	results := make([]result, *requests)
@@ -66,12 +67,22 @@ func runBenchmark(args []string) {
 					results[idx] = result{err: err}
 					continue
 				}
-				resp.Body.Close()
 				if resp.StatusCode != http.StatusOK {
+					resp.Body.Close()
 					results[idx] = result{err: fmt.Errorf("HTTP %s", resp.Status)}
 					continue
 				}
-				results[idx] = result{latency: time.Since(t0)}
+				var body struct {
+					Usage struct {
+						CompletionTokens int `json:"completion_tokens"`
+					} `json:"usage"`
+				}
+				json.NewDecoder(resp.Body).Decode(&body)
+				resp.Body.Close()
+				results[idx] = result{
+					latency:   time.Since(t0),
+					tokensTok: body.Usage.CompletionTokens,
+				}
 			}
 		}()
 	}
@@ -79,14 +90,16 @@ func runBenchmark(args []string) {
 	wg.Wait()
 	total := time.Since(start)
 
-	// Collect latencies
+	// Collect latencies and token counts
 	var latencies []float64
+	var totalTokens int
 	var errCount int
 	for _, r := range results {
 		if r.err != nil {
 			errCount++
 		} else {
 			latencies = append(latencies, float64(r.latency.Milliseconds()))
+			totalTokens += r.tokensTok
 		}
 	}
 	sort.Float64s(latencies)
@@ -102,12 +115,14 @@ func runBenchmark(args []string) {
 	p99 := percentile(latencies, 99)
 	mean := mean(latencies)
 	rps := float64(success) / total.Seconds()
+	tps := float64(totalTokens) / total.Seconds()
 
 	fmt.Printf("\n── Benchmark Results ─────────────────────────────\n")
 	fmt.Printf("  Requests:     %d total, %d ok, %d errors\n", *requests, success, errCount)
 	fmt.Printf("  Concurrency:  %d workers\n", *concurrency)
 	fmt.Printf("  Duration:     %s\n", total.Round(time.Millisecond))
 	fmt.Printf("  Throughput:   %.1f req/s\n", rps)
+	fmt.Printf("  tok/s:        %.1f tok/s\n", tps)
 	fmt.Printf("  Latency mean: %.0f ms\n", mean)
 	fmt.Printf("  Latency P50:  %.0f ms\n", p50)
 	fmt.Printf("  Latency P95:  %.0f ms\n", p95)
