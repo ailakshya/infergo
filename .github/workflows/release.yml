@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # ── CPU binary: Linux x86-64 ─────────────────────────────────────────────────
   release-linux-cpu:
