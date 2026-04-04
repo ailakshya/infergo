@@ -612,7 +612,9 @@ before needing to scale out.
 
 ---
 
-### OPT-23 — Tensor parallelism (multi-GPU, single node) `[ ]` XL
+### OPT-23 — Tensor parallelism (multi-GPU, single node) `[~]` XL
+
+**Result:** 2026-04-04 — --tensor-split flag implemented; single-GPU smoke test passes; multi-GPU test hardware-blocked
 
 **Problem:** Models larger than one GPU's VRAM (70B = ~40 GB) cannot run on a
 single RTX 5070 Ti (16 GB). Tensor parallelism splits each weight matrix across
