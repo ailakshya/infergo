@@ -116,9 +116,9 @@ def bench_native(model_path: str, n_requests: int, concurrency: int) -> dict:
     def one_request():
         t0 = time.perf_counter()
         with lock:
-            # tokenize prompt to get n_prompt, then generate
-            prompt_ids = llm.tokenize(PROMPT)
-            text = llm.generate(PROMPT, max_tokens=MAX_TOKENS)
+            # Use chat() so the LLaMA 3 Instruct chat template is applied.
+            # generate() on raw text causes immediate <|eot_id|> for Instruct models.
+            text = llm.chat(PROMPT, max_tokens=MAX_TOKENS)
             n_toks = len(llm.tokenize(text)) if text else 1
         elapsed = time.perf_counter() - t0
         return elapsed, n_toks
