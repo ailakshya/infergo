@@ -15,14 +15,40 @@ import (
 	"time"
 
 	"github.com/ailakshya/infergo/llm"
+	"github.com/ailakshya/infergo/onnx"
 	"github.com/ailakshya/infergo/server"
 )
 
 const shutdownTimeout = 15 * time.Second
 
+// modelFlags implements flag.Value for a repeatable --model flag.
+// Accepted formats:
+//
+//	--model path/to/model.gguf           (name inferred from filename)
+//	--model name:path/to/model.gguf      (explicit name)
+type modelFlags []string
+
+func (m *modelFlags) String() string { return fmt.Sprintf("%v", *m) }
+func (m *modelFlags) Set(v string) error {
+	*m = append(*m, v)
+	return nil
+}
+
+// parseModelSpec splits a model spec into name and path.
+// If the spec contains a colon that is not part of an absolute path prefix,
+// the left side is the name and the right side is the path.
+// Otherwise the name is derived from the filename.
+func parseModelSpec(spec string) (name, path string) {
+	if i := strings.IndexByte(spec, ':'); i > 0 && !filepath.IsAbs(spec[:i]) {
+		return spec[:i], spec[i+1:]
+	}
+	return modelName(spec), spec
+}
+
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	modelPath := fs.String("model", "", "path to model file (.gguf for LLM, .onnx for ONNX)")
+	var models modelFlags
+	fs.Var(&models, "model", "model to load; repeatable. Format: [name:]path.{gguf,onnx}")
 	provider  := fs.String("provider", "cpu", "execution provider: cpu|cuda|tensorrt|coreml")
 	port      := fs.Int("port", 9090, "HTTP listen port")
 	gpuLayers := fs.Int("gpu-layers", 999, "number of transformer layers to offload to GPU (LLM only)")
@@ -30,9 +56,15 @@ func runServe(args []string) {
 	threads   := fs.Int("threads", 0, "CPU threads for inference (0 = auto: physical cores / 2)")
 	maxSeqs   := fs.Int("max-seqs", 16, "max concurrent sequences / KV cache slots (LLM only)")
 	minModels := fs.Int("min-models", 1, "minimum models required for /health/ready")
+	apiKey    := fs.String("api-key", "", "API key for Bearer auth (empty = open, or set INFERGO_API_KEY env var)")
+	rateLimit := fs.Float64("rate-limit", 0, "max requests/second per client IP (0 = unlimited)")
 	fs.Parse(args)
 
-	if *modelPath == "" {
+	if *apiKey == "" {
+		*apiKey = os.Getenv("INFERGO_API_KEY")
+	}
+
+	if len(models) == 0 {
 		fmt.Fprintln(os.Stderr, "serve: --model is required")
 		fs.Usage()
 		os.Exit(1)
@@ -42,17 +74,28 @@ func runServe(args []string) {
 	health := server.NewHealthChecker(reg, *minModels)
 	metrics := server.NewMetrics()
 
-	// Load the model based on file extension
-	modelName := modelName(*modelPath)
-	if err := loadModel(reg, modelName, *modelPath, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs); err != nil {
-		log.Fatalf("failed to load model %q: %v", *modelPath, err)
+	// Load all specified models.
+	for _, spec := range models {
+		name, path := parseModelSpec(spec)
+		if err := loadModel(reg, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs); err != nil {
+			log.Fatalf("failed to load model %q: %v", spec, err)
+		}
+		log.Printf("loaded model %q (%s)", name, path)
 	}
-	log.Printf("loaded model %q (%s)", modelName, *modelPath)
 
 	// Wire up the mux: API routes + health + metrics
 	mux := http.NewServeMux()
 	apiSrv := server.NewServer(reg)
-	mux.Handle("/v1/", metrics.WrapServer(apiSrv))
+
+	var v1Handler http.Handler = metrics.WrapServer(apiSrv)
+	if *rateLimit > 0 {
+		rl := server.NewRateLimiter(*rateLimit)
+		v1Handler = rl.Middleware()(v1Handler)
+	}
+	if *apiKey != "" {
+		v1Handler = server.AuthMiddleware(*apiKey)(v1Handler)
+	}
+	mux.Handle("/v1/", v1Handler)
 	health.RegisterRoutes(mux)
 	mux.Handle("/metrics", metrics.Handler())
 
@@ -139,6 +182,30 @@ func loadONNX(reg *server.Registry, name, path, provider string) error {
 		return reg.Load(name, adapter)
 	}
 
+	// If filename contains "yolo", treat as detection model.
+	lname := strings.ToLower(filepath.Base(path))
+	if strings.Contains(lname, "yolo") {
+		log.Printf("loading %s as detection model (YOLOv8)", filepath.Base(path))
+		adapter, err := loadDetection(path, provider)
+		if err != nil {
+			return fmt.Errorf("load detection model: %w", err)
+		}
+		return reg.Load(name, adapter)
+	}
+
 	// Fall back to plain ONNX placeholder (appears in /v1/models only).
 	return reg.Load(name, &onnxAdapter{path: path})
+}
+
+// loadDetection creates a YOLOv8 detection model from an ONNX model path.
+func loadDetection(modelPath, provider string) (*detectionAdapter, error) {
+	sess, err := onnx.NewSession(provider, 0)
+	if err != nil {
+		return nil, fmt.Errorf("loadDetection: new session: %w", err)
+	}
+	if err := sess.Load(modelPath); err != nil {
+		sess.Close()
+		return nil, fmt.Errorf("loadDetection: load model: %w", err)
+	}
+	return &detectionAdapter{sess: sess}, nil
 }
