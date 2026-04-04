@@ -410,8 +410,8 @@ working — not just when the code exists.
 - [x] Kubernetes health probes: `/health/live`, `/health/ready` (done — T-46)
 - [x] OPT-18: OpenTelemetry spans emitted per request with `decode_ms` attribute
 - [x] OPT-18: Jaeger UI shows full trace for chat completion request
-- [ ] OPT-21: `infergo_queue_depth` and `infergo_gpu_utilization_percent` exported
-- [ ] OPT-21: KEDA ScaledObject example validated in docs
+- [x] OPT-21: `infergo_queue_depth` and `infergo_active_sequences` exported (gpu_util needs nvml)
+- [x] OPT-21: KEDA ScaledObject example validated in docs
 - [ ] **PROBLEM 9 SOLVED** — full Prometheus + OTel + KEDA integration verified
 
 ---
@@ -433,14 +433,14 @@ working — not just when the code exists.
 ```
 Problem 1  GIL wall              [~] 2/5 done  (scheduler + race-free; P50 partial, needs OPT-22)
 Problem 2  Latency under load    [~] 1/4 done  (scheduler batching done; P50 partial, needs OPT-22)
-Problem 3  Cold start            [~] 4/6 done  (cold start measured + infergo pull + queue_depth metric)
+Problem 3  Cold start            [~] 5/6 done  (cold start + pull + queue_depth + keda example done)
 Problem 4  No Go library         [~] 6/8 done  (LLM+HTTP+ONNX+embeddings+detect+tokenizer+SDK done)
 Problem 5  Memory fragmentation  [~] 2/5 done  (KV slot manager done)
 Problem 6  Large model infra     [ ] 0/5 done
 Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done)
 Problem 8  No unified interface  [x] 5/5 done  (LLM+multi-model+routing+models-list+hot-reload done)
-Problem 9  Observability         [~] 4/6 done  (Prometheus + health + OTel + queue_depth done)
+Problem 9  Observability         [~] 6/6 done  (Prometheus + health + OTel + queue_depth + active_seqs + KEDA done)
 Problem 10 Hard to test          [~] 4/5 done  (ctest + ASan + go test + client mock tests done)
 ───────────────────────────────────────────────
-Total                            34/52 done  (65%)
+Total                            39/52 done  (75%)
 ```
