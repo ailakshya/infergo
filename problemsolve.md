@@ -421,10 +421,10 @@ working — not just when the code exists.
 - [x] C++ gtest: 276/276 pass (`ctest`)
 - [x] ASan: 81 tests clean, zero leaks
 - [x] Go tests: `go test ./go/...` passes
-- [ ] OPT-3: `go test ./go/onnx/...` covers ONNX session create + run + close
+- [x] OPT-3: `go test ./go/onnx/...` covers ONNX session create + run + close
 - [x] OPT-15: `go test ./go/client/...` covers all SDK methods with mock server
 - [x] CI pipeline: all tests run on every PR automatically (.github/workflows/ci.yml)
-- [ ] **PROBLEM 10 SOLVED** — `go test ./...` and `ctest` cover all inference paths
+- [x] **PROBLEM 10 SOLVED** — `go test ./...` and `ctest` cover all inference paths
 
 ---
 
@@ -440,7 +440,7 @@ Problem 6  Large model infra     [ ] 0/5 done
 Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done)
 Problem 8  No unified interface  [x] 6/6 done  (LLM+multi-model+routing+models-list+hot-reload+SOLVED)
 Problem 9  Observability         [x] 7/7 done  (Prometheus + health + OTel + queue_depth + active_seqs + KEDA + SOLVED)
-Problem 10 Hard to test          [~] 5/6 done  (ctest + ASan + go test + client mock tests + CI done)
+Problem 10 Hard to test          [x] 7/7 done  (ctest + ASan + go test + onnx + client mock + CI + SOLVED)
 ───────────────────────────────────────────────
-Total                            43/52 done  (83%)
+Total                            46/52 done  (88%)
 ```
