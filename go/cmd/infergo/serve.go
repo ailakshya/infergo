@@ -58,6 +58,8 @@ func runServe(args []string) {
 	minModels := fs.Int("min-models", 1, "minimum models required for /health/ready")
 	apiKey    := fs.String("api-key", "", "API key for Bearer auth (empty = open, or set INFERGO_API_KEY env var)")
 	rateLimit := fs.Float64("rate-limit", 0, "max requests/second per client IP (0 = unlimited)")
+	maxQueue  := fs.Int("max-queue", 100, "max in-flight requests (active+waiting); 503 beyond this")
+	maxActive := fs.Int("max-active", 0, "max concurrent request handlers (0 = same as --max-queue)")
 	fs.Parse(args)
 
 	if *apiKey == "" {
@@ -87,7 +89,17 @@ func runServe(args []string) {
 	mux := http.NewServeMux()
 	apiSrv := server.NewServer(reg)
 
+	// Inject the hot-reload function so POST /v1/admin/reload works.
+	apiSrv.SetReloader(func(name, path string) error {
+		return loadModel(reg, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs)
+	})
+
 	var v1Handler http.Handler = metrics.WrapServer(apiSrv)
+	if *maxQueue > 0 {
+		queueGauge := metrics.QueueDepth
+		pq := server.NewQueueMiddleware(*maxActive, *maxQueue, queueGauge)
+		v1Handler = pq.Middleware()(v1Handler)
+	}
 	if *rateLimit > 0 {
 		rl := server.NewRateLimiter(*rateLimit)
 		v1Handler = rl.Middleware()(v1Handler)

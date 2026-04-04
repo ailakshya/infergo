@@ -27,6 +27,9 @@ type Metrics struct {
 
 	// infergo_gpu_memory_bytes: gauge by device id
 	GPUMemoryBytes *prometheus.GaugeVec
+
+	// infergo_queue_depth: gauge of total in-flight requests (active + waiting)
+	QueueDepth prometheus.Gauge
 }
 
 // NewMetrics creates and registers all metrics on a fresh Prometheus registry.
@@ -62,6 +65,11 @@ func NewMetrics() *Metrics {
 			Name: "infergo_gpu_memory_bytes",
 			Help: "GPU device memory in use (bytes), by device id.",
 		}, []string{"device"}),
+
+		QueueDepth: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "infergo_queue_depth",
+			Help: "Current number of requests in the priority queue (active + waiting).",
+		}),
 	}
 
 	reg.MustRegister(
@@ -70,6 +78,7 @@ func NewMetrics() *Metrics {
 		m.BatchSize,
 		m.TokensPerSecond,
 		m.GPUMemoryBytes,
+		m.QueueDepth,
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 	)
