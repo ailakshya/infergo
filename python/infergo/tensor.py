@@ -63,7 +63,7 @@ class Tensor:
         ----------
         arr:
             A numpy ndarray.  Supported dtypes: float32, float16, int32,
-            int64, uint8, bool\_.
+            int64, uint8, bool.
 
         Returns
         -------
