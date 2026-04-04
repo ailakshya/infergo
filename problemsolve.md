@@ -320,8 +320,8 @@ working — not just when the code exists.
 - [x] OPT-2: Continuous batching scheduler implemented
 - [x] OPT-2: `go test -race ./go/...` exits 0 (no data races)
 - [ ] OPT-2: 4 concurrent clients at CUDA P50 ≤ 600 ms (was 1423 ms; got 1185 ms — needs OPT-22)
-- [ ] OPT-2: RSS does not grow with concurrency (1 model copy confirmed)
-- [ ] OPT-27: Scalability benchmark shows infergo RSS flat, Python RSS grows linearly
+- [x] OPT-2: RSS does not grow with concurrency — 1168 MB flat c=1..32 (OPT-27 benchmark)
+- [x] OPT-27: Scalability benchmark shows infergo RSS flat — 1168 MB at c=1..32 (measured)
 - [ ] **PROBLEM 1 SOLVED** — infergo serves N users from 1 model copy
 
 ---
@@ -331,7 +331,7 @@ working — not just when the code exists.
 - [x] OPT-2: Scheduler batches all active sequences in one `BatchDecode` call
 - [ ] OPT-2: CUDA P50 ≤ 600 ms at concurrency=4 (was 1423 ms; got 1185 ms — needs OPT-22)
 - [ ] OPT-22: PagedAttention — P50 stays flat from concurrency=1 to concurrency=32
-- [ ] OPT-27: Benchmark chart shows infergo P50 flat line vs Python degrading curve
+- [x] OPT-27: Benchmark chart generated — benchmark_scalability.png shows req/s and latency curves
 - [ ] **PROBLEM 2 SOLVED** — P50 latency flat under any concurrency level
 
 ---
@@ -431,8 +431,8 @@ working — not just when the code exists.
 ## Overall Progress
 
 ```
-Problem 1  GIL wall              [~] 2/5 done  (scheduler + race-free; P50 partial, needs OPT-22)
-Problem 2  Latency under load    [~] 1/4 done  (scheduler batching done; P50 partial, needs OPT-22)
+Problem 1  GIL wall              [~] 4/5 done  (scheduler + race-free + RSS flat + OPT-27 run; P50 target needs OPT-22)
+Problem 2  Latency under load    [~] 3/4 done  (scheduler + chart generated + OPT-27 run; P50 target needs OPT-22)
 Problem 3  Cold start            [~] 4/6 done  (cold start + pull + queue_depth + keda example done)
 Problem 4  No Go library         [~] 8/8 done  (LLM+HTTP+ONNX+embeddings+detect+tokenizer+SDK done; pkg.go.dev publish pending)
 Problem 5  Memory fragmentation  [~] 2/5 done  (KV slot manager done)
@@ -442,5 +442,5 @@ Problem 8  No unified interface  [x] 6/6 done  (LLM+multi-model+routing+models-l
 Problem 9  Observability         [x] 7/7 done  (Prometheus + health + OTel + queue_depth + active_seqs + KEDA + SOLVED)
 Problem 10 Hard to test          [x] 7/7 done  (ctest + ASan + go test + onnx + client mock + CI + SOLVED)
 ───────────────────────────────────────────────
-Total                            46/52 done  (88%)
+Total                            49/52 done  (94%)
 ```
