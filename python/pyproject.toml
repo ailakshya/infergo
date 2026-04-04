@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "infergo"
+version = "0.1.0"
+description = "Native Python bindings for infergo — production-grade LLM inference"
+readme = "README.rst"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = []  # numpy is optional
+
+[project.optional-dependencies]
+numpy = ["numpy>=1.24"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["infergo*"]
+
+[tool.setuptools.package-data]
+infergo = ["*.so", "*.dylib", "*.dll"]
