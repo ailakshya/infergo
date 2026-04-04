@@ -9,15 +9,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake \
         ninja-build \
         git \
+        wget \
+        curl \
         ca-certificates \
         golang-1.23 \
         libopencv-dev \
+        libgtest-dev \
+        libgmock-dev \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/usr/lib/go-1.23/bin:${PATH}"
 
+# Install Rust (needed for tokenizer-rs)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Download ONNX Runtime 1.24.4 (CPU) — architecture-aware
+ARG TARGETARCH
+RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x64") && \
+    wget -q "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-${ARCH}-1.24.4.tgz" \
+    && tar -xzf "onnxruntime-linux-${ARCH}-1.24.4.tgz" -C /opt \
+    && mv "/opt/onnxruntime-linux-${ARCH}-1.24.4" /opt/onnxruntime \
+    && rm "onnxruntime-linux-${ARCH}-1.24.4.tgz"
+
+ENV ONNXRUNTIME_ROOT=/opt/onnxruntime
+
 WORKDIR /src
 COPY . .
+
+# Build Rust tokenizer library
+RUN cargo build --release --manifest-path tokenizer-rs/Cargo.toml
 
 # Build C++ shared library (CPU only — no CUDA, no OpenCV GPU)
 RUN cmake -S . -B build \
@@ -25,6 +46,7 @@ RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DINFER_CUDA=OFF \
         -DINFER_TENSORRT=OFF \
+        -DONNXRUNTIME_ROOT=/opt/onnxruntime \
     && cmake --build build --target infer_api -j$(nproc)
 
 # Build Go binary (statically link against infer_api.so)
@@ -55,11 +77,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy binary and shared library
-COPY --from=builder /out/infergo          /usr/local/bin/infergo
-COPY --from=builder /out/libinfer_api.so  /usr/local/lib/infergo/libinfer_api.so
+# Copy binary and shared libraries
+COPY --from=builder /out/infergo                                    /usr/local/bin/infergo
+COPY --from=builder /out/libinfer_api.so                            /usr/local/lib/infergo/libinfer_api.so
+COPY --from=builder /src/build/cpp/onnx/libinfer_onnx.so           /usr/local/lib/infergo/libinfer_onnx.so
+COPY --from=builder /src/build/cpp/tensor/libinfer_tensor.so        /usr/local/lib/infergo/libinfer_tensor.so
+COPY --from=builder /src/tokenizer-rs/target/release/libinfer_tokenizer.so /usr/local/lib/infergo/libinfer_tokenizer.so
+COPY --from=builder /src/build/cpp/tokenizer/libinfer_tokenizer_cpp.so     /usr/local/lib/infergo/libinfer_tokenizer_cpp.so
+COPY --from=builder /opt/onnxruntime/lib/libonnxruntime.so*         /usr/local/lib/infergo/
 
-RUN ldconfig
+RUN echo "/usr/local/lib/infergo" > /etc/ld.so.conf.d/infergo.conf && ldconfig
 
 # Models are mounted at runtime — do not bake weights into the image
 VOLUME ["/models"]
