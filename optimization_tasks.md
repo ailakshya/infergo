@@ -576,7 +576,7 @@ before needing to scale out.
 |---|---|---|
 | OPT-22-T1 | Pages allocated on demand | PASS — AllocSlot(100) reserves ceil(100/16)=7 pages (KVPageAllocatorTest.T1) |
 | OPT-22-T2 | Pages freed on sequence close | PASS — FreeSlot restores free count (KVPageAllocatorTest.T2, T4) |
-| OPT-22-T3 | 2× concurrent sequences vs fixed slots | PASS — 16 seqs complete, 17th immediately reuses freed slot (sequential test 2026-04-04); KVPageAllocator only consumes pages per token generated, not pre-allocated per slot |
+| OPT-22-T3 | 2× concurrent sequences vs fixed slots | PASS — 16 seqs complete, 17th immediately reuses freed slot (sequential test 2026-04-04); KVPageAllocator only consumes pages per token generated, not pre-allocated per slot. GC tuning implemented — --gc-interval flag + GOGC=50; gpu_dev re-test pending |
 | OPT-22-T4 | No positional errors | PASS — 246/246 ctest pass, infergo binary builds, server tests pass |
 | OPT-22-T5 | OOM handled gracefully | PASS — initSeq returns "KV cache exhausted" error, existing sequences continue |
 | OPT-22-T6 | Throughput does not regress | PASS — c=32: 12.5 → 17.4 req/s (+39%) post-OPT-22; benchmark 2026-04-04 |
