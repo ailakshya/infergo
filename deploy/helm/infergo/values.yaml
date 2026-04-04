@@ -1,0 +1,168 @@
+# Default values for infergo Helm chart.
+# Override with: helm install infergo . -f my-values.yaml
+
+# ─── Image ────────────────────────────────────────────────────────────────────
+image:
+  repository: ghcr.io/ailakshya/infergo
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# ─── Inference configuration ──────────────────────────────────────────────────
+infergo:
+  # Models to serve. Each entry is passed as a --model flag.
+  # Format: name:path/to/model.gguf  or  name:path/to/model.onnx
+  # The path must be accessible inside the container (mount a PVC or use initContainer).
+  models:
+    - llama3-8b-q4:/models/llama3-8b-q4.gguf
+
+  # Execution provider: cpu | cuda | tensorrt | coreml
+  provider: cuda
+
+  # Number of transformer layers to offload to GPU (LLM only, -1 = all)
+  gpuLayers: 999
+
+  # KV cache size in tokens (divided by maxSeqs for per-sequence budget)
+  ctxSize: 16384
+
+  # Maximum concurrent sequences (KV cache slots)
+  maxSeqs: 16
+
+  # Minimum models required before /health/ready returns 200
+  minModels: 1
+
+  # API key for Bearer auth. Leave empty to disable auth.
+  # Prefer setting via existingSecret instead of plain text.
+  apiKey: ""
+
+  # Name of an existing Secret with key "api-key" to use for Bearer auth
+  existingSecret: ""
+
+  # Max requests/second per client IP (0 = unlimited)
+  rateLimit: 0
+
+  # Max in-flight requests (active + waiting); 503 beyond this
+  maxQueue: 100
+
+  # Max concurrent request handlers (0 = same as maxQueue)
+  maxActive: 0
+
+  # OTLP HTTP endpoint for distributed tracing (empty = disabled)
+  otlpEndpoint: ""
+
+  # gRPC port (0 = disabled)
+  grpcPort: 9091
+
+# ─── Service ──────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 9090
+  grpcPort: 9091
+  # Set to LoadBalancer for direct external access
+  # type: LoadBalancer
+
+# ─── Deployment ───────────────────────────────────────────────────────────────
+replicaCount: 1
+
+# Resource requests/limits — tune for your GPU
+resources:
+  requests:
+    cpu: "2"
+    memory: "8Gi"
+    nvidia.com/gpu: "1"
+  limits:
+    cpu: "8"
+    memory: "24Gi"
+    nvidia.com/gpu: "1"
+
+# Node selector to land on GPU nodes
+nodeSelector:
+  accelerator: nvidia-gpu
+
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+
+affinity: {}
+
+# ─── Persistent model storage ─────────────────────────────────────────────────
+persistence:
+  enabled: true
+  # Mount existing PVC containing model files
+  existingClaim: ""
+  # Or create a new PVC
+  storageClass: ""
+  size: 50Gi
+  mountPath: /models
+
+# ─── KEDA autoscaling ─────────────────────────────────────────────────────────
+keda:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  # Scale when queue depth exceeds this threshold per replica
+  queueDepthThreshold: 10
+  # Scale when active sequences exceed this threshold per replica
+  activeSeqsThreshold: 8
+  # Prometheus URL where infergo metrics are scraped
+  prometheusAddress: http://prometheus-operated.monitoring.svc:9090
+
+# ─── Pod disruption budget ────────────────────────────────────────────────────
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# ─── Service account ──────────────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ─── Pod annotations / labels ─────────────────────────────────────────────────
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+
+podLabels: {}
+
+# ─── Security context ─────────────────────────────────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false   # false because llama.cpp writes temp files
+
+# ─── Probes ───────────────────────────────────────────────────────────────────
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 5
+  failureThreshold: 6
+
+# ─── Ingress ──────────────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: infergo.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []

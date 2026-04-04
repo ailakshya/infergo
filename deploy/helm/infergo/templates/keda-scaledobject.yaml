@@ -1,0 +1,29 @@
+{{- if .Values.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "infergo.fullname" . }}
+  labels:
+    {{- include "infergo.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "infergo.fullname" . }}
+  minReplicaCount: {{ .Values.keda.minReplicas }}
+  maxReplicaCount: {{ .Values.keda.maxReplicas }}
+  cooldownPeriod: 300
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.keda.prometheusAddress }}
+        metricName: infergo_queue_depth
+        threshold: {{ .Values.keda.queueDepthThreshold | quote }}
+        query: |
+          sum(infergo_queue_depth{job="{{ include "infergo.fullname" . }}"})
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.keda.prometheusAddress }}
+        metricName: infergo_active_sequences
+        threshold: {{ .Values.keda.activeSeqsThreshold | quote }}
+        query: |
+          sum(infergo_active_sequences{job="{{ include "infergo.fullname" . }}"})
+{{- end }}

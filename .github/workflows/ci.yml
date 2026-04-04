@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Go: pure-Go packages (no CGo, no GPU required) ──────────────────────────
+  go-test:
+    name: Go tests (pure-Go packages)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: go vet
+        working-directory: go
+        run: go vet ./hub/... ./grpc/... ./client/...
+
+      - name: go test — hub
+        working-directory: go
+        run: go test -race -count=1 ./hub/...
+
+      - name: go test — grpc
+        working-directory: go
+        run: go test -race -count=1 ./grpc/...
+
+      - name: go test — client
+        working-directory: go
+        run: go test -race -count=1 ./client/...
+
+  # ── Go: server package (pure-Go subset, no CGo) ──────────────────────────────
+  go-test-server:
+    name: Go tests (server — no CGo)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: go test — server (metrics, auth, queue, tracing, websocket)
+        working-directory: go
+        # The server package is pure-Go; CGo only enters via llm/onnx in cmd/infergo.
+        run: go test -race -count=1 ./server/...
+
+  # ── Helm: dry-run validation ──────────────────────────────────────────────────
+  helm-lint:
+    name: Helm lint + dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: helm lint
+        run: helm lint deploy/helm/infergo/
+
+      - name: helm template (dry-run validation)
+        run: helm template infergo deploy/helm/infergo/ --debug > /dev/null
+
+  # ── C++ build + tests (GPU not required for unit tests) ──────────────────────
+  cpp-test:
+    name: C++ build + gtest (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build libopenblas-dev
+
+      - name: Configure (CPU only)
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CUDA=OFF \
+            -DGGML_BLAS=ON \
+            -DGGML_BLAS_VENDOR=OpenBLAS \
+            -DINFER_CUDA=OFF \
+            -DINFER_TESTS=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -j$(nproc)

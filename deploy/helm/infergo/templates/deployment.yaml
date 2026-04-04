@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "infergo.fullname" . }}
+  labels:
+    {{- include "infergo.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "infergo.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "infergo.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "infergo.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: infergo
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            {{- range .Values.infergo.models }}
+            - --model
+            - {{ . | quote }}
+            {{- end }}
+            - --provider
+            - {{ .Values.infergo.provider | quote }}
+            - --port
+            - {{ .Values.service.port | quote }}
+            - --gpu-layers
+            - {{ .Values.infergo.gpuLayers | quote }}
+            - --ctx-size
+            - {{ .Values.infergo.ctxSize | quote }}
+            - --max-seqs
+            - {{ .Values.infergo.maxSeqs | quote }}
+            - --min-models
+            - {{ .Values.infergo.minModels | quote }}
+            - --max-queue
+            - {{ .Values.infergo.maxQueue | quote }}
+            - --max-active
+            - {{ .Values.infergo.maxActive | quote }}
+            {{- if .Values.infergo.rateLimit }}
+            - --rate-limit
+            - {{ .Values.infergo.rateLimit | quote }}
+            {{- end }}
+            {{- if .Values.infergo.otlpEndpoint }}
+            - --otlp-endpoint
+            - {{ .Values.infergo.otlpEndpoint | quote }}
+            {{- end }}
+            {{- if .Values.infergo.grpcPort }}
+            - --grpc-port
+            - {{ .Values.infergo.grpcPort | quote }}
+            {{- end }}
+          env:
+            {{- if .Values.infergo.existingSecret }}
+            - name: INFERGO_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.infergo.existingSecret }}
+                  key: api-key
+            {{- else if .Values.infergo.apiKey }}
+            - name: INFERGO_API_KEY
+              value: {{ .Values.infergo.apiKey | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+            {{- if .Values.infergo.grpcPort }}
+            - name: grpc
+              containerPort: {{ .Values.infergo.grpcPort }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.persistence.enabled }}
+          volumeMounts:
+            - name: models
+              mountPath: {{ .Values.persistence.mountPath }}
+              readOnly: true
+          {{- end }}
+      {{- if .Values.persistence.enabled }}
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "infergo.fullname" .) }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

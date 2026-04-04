@@ -1,0 +1,16 @@
+apiVersion: v2
+name: infergo
+description: Go-native inference server — LLM, embeddings, object detection
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - inference
+  - llm
+  - onnx
+  - gpu
+home: https://github.com/ailakshya/infergo
+sources:
+  - https://github.com/ailakshya/infergo
+maintainers:
+  - name: infergo
