@@ -639,7 +639,7 @@ int infer_llm_token_to_piece(InferLLM llm, int token, char* out_buf, int buf_siz
         const int n = std::min(static_cast<int>(piece.size()), buf_size - 1);
         std::memcpy(out_buf, piece.data(), static_cast<size_t>(n));
         out_buf[n] = '\0';
-        return 0;
+        return n;
     } catch (const std::exception& e) {
         infergo::set_last_error(e.what());
         return -1;

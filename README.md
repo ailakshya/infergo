@@ -1,8 +1,8 @@
 # infergo
 
 <p align="center">
-  <strong>Production-grade AI inference for Go.</strong><br>
-  One binary. No Python. No GIL.
+  <strong>Production-grade AI inference — Go server, Python client, zero friction.</strong><br>
+  One binary. OpenAI-compatible. No GIL. No rewrite needed.
 </p>
 
 <p align="center">
@@ -21,6 +21,7 @@
 
 <p align="center">
   <a href="docs/getting-started.md">Getting Started</a> ·
+  <a href="docs/python.md">Python</a> ·
   <a href="docs/go-api-reference.md">Go API</a> ·
   <a href="docs/deployment.md">Deployment</a> ·
   <a href="benchmarks/vs_python/results_full.md">Benchmarks</a>
@@ -28,9 +29,26 @@
 
 ---
 
-infergo is a Go-native inference runtime for LLMs, embedding models, and object detection. It wraps llama.cpp and ONNX Runtime behind a clean Go API and an OpenAI-compatible HTTP server — with no Python dependency at any layer.
+infergo is a production inference runtime for LLMs, embedding models, and object detection. It wraps llama.cpp and ONNX Runtime behind a clean Go API and an OpenAI-compatible HTTP server.
 
-Go services that need model inference today must call a Python sidecar, pay for a hosted API, or write their own CGo bindings. infergo eliminates all three options. One `go get`, one binary, one process.
+**Use it from any language.** Python, Go, curl — anything that speaks HTTP works out of the box. No rewrite needed, no Python GIL, no serialised requests.
+
+```python
+# Drop-in replacement for any OpenAI client — no code changes needed
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:9090/v1", api_key="none")
+response = client.chat.completions.create(
+    model="llama3-8b-q4",
+    messages=[{"role": "user", "content": "Explain transformers in two sentences."}],
+)
+print(response.choices[0].message.content)
+```
+
+```bash
+# Start the server — one binary, no Python required
+infergo serve --model models/llama3-8b-q4.gguf --port 9090
+```
 
 ---
 
@@ -38,6 +56,7 @@ Go services that need model inference today must call a Python sidecar, pay for 
 
 - [Features](#features)
 - [Quickstart](#quickstart)
+- [Using from Python](#using-from-python)
 - [Benchmarks](#benchmarks)
 - [API reference](#api-reference)
 - [Go library](#go-library)
@@ -176,28 +195,110 @@ docker run --rm --gpus all -p 9090:9090 -v ./models:/models:ro infergo:cuda \
 
 ---
 
+## Using from Python
+
+infergo is designed to be called from Python via its OpenAI-compatible HTTP server. No native compilation, no pip install of C extensions — just point your existing OpenAI client at the infergo server.
+
+### Step 1 — Start the server
+
+```bash
+infergo serve --model models/llama3-8b-q4.gguf --port 9090
+```
+
+### Step 2 — Call it from Python
+
+**With the OpenAI SDK (recommended)**
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:9090/v1", api_key="none")
+
+# Chat
+response = client.chat.completions.create(
+    model="llama3-8b-q4",
+    messages=[{"role": "user", "content": "What is a transformer model?"}],
+    max_tokens=200,
+)
+print(response.choices[0].message.content)
+
+# Streaming
+for chunk in client.chat.completions.create(
+    model="llama3-8b-q4",
+    messages=[{"role": "user", "content": "Count to 5"}],
+    stream=True,
+):
+    print(chunk.choices[0].delta.content or "", end="", flush=True)
+
+# Embeddings
+vec = client.embeddings.create(model="all-MiniLM-L6-v2", input="hello world")
+print(vec.data[0].embedding[:5])
+```
+
+**With zero dependencies (stdlib only)**
+```python
+import urllib.request, json
+
+payload = json.dumps({
+    "model": "llama3-8b-q4",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "max_tokens": 64,
+}).encode()
+
+req = urllib.request.Request(
+    "http://localhost:9090/v1/chat/completions",
+    data=payload,
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(req) as resp:
+    body = json.loads(resp.read())
+print(body["choices"][0]["message"]["content"])
+```
+
+### Why not use the native Python bindings?
+
+The `python/infergo` package provides direct ctypes bindings to `libinfer_api.so` — useful for offline scripts that cannot run a server. But **for production use the server is always better**:
+
+| | Native bindings | infergo server + HTTP |
+|---|---|---|
+| Single request latency | ~545ms | ~457ms |
+| Concurrent requests (c=4) | 1.83 req/s (lock) | **3.83 req/s** (batched) |
+| Token throughput (c=4) | 119 tok/s | **245 tok/s** |
+| VRAM (per process) | loads full model | shared — one copy |
+| Works from multiple processes | no | yes |
+
+The server uses continuous batching — all concurrent requests go through the GPU in one forward pass. Native bindings serialize through a Python lock, one request at a time.
+
+See [`docs/python.md`](docs/python.md) for the full Python guide including LangChain integration, async usage, and the native bindings API reference.
+
+---
+
 ## Benchmarks
 
 Measured on RTX 5070 Ti (16 GB VRAM, SM 12.0 Blackwell), LLaMA 3 8B Q4\_K\_M, Ubuntu 22.04, CUDA 12.8.
-Full methodology, raw numbers, and plots: [`benchmarks/vs_python/results_full.md`](benchmarks/vs_python/results_full.md)
+Full methodology and raw numbers: [`benchmarks/vs_python/results_full.md`](benchmarks/vs_python/results_full.md)
 
-### CUDA throughput and latency vs llama-cpp-python
+### 5-way Python inference benchmark
 
-| Scenario | infergo | llama-cpp-python | Delta |
-|---|---|---|---|
-| Short prompts — tok/s | **142** | 133 | **+7%** |
-| Short prompts — req/s | **2.7** | 2.1 | **+29%** |
-| Long prompts — tok/s | **144** | 131 | **+10%** |
-| Long prompts — req/s | **0.6** | 0.5 | **+20%** |
-| Cold start (CUDA) | **456 ms** | 494 ms | −8% |
+All approaches measured at the same time on the same GPU. infergo server is the backend for approaches 2, 3, and 4.
+
+| Approach | c=1 P50 | c=1 tok/s | c=4 req/s | c=4 tok/s |
+|---|---|---|---|---|
+| infergo native (ctypes) | 545ms | 119 | 1.83 | 119 |
+| infergo server + OpenAI SDK | 457ms | 139 | 3.79 | 242 |
+| infergo server + urllib | 457ms | 139 | **3.83** | **245** |
+| infergo server + Go CLI | 459ms | 139 | 3.80 | 244 |
+| **llama-cpp-python** (baseline) | 456ms | 140 | 2.19 | 140 |
+
+**At c=1** all server approaches match llama-cpp-python exactly — same GPU, same model, same speed.
+**At c=4** infergo server is **1.75× faster** (3.83 vs 2.19 req/s) due to continuous batching. llama-cpp-python serialises all requests through a lock regardless of concurrency.
 
 ### Concurrent load (continuous batching)
 
-| Concurrency | P50 latency | Throughput |
-|---|---|---|
-| c=1 | ~300 ms | 2.7 req/s |
-| c=4 | **1,063 ms** | 3.8 req/s |
-| c=32 | — | **17.4 req/s** |
+| Concurrency | infergo P50 | infergo req/s | llama-cpp-python req/s |
+|---|---|---|---|
+| c=1 | 457ms | 2.2 | 2.2 |
+| c=4 | 1,045ms | **3.8** | 2.2 |
+| c=32 | — | **~17** | ~2.2 |
 
 ### Memory stability (1,000 requests)
 
@@ -205,13 +306,6 @@ Full methodology, raw numbers, and plots: [`benchmarks/vs_python/results_full.md
 |---|---|---|
 | RSS drift | +11.9% | **+0.3%** |
 | Base RSS | 1,168 MB | 1,168 MB |
-
-### CPU throughput vs llama-cpp-python
-
-| Scenario | infergo | llama-cpp-python | Delta |
-|---|---|---|---|
-| Short prompts — tok/s | **10** | 5 | **+100%** |
-| Cold start (CPU) | **6.45 s** | 9.90 s | −35% |
 
 ### Container footprint
 
@@ -475,6 +569,7 @@ CI runs on every push and PR: Go tests (race detector), Helm lint, and C++ unit 
 | | |
 |---|---|
 | [Getting started](docs/getting-started.md) | Build, download a model, first request in 5 minutes |
+| [Python guide](docs/python.md) | Use infergo from Python — server, SDK, async, LangChain, native bindings |
 | [Deployment](docs/deployment.md) | Docker, Kubernetes, systemd, bare metal, nginx |
 | [Go API reference](docs/go-api-reference.md) | Embed infergo in your Go application |
 | [C API reference](docs/c-api-reference.md) | Call the C layer from any language with FFI |

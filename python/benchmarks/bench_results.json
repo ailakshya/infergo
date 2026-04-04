@@ -1,0 +1,122 @@
+[
+  {
+    "name": "native_bindings",
+    "concurrency": 1,
+    "n_requests": 20,
+    "errors": 0,
+    "p50_ms": 545.1,
+    "p95_ms": 572.1,
+    "p99_ms": 572.1,
+    "req_per_s": 1.83,
+    "tok_per_s": 118.6,
+    "rss_delta_mb": 0.0
+  },
+  {
+    "name": "http_openai_client",
+    "concurrency": 1,
+    "n_requests": 20,
+    "errors": 0,
+    "p50_ms": 456.9,
+    "p95_ms": 527.7,
+    "p99_ms": 527.7,
+    "req_per_s": 2.17,
+    "tok_per_s": 138.7,
+    "rss_delta_mb": 0.0
+  },
+  {
+    "name": "core_python_urllib",
+    "concurrency": 1,
+    "n_requests": 20,
+    "errors": 0,
+    "p50_ms": 456.6,
+    "p95_ms": 478.1,
+    "p99_ms": 478.1,
+    "req_per_s": 2.17,
+    "tok_per_s": 139.2,
+    "rss_delta_mb": 0.0
+  },
+  {
+    "name": "infergo_cli",
+    "concurrency": 1,
+    "n_requests": 20,
+    "errors": 0,
+    "p50_ms": 459.0,
+    "p95_ms": 464.0,
+    "p99_ms": 467.0,
+    "req_per_s": 2.2,
+    "tok_per_s": 139.4,
+    "rss_delta_mb": 0.0
+  },
+  {
+    "name": "llama_cpp_python",
+    "concurrency": 1,
+    "n_requests": 20,
+    "errors": 0,
+    "p50_ms": 455.6,
+    "p95_ms": 488.4,
+    "p99_ms": 488.4,
+    "req_per_s": 2.18,
+    "tok_per_s": 139.8,
+    "rss_delta_mb": 0.0
+  },
+  {
+    "name": "native_bindings",
+    "concurrency": 4,
+    "n_requests": 20,
+    "errors": 0,
+    "p50_ms": 2182.0,
+    "p95_ms": 3821.5,
+    "p99_ms": 3821.5,
+    "req_per_s": 1.83,
+    "tok_per_s": 118.9,
+    "rss_delta_mb": 0.0
+  },
+  {
+    "name": "http_openai_client",
+    "concurrency": 4,
+    "n_requests": 20,
+    "errors": 0,
+    "p50_ms": 1055.0,
+    "p95_ms": 1068.4,
+    "p99_ms": 1068.4,
+    "req_per_s": 3.79,
+    "tok_per_s": 242.3,
+    "rss_delta_mb": 0.0
+  },
+  {
+    "name": "core_python_urllib",
+    "concurrency": 4,
+    "n_requests": 20,
+    "errors": 0,
+    "p50_ms": 1045.4,
+    "p95_ms": 1047.5,
+    "p99_ms": 1047.5,
+    "req_per_s": 3.83,
+    "tok_per_s": 244.9,
+    "rss_delta_mb": 0.0
+  },
+  {
+    "name": "infergo_cli",
+    "concurrency": 4,
+    "n_requests": 20,
+    "errors": 0,
+    "p50_ms": 1048.0,
+    "p95_ms": 1061.0,
+    "p99_ms": 1061.0,
+    "req_per_s": 3.8,
+    "tok_per_s": 243.8,
+    "rss_delta_mb": 0.0
+  },
+  {
+    "name": "llama_cpp_python",
+    "concurrency": 4,
+    "n_requests": 20,
+    "errors": 0,
+    "p50_ms": 1822.6,
+    "p95_ms": 4559.6,
+    "p99_ms": 4559.6,
+    "req_per_s": 2.19,
+    "tok_per_s": 140.2,
+    "rss_delta_mb": 0.0
+  }
+]
