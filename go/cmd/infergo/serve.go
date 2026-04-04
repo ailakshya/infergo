@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -63,10 +64,18 @@ func runServe(args []string) {
 	maxActive    := fs.Int("max-active", 0, "max concurrent request handlers (0 = same as --max-queue)")
 	otlpEndpoint := fs.String("otlp-endpoint", "", "OTLP HTTP endpoint for tracing (e.g. localhost:4318; empty = disabled)")
 	grpcPort     := fs.Int("grpc-port", 9091, "gRPC listen port (0 = disabled)")
+	tensorSplitStr := fs.String("tensor-split", "", "comma-separated GPU fractions for tensor parallelism (e.g. 0.5,0.5); empty = single GPU")
 	fs.Parse(args)
 
 	if *apiKey == "" {
 		*apiKey = os.Getenv("INFERGO_API_KEY")
+	}
+
+	// Parse --tensor-split flag into []float32.
+	tensorSplit, err := parseTensorSplit(*tensorSplitStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serve: --tensor-split: %v\n", err)
+		os.Exit(1)
 	}
 
 	if len(models) == 0 {
@@ -93,7 +102,7 @@ func runServe(args []string) {
 	// Load all specified models.
 	for _, spec := range models {
 		name, path := parseModelSpec(spec)
-		if err := loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs); err != nil {
+		if err := loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit); err != nil {
 			log.Fatalf("failed to load model %q: %v", spec, err)
 		}
 		log.Printf("loaded model %q (%s)", name, path)
@@ -105,7 +114,7 @@ func runServe(args []string) {
 
 	// Inject the hot-reload function so POST /v1/admin/reload works.
 	apiSrv.SetReloader(func(name, path string) error {
-		return loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs)
+		return loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit)
 	})
 
 	var v1Handler http.Handler = server.WrapTracing(metrics.WrapServer(apiSrv), "infergo.v1")
@@ -170,11 +179,11 @@ func modelName(path string) string {
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
-func loadModel(reg *server.Registry, metrics *server.Metrics, name, path, provider string, gpuLayers, ctxSize, threads, maxSeqs int) error {
+func loadModel(reg *server.Registry, metrics *server.Metrics, name, path, provider string, gpuLayers, ctxSize, threads, maxSeqs int, tensorSplit []float32) error {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".gguf":
-		return loadLLM(reg, metrics, name, path, gpuLayers, ctxSize, threads, maxSeqs)
+		return loadLLM(reg, metrics, name, path, gpuLayers, ctxSize, threads, maxSeqs, tensorSplit)
 	case ".onnx":
 		return loadONNX(reg, name, path, provider)
 	default:
@@ -182,7 +191,7 @@ func loadModel(reg *server.Registry, metrics *server.Metrics, name, path, provid
 	}
 }
 
-func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, gpuLayers, ctxSize, threads, maxSeqs int) error {
+func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, gpuLayers, ctxSize, threads, maxSeqs int, tensorSplit []float32) error {
 	if threads <= 0 {
 		threads = runtime.NumCPU() / 2
 		if threads < 1 {
@@ -192,11 +201,40 @@ func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, g
 	log.Printf("using %d CPU threads, %d max concurrent sequences", threads, maxSeqs)
 	// n_batch=2048: max tokens per llama_decode call.
 	// 512 was too small for long prompts with chat-template overhead.
-	m, err := llm.Load(path, gpuLayers, ctxSize, maxSeqs, 2048)
+	var (
+		m   *llm.Model
+		err error
+	)
+	if len(tensorSplit) > 0 {
+		log.Printf("tensor split across %d GPU(s): %v", len(tensorSplit), tensorSplit)
+		m, err = llm.LoadSplit(path, gpuLayers, ctxSize, maxSeqs, 2048, tensorSplit)
+	} else {
+		m, err = llm.Load(path, gpuLayers, ctxSize, maxSeqs, 2048)
+	}
 	if err != nil {
 		return err
 	}
 	return reg.Load(name, newSchedulerModel(m, name, metrics.ActiveSequences, metrics))
+}
+
+// parseTensorSplit parses a comma-separated string of floats into []float32.
+// Returns nil, nil for an empty string (single-GPU mode).
+func parseTensorSplit(s string) ([]float32, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]float32, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		v, err := strconv.ParseFloat(p, 32)
+		if err != nil {
+			return nil, fmt.Errorf("invalid fraction %q: %w", p, err)
+		}
+		out = append(out, float32(v))
+	}
+	return out, nil
 }
 
 // onnxAdapter is a placeholder for ONNX models that lack a recognized

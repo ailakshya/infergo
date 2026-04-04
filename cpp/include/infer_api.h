@@ -203,6 +203,17 @@ InferLLM infer_llm_create(const char* path,
                            int         n_seq_max,
                            int         n_batch);
 
+// Create LLM with tensor split across multiple GPUs.
+// tensor_split: array of n_split floats summing to 1.0; NULL means single GPU.
+// n_split: number of GPUs (length of tensor_split array); 0 means single GPU.
+InferLLM infer_llm_create_split(const char* path,
+                                 int         n_gpu_layers,
+                                 int         ctx_size,
+                                 int         n_seq_max,
+                                 int         n_batch,
+                                 const float* tensor_split,
+                                 int          n_split);
+
 // Destroy LLM engine. Safe to call with NULL.
 void infer_llm_destroy(InferLLM llm);
 

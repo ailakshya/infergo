@@ -73,6 +73,64 @@ void LLMEngine::LoadModel(const std::string& path,
     vocab_size_ = llama_vocab_n_tokens(vocab);
 }
 
+// ─── LoadModelSplit ───────────────────────────────────────────────────────────
+
+void LLMEngine::LoadModelSplit(const std::string& path,
+                                int          n_gpu_layers,
+                                int          ctx_size,
+                                int          n_seq_max,
+                                int          n_batch,
+                                const float* tensor_split,
+                                int          n_split)
+{
+    // Clean up any previously loaded model
+    if (batch_initialized_) { llama_batch_free(batch_); batch_initialized_ = false; }
+    if (ctx_)   { llama_free(ctx_);           ctx_   = nullptr; }
+    if (model_) { llama_model_free(model_);   model_ = nullptr; }
+
+    // Model params
+    llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = n_gpu_layers;
+
+    // Apply tensor split when provided
+    if (tensor_split != nullptr && n_split > 0) {
+        mparams.tensor_split = tensor_split;
+        // Use row-split so every GPU participates in every layer
+        mparams.split_mode = LLAMA_SPLIT_MODE_ROW;
+    }
+
+    model_ = llama_model_load_from_file(path.c_str(), mparams);
+    if (model_ == nullptr) {
+        throw std::runtime_error(
+            "LLMEngine::LoadModelSplit: failed to load model from '" + path + "'");
+    }
+
+    // Context params
+    llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx      = static_cast<uint32_t>(ctx_size);
+    cparams.n_batch    = static_cast<uint32_t>(n_batch);
+    cparams.n_ubatch   = static_cast<uint32_t>(n_batch);
+    cparams.n_seq_max  = static_cast<uint32_t>(n_seq_max);
+    cparams.offload_kqv = true;
+    cparams.no_perf     = true;
+
+    ctx_ = llama_init_from_model(model_, cparams);
+    if (ctx_ == nullptr) {
+        llama_model_free(model_);
+        model_ = nullptr;
+        throw std::runtime_error("LLMEngine::LoadModelSplit: failed to create llama_context");
+    }
+
+    // Pre-allocate batch
+    n_batch_ = n_batch;
+    batch_ = llama_batch_init(n_batch, /*embd=*/0, /*n_seq_max=*/1);
+    batch_initialized_ = true;
+
+    // Cache vocab size
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    vocab_size_ = llama_vocab_n_tokens(vocab);
+}
+
 // ─── BatchDecode ─────────────────────────────────────────────────────────────
 
 std::vector<SequenceLogits> LLMEngine::BatchDecode(

@@ -506,6 +506,36 @@ InferLLM infer_llm_create(const char* path,
     }
 }
 
+InferLLM infer_llm_create_split(const char* path,
+                                 int         n_gpu_layers,
+                                 int         ctx_size,
+                                 int         n_seq_max,
+                                 int         n_batch,
+                                 const float* tensor_split,
+                                 int          n_split)
+{
+    try {
+        if (path == nullptr) {
+            infergo::set_last_error("infer_llm_create_split: null path");
+            return nullptr;
+        }
+        if (n_seq_max <= 0) {
+            infergo::set_last_error("infer_llm_create_split: n_seq_max must be > 0");
+            return nullptr;
+        }
+        auto* h = new LLMHandle(n_seq_max, ctx_size);
+        h->engine.LoadModelSplit(path, n_gpu_layers, ctx_size, n_seq_max, n_batch,
+                                 tensor_split, n_split);
+        return static_cast<InferLLM>(h);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_llm_create_split: unknown exception");
+        return nullptr;
+    }
+}
+
 void infer_llm_destroy(InferLLM llm) {
     if (llm == nullptr) return;
     try { delete static_cast<LLMHandle*>(llm); } catch (...) {}

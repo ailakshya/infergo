@@ -54,6 +54,17 @@ public:
                    int  n_seq_max    = 16,
                    int  n_batch      = 512);
 
+    /// Load a GGUF model with tensor parallelism across multiple GPUs.
+    /// tensor_split: pointer to n_split floats (fractions summing to 1.0); nullptr = single GPU.
+    /// n_split:      number of GPUs; 0 = single GPU.
+    void LoadModelSplit(const std::string& path,
+                        int          n_gpu_layers,
+                        int          ctx_size,
+                        int          n_seq_max,
+                        int          n_batch,
+                        const float* tensor_split,
+                        int          n_split);
+
     /// Process one decode step for a set of sequences.
     /// Each entry in inputs describes which tokens to process and at what position.
     /// Returns logits for every sequence that had want_logits=true.

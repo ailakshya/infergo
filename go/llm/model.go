@@ -56,6 +56,32 @@ func Load(path string, nGPULayers, ctxSize, nSeqMax, nBatch int) (*Model, error)
 	return m, nil
 }
 
+// LoadSplit creates an LLM engine with tensor parallelism across multiple GPUs.
+// tensorSplit: fractions per GPU summing to 1.0 (e.g. []float32{0.5, 0.5}); nil = single GPU.
+// All other parameters have the same meaning as Load.
+func LoadSplit(path string, nGPULayers, ctxSize, nSeqMax, nBatch int, tensorSplit []float32) (*Model, error) {
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+
+	var splitPtr *C.float
+	nSplit := C.int(0)
+	if len(tensorSplit) > 0 {
+		splitPtr = (*C.float)(unsafe.Pointer(&tensorSplit[0]))
+		nSplit = C.int(len(tensorSplit))
+	}
+
+	ptr := C.infer_llm_create_split(cPath, C.int(nGPULayers), C.int(ctxSize), C.int(nSeqMax), C.int(nBatch), splitPtr, nSplit)
+	if ptr == nil {
+		return nil, fmt.Errorf("llm: load split %q failed: %w", path, lastError())
+	}
+	m := &Model{
+		ptr:       ptr,
+		vocabSize: int(C.infer_llm_vocab_size(ptr)),
+	}
+	runtime.SetFinalizer(m, (*Model).Close)
+	return m, nil
+}
+
 // Close destroys the LLM engine and frees all C resources.
 // Safe to call multiple times.
 func (m *Model) Close() {
