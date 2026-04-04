@@ -1,0 +1,28 @@
+# KEDA ScaledObject — scales infergo pods based on queue depth
+# Requires: Prometheus scraping infergo at /metrics, KEDA 2.x installed
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: infergo-scaler
+  namespace: inference
+spec:
+  scaleTargetRef:
+    name: infergo
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  cooldownPeriod: 30
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+        metricName: infergo_queue_depth
+        threshold: "5"
+        query: |
+          avg(infergo_queue_depth{namespace="inference"})
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+        metricName: infergo_active_sequences
+        threshold: "12"
+        query: |
+          avg(infergo_active_sequences{namespace="inference"})

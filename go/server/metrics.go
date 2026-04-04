@@ -30,6 +30,9 @@ type Metrics struct {
 
 	// infergo_queue_depth: gauge of total in-flight requests (active + waiting)
 	QueueDepth prometheus.Gauge
+
+	// infergo_active_sequences: gauge of LLM sequences currently decoding
+	ActiveSequences prometheus.Gauge
 }
 
 // NewMetrics creates and registers all metrics on a fresh Prometheus registry.
@@ -70,6 +73,11 @@ func NewMetrics() *Metrics {
 			Name: "infergo_queue_depth",
 			Help: "Current number of requests in the priority queue (active + waiting).",
 		}),
+
+		ActiveSequences: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "infergo_active_sequences",
+			Help: "Number of LLM sequences currently decoding.",
+		}),
 	}
 
 	reg.MustRegister(
@@ -79,6 +87,7 @@ func NewMetrics() *Metrics {
 		m.TokensPerSecond,
 		m.GPUMemoryBytes,
 		m.QueueDepth,
+		m.ActiveSequences,
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 	)

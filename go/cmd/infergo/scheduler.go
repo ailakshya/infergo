@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/ailakshya/infergo/llm"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // TokenEvent is one item emitted on a request's token channel.
@@ -40,19 +41,23 @@ type activeSeq struct {
 //
 // Implements server.Model, server.LLMModel, and server.StreamingLLMModel.
 type schedulerModel struct {
-	m        *llm.Model
-	submitCh chan *schedRequest
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
+	m               *llm.Model
+	submitCh        chan *schedRequest
+	stopCh          chan struct{}
+	wg              sync.WaitGroup
+	activeSeqGauge  prometheus.Gauge
 }
 
 // newSchedulerModel creates and starts a schedulerModel for the given model.
 // The scheduler goroutine runs until Close is called.
-func newSchedulerModel(m *llm.Model) *schedulerModel {
+// activeSeqGauge may be nil; when non-nil it tracks the number of sequences
+// currently decoding (incremented on initSeq, decremented on sequence close).
+func newSchedulerModel(m *llm.Model, activeSeqGauge prometheus.Gauge) *schedulerModel {
 	s := &schedulerModel{
-		m:        m,
-		submitCh: make(chan *schedRequest, 256),
-		stopCh:   make(chan struct{}),
+		m:              m,
+		submitCh:       make(chan *schedRequest, 256),
+		stopCh:         make(chan struct{}),
+		activeSeqGauge: activeSeqGauge,
 	}
 	s.wg.Add(1)
 	go s.run()
@@ -199,6 +204,7 @@ func (s *schedulerModel) run() {
 				a.req.tokenCh <- TokenEvent{Err: err}
 				close(a.req.tokenCh)
 				a.seq.Close()
+				s.decActiveSeq()
 			}
 			active = active[:0]
 			continue
@@ -212,6 +218,7 @@ func (s *schedulerModel) run() {
 				a.req.tokenCh <- TokenEvent{Err: err}
 				close(a.req.tokenCh)
 				a.seq.Close()
+				s.decActiveSeq()
 				continue
 			}
 
@@ -219,6 +226,7 @@ func (s *schedulerModel) run() {
 			if s.m.IsEOG(tok) || a.gen >= a.req.maxTokens {
 				close(a.req.tokenCh)
 				a.seq.Close()
+				s.decActiveSeq()
 				continue
 			}
 
@@ -227,6 +235,7 @@ func (s *schedulerModel) run() {
 				a.req.tokenCh <- TokenEvent{Err: err}
 				close(a.req.tokenCh)
 				a.seq.Close()
+				s.decActiveSeq()
 				continue
 			}
 
@@ -240,6 +249,7 @@ func (s *schedulerModel) run() {
 			case <-a.req.ctx.Done():
 				close(a.req.tokenCh)
 				a.seq.Close()
+				s.decActiveSeq()
 			}
 		}
 		active = next
@@ -250,6 +260,7 @@ func (s *schedulerModel) run() {
 			for _, a := range active {
 				close(a.req.tokenCh)
 				a.seq.Close()
+				s.decActiveSeq()
 			}
 			return
 		default:
@@ -275,7 +286,17 @@ func (s *schedulerModel) initSeq(req *schedRequest) *activeSeq {
 		close(req.tokenCh)
 		return nil
 	}
+	if s.activeSeqGauge != nil {
+		s.activeSeqGauge.Inc()
+	}
 	return &activeSeq{req: req, seq: seq}
+}
+
+// decActiveSeq decrements the active-sequences gauge if one is configured.
+func (s *schedulerModel) decActiveSeq() {
+	if s.activeSeqGauge != nil {
+		s.activeSeqGauge.Dec()
+	}
 }
 
 // pruneCancelled removes sequences whose client context has been cancelled,
@@ -287,6 +308,7 @@ func (s *schedulerModel) pruneCancelled(active []*activeSeq) []*activeSeq {
 		case <-a.req.ctx.Done():
 			close(a.req.tokenCh)
 			a.seq.Close()
+			s.decActiveSeq()
 		default:
 			out = append(out, a)
 		}
