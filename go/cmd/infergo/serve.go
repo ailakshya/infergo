@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -66,8 +67,17 @@ func runServe(args []string) {
 	grpcPort     := fs.Int("grpc-port", 9091, "gRPC listen port (0 = disabled)")
 	tensorSplitStr  := fs.String("tensor-split", "", "comma-separated GPU fractions for tensor parallelism (e.g. 0.5,0.5); empty = single GPU")
 	pipelineStages  := fs.Int("pipeline-stages", 1, "number of pipeline stages for layer-split multi-GPU inference (1 = single GPU, N>1 = N GPUs with LLAMA_SPLIT_MODE_LAYER)")
-	mode := fs.String("mode", "combined", "server role: combined|prefill|decode")
+	mode         := fs.String("mode", "combined", "server role: combined|prefill|decode")
+	gcInterval   := fs.Int("gc-interval", 100, "call runtime.GC() every N completed requests (0 = disabled)")
+	maxBatchSize := fs.Int("max-batch-size", 8, "max sequences per BatchDecode call (prevents large batches from starving new requests)")
+	batchTimeout := fs.Int("batch-timeout-ms", 5, "ms to wait for more requests after the first arrives before firing a batch (0 = no wait)")
 	fs.Parse(args)
+
+	// Apply aggressive GC tuning to reduce heap growth under sustained load.
+	// GOGC=50 means GC triggers at 50% heap growth (default is 100%).
+	// This trades slightly more frequent GC cycles for a tighter RSS ceiling.
+	debug.SetGCPercent(50)
+	log.Printf("GC tuning: GOGC=50, gc-interval=%d", *gcInterval)
 
 	if err := validateMode(*mode); err != nil {
 		fmt.Fprintf(os.Stderr, "serve: --mode: %v\n", err)
@@ -109,7 +119,7 @@ func runServe(args []string) {
 	// Load all specified models.
 	for _, spec := range models {
 		name, path := parseModelSpec(spec)
-		if err := loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit, *pipelineStages); err != nil {
+		if err := loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit, *pipelineStages, *gcInterval, *maxBatchSize, *batchTimeout); err != nil {
 			log.Fatalf("failed to load model %q: %v", spec, err)
 		}
 		log.Printf("loaded model %q (%s)", name, path)
@@ -122,7 +132,7 @@ func runServe(args []string) {
 
 	// Inject the hot-reload function so POST /v1/admin/reload works.
 	apiSrv.SetReloader(func(name, path string) error {
-		return loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit, *pipelineStages)
+		return loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit, *pipelineStages, *gcInterval, *maxBatchSize, *batchTimeout)
 	})
 
 	var v1Handler http.Handler = server.WrapTracing(metrics.WrapServer(apiSrv), "infergo.v1")
@@ -187,11 +197,11 @@ func modelName(path string) string {
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
-func loadModel(reg *server.Registry, metrics *server.Metrics, name, path, provider string, gpuLayers, ctxSize, threads, maxSeqs int, tensorSplit []float32, pipelineStages int) error {
+func loadModel(reg *server.Registry, metrics *server.Metrics, name, path, provider string, gpuLayers, ctxSize, threads, maxSeqs int, tensorSplit []float32, pipelineStages, gcInterval, maxBatchSize, batchTimeoutMs int) error {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".gguf":
-		return loadLLM(reg, metrics, name, path, gpuLayers, ctxSize, threads, maxSeqs, tensorSplit, pipelineStages)
+		return loadLLM(reg, metrics, name, path, gpuLayers, ctxSize, threads, maxSeqs, tensorSplit, pipelineStages, gcInterval, maxBatchSize, batchTimeoutMs)
 	case ".onnx":
 		return loadONNX(reg, name, path, provider)
 	default:
@@ -199,7 +209,7 @@ func loadModel(reg *server.Registry, metrics *server.Metrics, name, path, provid
 	}
 }
 
-func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, gpuLayers, ctxSize, threads, maxSeqs int, tensorSplit []float32, pipelineStages int) error {
+func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, gpuLayers, ctxSize, threads, maxSeqs int, tensorSplit []float32, pipelineStages, gcInterval, maxBatchSize, batchTimeoutMs int) error {
 	if threads <= 0 {
 		threads = runtime.NumCPU() / 2
 		if threads < 1 {
@@ -226,7 +236,8 @@ func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, g
 	if err != nil {
 		return err
 	}
-	return reg.Load(name, newSchedulerModel(m, name, metrics.ActiveSequences, metrics))
+	log.Printf("scheduler tuning: max-batch-size=%d, batch-timeout-ms=%d, gc-interval=%d", maxBatchSize, batchTimeoutMs, gcInterval)
+	return reg.Load(name, newSchedulerModel(m, name, metrics.ActiveSequences, metrics, maxBatchSize, batchTimeoutMs, gcInterval))
 }
 
 // parseTensorSplit parses a comma-separated string of floats into []float32.

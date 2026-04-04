@@ -61,7 +61,7 @@ HTTP handlers ──► request channel ──► scheduler goroutine ──► 
 | OPT-2-T1 | Single request through scheduler | PASS — correct text, no deadlock |
 | OPT-2-T2 | 4 concurrent requests complete | PASS — all goroutines get non-empty responses |
 | OPT-2-T3 | Race detector clean | PASS — `go test -race ./go/...` exits 0 |
-| OPT-2-T4 | P50 latency drops | PARTIAL — P50=1185ms (target ≤600ms; requires OPT-22 for further gains) |
+| OPT-2-T4 | P50 latency drops | PARTIAL — P50=1185ms (target ≤600ms; requires OPT-22 for further gains). Scheduler tuning: --max-batch-size + --batch-timeout-ms flags added; gpu_dev re-benchmark pending |
 | OPT-2-T5 | Throughput does not regress | PASS — 200 tok/s (target ≥140 tok/s) |
 | OPT-2-T6 | SSE streaming works | PASS — `curl -N` emits `data:` lines per token |
 | OPT-2-T7 | Graceful shutdown | PASS — SIGTERM with 4 in-flight: all complete before exit |

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ailakshya/infergo/llm"
 	"github.com/ailakshya/infergo/server"
@@ -49,6 +51,10 @@ type schedulerModel struct {
 	wg              sync.WaitGroup
 	activeSeqGauge  prometheus.Gauge
 	metrics         *server.Metrics
+	maxBatchSize    int           // cap on sequences per BatchDecode call (0 = unlimited)
+	batchTimeout    time.Duration // how long to wait for more requests after first arrives
+	gcInterval      int           // call runtime.GC() every N completed requests (0 = disabled)
+	completedReqs   int           // count of requests completed since last GC (scheduler goroutine only)
 }
 
 // newSchedulerModel creates and starts a schedulerModel for the given model.
@@ -57,7 +63,12 @@ type schedulerModel struct {
 // currently decoding (incremented on initSeq, decremented on sequence close).
 // metrics may be nil; when non-nil KV page gauges are updated after each
 // BatchDecode call.
-func newSchedulerModel(m *llm.Model, modelName string, activeSeqGauge prometheus.Gauge, metrics *server.Metrics) *schedulerModel {
+// maxBatchSize caps the number of sequences per BatchDecode call (0 = unlimited).
+// batchTimeoutMs is how long (in milliseconds) to wait for additional requests
+// to arrive after the first one before firing a batch (0 = no wait).
+// gcInterval causes runtime.GC() to be called every N completed requests
+// (0 = disabled). This bounds RSS growth under sustained sequential load.
+func newSchedulerModel(m *llm.Model, modelName string, activeSeqGauge prometheus.Gauge, metrics *server.Metrics, maxBatchSize, batchTimeoutMs, gcInterval int) *schedulerModel {
 	s := &schedulerModel{
 		m:              m,
 		modelName:      modelName,
@@ -65,6 +76,9 @@ func newSchedulerModel(m *llm.Model, modelName string, activeSeqGauge prometheus
 		stopCh:         make(chan struct{}),
 		activeSeqGauge: activeSeqGauge,
 		metrics:        metrics,
+		maxBatchSize:   maxBatchSize,
+		batchTimeout:   time.Duration(batchTimeoutMs) * time.Millisecond,
+		gcInterval:     gcInterval,
 	}
 	s.wg.Add(1)
 	go s.run()
@@ -179,11 +193,48 @@ func (s *schedulerModel) run() {
 			case <-s.stopCh:
 				return
 			}
+
+			// After the first request arrives on an empty queue, wait up to
+			// batchTimeout for more requests to land so they share the same
+			// BatchDecode call (reduces P50 latency at moderate concurrency).
+			if s.batchTimeout > 0 {
+				deadline := time.NewTimer(s.batchTimeout)
+			batchWait:
+				for {
+					// Stop gathering if we've hit the batch size cap.
+					if s.maxBatchSize > 0 && len(active) >= s.maxBatchSize {
+						if !deadline.Stop() {
+							<-deadline.C
+						}
+						break batchWait
+					}
+					select {
+					case req := <-s.submitCh:
+						if a := s.initSeq(req); a != nil {
+							active = append(active, a)
+						}
+					case <-deadline.C:
+						break batchWait
+					case <-s.stopCh:
+						deadline.Stop()
+						for _, a := range active {
+							close(a.req.tokenCh)
+							a.seq.Close()
+							s.decActiveSeq()
+						}
+						return
+					}
+				}
+			}
 		}
 
-		// Drain all pending requests without blocking (add to current batch).
+		// Drain all pending requests without blocking (add to current batch),
+		// respecting the maxBatchSize cap.
 	drain:
 		for {
+			if s.maxBatchSize > 0 && len(active) >= s.maxBatchSize {
+				break drain
+			}
 			select {
 			case req := <-s.submitCh:
 				if a := s.initSeq(req); a != nil {
@@ -237,6 +288,7 @@ func (s *schedulerModel) run() {
 				close(a.req.tokenCh)
 				a.seq.Close()
 				s.decActiveSeq()
+				s.maybeGC()
 				continue
 			}
 
@@ -314,6 +366,20 @@ func (s *schedulerModel) initSeq(req *schedRequest) *activeSeq {
 func (s *schedulerModel) decActiveSeq() {
 	if s.activeSeqGauge != nil {
 		s.activeSeqGauge.Dec()
+	}
+}
+
+// maybeGC increments the completed-request counter and calls runtime.GC()
+// when the counter reaches gcInterval. This must only be called from the
+// scheduler goroutine (no locking needed — completedReqs is owned by run).
+func (s *schedulerModel) maybeGC() {
+	if s.gcInterval <= 0 {
+		return
+	}
+	s.completedReqs++
+	if s.completedReqs >= s.gcInterval {
+		s.completedReqs = 0
+		runtime.GC()
 	}
 }
 
