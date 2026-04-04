@@ -56,9 +56,10 @@ jobs:
         working-directory: go
         # batcher.go has a //go:build cgo constraint so it is excluded here.
         # All other server code (routing, health, metrics, auth, queue, tracing) is pure Go.
+        # -race requires cgo, so we omit it when CGO_ENABLED=0.
         env:
           CGO_ENABLED: "0"
-        run: go test -race -count=1 ./server/...
+        run: go test -count=1 ./server/...
 
   # ── Helm: dry-run validation ──────────────────────────────────────────────────
   helm-lint:
@@ -106,6 +107,12 @@ jobs:
 
       - name: Build Rust tokenizer
         run: cargo build --release --manifest-path tokenizer-rs/Cargo.toml
+
+      - name: Download tokenizer test fixture
+        run: |
+          mkdir -p /tmp/bert_tokenizer
+          wget -q -O /tmp/bert_tokenizer/tokenizer.json \
+            "https://huggingface.co/bert-base-uncased/resolve/main/tokenizer.json"
 
       - name: Generate ONNX test fixtures
         run: |
