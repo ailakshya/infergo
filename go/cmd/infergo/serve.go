@@ -66,7 +66,13 @@ func runServe(args []string) {
 	grpcPort     := fs.Int("grpc-port", 9091, "gRPC listen port (0 = disabled)")
 	tensorSplitStr  := fs.String("tensor-split", "", "comma-separated GPU fractions for tensor parallelism (e.g. 0.5,0.5); empty = single GPU")
 	pipelineStages  := fs.Int("pipeline-stages", 1, "number of pipeline stages for layer-split multi-GPU inference (1 = single GPU, N>1 = N GPUs with LLAMA_SPLIT_MODE_LAYER)")
+	mode := fs.String("mode", "combined", "server role: combined|prefill|decode")
 	fs.Parse(args)
+
+	if err := validateMode(*mode); err != nil {
+		fmt.Fprintf(os.Stderr, "serve: --mode: %v\n", err)
+		os.Exit(1)
+	}
 
 	if *apiKey == "" {
 		*apiKey = os.Getenv("INFERGO_API_KEY")
@@ -112,6 +118,7 @@ func runServe(args []string) {
 	// Wire up the mux: API routes + health + metrics
 	mux := http.NewServeMux()
 	apiSrv := server.NewServer(reg)
+	apiSrv.SetMode(*mode)
 
 	// Inject the hot-reload function so POST /v1/admin/reload works.
 	apiSrv.SetReloader(func(name, path string) error {
@@ -156,7 +163,7 @@ func runServe(args []string) {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("listening on %s (provider=%s)", addr, *provider)
+		log.Printf("listening on %s (provider=%s, mode=%s)", addr, *provider, *mode)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
@@ -280,6 +287,16 @@ func loadONNX(reg *server.Registry, name, path, provider string) error {
 
 	// Fall back to plain ONNX placeholder (appears in /v1/models only).
 	return reg.Load(name, &onnxAdapter{path: path})
+}
+
+// validateMode returns nil if mode is one of the allowed values.
+func validateMode(mode string) error {
+	switch mode {
+	case "combined", "prefill", "decode":
+		return nil
+	default:
+		return fmt.Errorf("invalid mode %q: must be combined, prefill, or decode", mode)
+	}
 }
 
 // loadDetection creates a YOLOv8 detection model from an ONNX model path.

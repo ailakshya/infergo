@@ -21,6 +21,23 @@ type LLMModel interface {
 	Generate(ctx context.Context, prompt string, maxTokens int, temp float32) (text string, promptToks int, genToks int, err error)
 }
 
+// KVSerializable is optionally implemented by LLM models that support
+// prefill-decode separation. The model tokenizes a prompt, runs prefill,
+// serializes the resulting KV cache, and returns the bytes plus the number
+// of prompt tokens processed.
+//
+// DecodeFromKV accepts those bytes, deserializes the KV cache into a fresh
+// sequence slot, and runs generation, returning the generated text.
+type KVSerializable interface {
+	// PrefillPrompt tokenizes prompt, runs the prefill forward pass, serializes
+	// the KV cache, and returns (kvBytes, promptTokenCount, error).
+	PrefillPrompt(ctx context.Context, prompt string) (kvBytes []byte, nPromptToks int, err error)
+
+	// DecodeFromKV deserializes kvBytes into a sequence slot and runs generation
+	// for up to maxTokens steps, returning the generated text.
+	DecodeFromKV(ctx context.Context, kvBytes []byte, nPromptToks int, maxTokens int, temp float32) (text string, err error)
+}
+
 // EmbeddingModel is a model that can produce embedding vectors.
 type EmbeddingModel interface {
 	Model
@@ -148,6 +165,36 @@ type ModelInfo struct {
 	Created int64  `json:"created"`
 }
 
+// PrefillRequest is the body for POST /v1/prefill.
+// The server runs prefill (prompt processing) only, serializes the resulting
+// KV cache, and returns it so a decode node can continue generation.
+type PrefillRequest struct {
+	Model    string        `json:"model"`
+	Messages []ChatMessage `json:"messages"`
+}
+
+// PrefillResponse is returned by POST /v1/prefill.
+// KVData is base64-encoded KV cache state for the processed sequence.
+type PrefillResponse struct {
+	Model       string `json:"model"`
+	KVData      string `json:"kv_data"`      // base64-encoded KV cache bytes
+	SeqPosition int    `json:"seq_position"` // number of prompt tokens processed
+}
+
+// DecodeRequest is the body for POST /v1/decode.
+// The node deserializes the provided KV cache and runs generation.
+type DecodeRequest struct {
+	Model     string `json:"model"`
+	KVData    string `json:"kv_data"`    // base64-encoded KV cache bytes (from /v1/prefill)
+	MaxTokens int    `json:"max_tokens"`
+}
+
+// DecodeResponse is returned by POST /v1/decode.
+type DecodeResponse struct {
+	Model string `json:"model"`
+	Text  string `json:"text"`
+}
+
 // errorResponse is returned on any handler error.
 type errorResponse struct {
 	Error struct {
@@ -168,6 +215,7 @@ type Server struct {
 	mux      *http.ServeMux
 	registry *Registry
 	reload   ReloadFunc // optional; nil = reload not configured
+	mode     string     // "combined" (default), "prefill", or "decode"
 }
 
 // NewServer creates a Server backed by the given Registry and registers all routes.
@@ -175,6 +223,7 @@ func NewServer(reg *Registry) *Server {
 	s := &Server{
 		mux:      http.NewServeMux(),
 		registry: reg,
+		mode:     "combined",
 	}
 	s.mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	s.mux.HandleFunc("POST /v1/completions", s.handleCompletions)
@@ -183,6 +232,9 @@ func NewServer(reg *Registry) *Server {
 	s.mux.HandleFunc("GET /v1/models", s.handleModels)
 	s.mux.HandleFunc("POST /v1/admin/reload", s.handleAdminReload)
 	s.mux.Handle("GET /v1/ws/chat", s.HandleWSChat())
+	// Prefill-decode separation endpoints (OPT-26)
+	s.mux.HandleFunc("POST /v1/prefill", s.handlePrefill)
+	s.mux.HandleFunc("POST /v1/decode", s.handleDecode)
 	return s
 }
 
@@ -190,6 +242,14 @@ func NewServer(reg *Registry) *Server {
 // Call this once after NewServer, before serving traffic.
 func (s *Server) SetReloader(f ReloadFunc) {
 	s.reload = f
+}
+
+// SetMode sets the server's operating mode: "combined" (default), "prefill", or "decode".
+// In prefill mode only /v1/prefill is active for LLM requests.
+// In decode mode only /v1/decode is active for LLM requests.
+// In combined mode all endpoints are active.
+func (s *Server) SetMode(mode string) {
+	s.mode = mode
 }
 
 // ServeHTTP implements http.Handler.
@@ -531,5 +591,118 @@ func (s *Server) handleAdminReload(w http.ResponseWriter, r *http.Request) {
 		Status: "ok",
 		Model:  req.Model,
 		Path:   req.Path,
+	})
+}
+
+// ─── Prefill-Decode separation handlers (OPT-26) ─────────────────────────────
+
+// handlePrefill implements POST /v1/prefill.
+// It tokenizes the provided messages, runs the prefill forward pass, serializes
+// the resulting KV cache, and returns it base64-encoded.
+// Only active when --mode combined or --mode prefill.
+func (s *Server) handlePrefill(w http.ResponseWriter, r *http.Request) {
+	if s.mode == "decode" {
+		writeError(w, http.StatusNotFound, "/v1/prefill is not available in decode mode")
+		return
+	}
+
+	var req PrefillRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if req.Model == "" {
+		writeError(w, http.StatusBadRequest, "model field is required")
+		return
+	}
+	if len(req.Messages) == 0 {
+		writeError(w, http.StatusBadRequest, "messages must not be empty")
+		return
+	}
+
+	ref, err := s.registry.Get(req.Model)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer ref.Release()
+
+	kvsm, ok := ref.Model.(KVSerializable)
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("model %q does not support prefill-decode separation", req.Model))
+		return
+	}
+
+	prompt := buildPrompt(req.Messages)
+	kvBytes, nPromptToks, err := kvsm.PrefillPrompt(r.Context(), prompt)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "prefill failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, PrefillResponse{
+		Model:       req.Model,
+		KVData:      base64.StdEncoding.EncodeToString(kvBytes),
+		SeqPosition: nPromptToks,
+	})
+}
+
+// handleDecode implements POST /v1/decode.
+// It accepts base64-encoded KV cache bytes (from /v1/prefill), deserializes them
+// into a fresh sequence slot, and runs generation, returning the generated text.
+// Only active when --mode combined or --mode decode.
+func (s *Server) handleDecode(w http.ResponseWriter, r *http.Request) {
+	if s.mode == "prefill" {
+		writeError(w, http.StatusNotFound, "/v1/decode is not available in prefill mode")
+		return
+	}
+
+	var req DecodeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if req.Model == "" {
+		writeError(w, http.StatusBadRequest, "model field is required")
+		return
+	}
+	if req.KVData == "" {
+		writeError(w, http.StatusBadRequest, "kv_data must not be empty")
+		return
+	}
+
+	kvBytes, err := base64.StdEncoding.DecodeString(req.KVData)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "kv_data: invalid base64: "+err.Error())
+		return
+	}
+
+	ref, err := s.registry.Get(req.Model)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer ref.Release()
+
+	kvsm, ok := ref.Model.(KVSerializable)
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("model %q does not support prefill-decode separation", req.Model))
+		return
+	}
+
+	maxToks := req.MaxTokens
+	if maxToks <= 0 {
+		maxToks = 256
+	}
+
+	text, err := kvsm.DecodeFromKV(r.Context(), kvBytes, 0, maxToks, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "decode failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, DecodeResponse{
+		Model: req.Model,
+		Text:  text,
 	})
 }

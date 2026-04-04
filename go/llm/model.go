@@ -260,3 +260,47 @@ func (m *Model) BatchDecode(seqs []*Sequence) error {
 	}
 	return nil
 }
+
+// SerializeKV serializes the KV cache for a sequence slot to bytes.
+// seqID is the slot ID returned by seq.SlotID().
+// Returns the serialized bytes, or an error if the context is not loaded or
+// the sequence is empty / invalid.
+func (m *Model) SerializeKV(seqID int) ([]byte, error) {
+	if m.ptr == nil {
+		return nil, errors.New("llm: SerializeKV called on closed model")
+	}
+
+	// First call: query required size.
+	needed := C.infer_llm_kv_serialize(m.ptr, C.int(seqID), nil, 0)
+	if needed <= 0 {
+		return nil, fmt.Errorf("llm: SerializeKV(%d) size query failed: %w", seqID, lastError())
+	}
+
+	// Second call: fill the buffer.
+	buf := make([]byte, int(needed))
+	written := C.infer_llm_kv_serialize(m.ptr, C.int(seqID),
+		(*C.uint8_t)(unsafe.Pointer(&buf[0])), C.int(needed))
+	if written <= 0 {
+		return nil, fmt.Errorf("llm: SerializeKV(%d) failed: %w", seqID, lastError())
+	}
+
+	return buf[:int(written)], nil
+}
+
+// DeserializeKV deserializes KV cache bytes into a sequence slot.
+// seqID is the destination slot; data must have been produced by SerializeKV.
+func (m *Model) DeserializeKV(seqID int, data []byte) error {
+	if m.ptr == nil {
+		return errors.New("llm: DeserializeKV called on closed model")
+	}
+	if len(data) == 0 {
+		return errors.New("llm: DeserializeKV: data is empty")
+	}
+
+	rc := C.infer_llm_kv_deserialize(m.ptr, C.int(seqID),
+		(*C.uint8_t)(unsafe.Pointer(&data[0])), C.int(len(data)))
+	if rc != 0 {
+		return fmt.Errorf("llm: DeserializeKV(%d) failed: %w", seqID, lastError())
+	}
+	return nil
+}

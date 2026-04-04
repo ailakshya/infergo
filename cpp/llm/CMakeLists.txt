@@ -86,3 +86,18 @@ target_link_libraries(infer_sequence_test
 )
 
 gtest_discover_tests(infer_sequence_test)
+
+# ─── kv_serialize_test (OPT-26) ───────────────────────────────────────────────
+
+add_executable(kv_serialize_test kv_serialize_test.cpp)
+
+target_include_directories(kv_serialize_test
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/vendor/llama.cpp/include
+)
+
+target_link_libraries(kv_serialize_test
+    PRIVATE infer_llm GTest::gtest_main
+)
+
+gtest_discover_tests(kv_serialize_test)

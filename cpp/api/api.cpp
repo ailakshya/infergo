@@ -786,6 +786,68 @@ InferError infer_seq_get_logits(InferSeq seq, float* out_logits, int vocab_size)
     }
 }
 
+// ─── KV cache serialization API ───────────────────────────────────────────────
+
+int infer_llm_kv_serialize(InferLLM llm, int seq_id,
+                            uint8_t* out_buf, int out_buf_size) {
+    try {
+        if (llm == nullptr) {
+            infergo::set_last_error("infer_llm_kv_serialize: null llm");
+            return -1;
+        }
+        auto* h = static_cast<LLMHandle*>(llm);
+
+        if (out_buf == nullptr) {
+            // Size query: call SerializeKV and return size.
+            const auto buf = h->engine.SerializeKV(seq_id);
+            return static_cast<int>(buf.size());
+        }
+
+        if (out_buf_size <= 0) {
+            infergo::set_last_error("infer_llm_kv_serialize: out_buf_size must be > 0");
+            return -1;
+        }
+
+        const auto buf = h->engine.SerializeKV(seq_id);
+        if (buf.empty()) {
+            infergo::set_last_error("infer_llm_kv_serialize: SerializeKV returned empty");
+            return -1;
+        }
+        const int n = std::min(static_cast<int>(buf.size()), out_buf_size);
+        std::memcpy(out_buf, buf.data(), static_cast<size_t>(n));
+        return n;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_llm_kv_serialize: unknown exception");
+        return -1;
+    }
+}
+
+int infer_llm_kv_deserialize(InferLLM llm, int seq_id,
+                              const uint8_t* data, int nbytes) {
+    try {
+        if (llm == nullptr) {
+            infergo::set_last_error("infer_llm_kv_deserialize: null llm");
+            return -1;
+        }
+        if (data == nullptr || nbytes <= 0) {
+            infergo::set_last_error("infer_llm_kv_deserialize: invalid data or nbytes");
+            return -1;
+        }
+        auto* h = static_cast<LLMHandle*>(llm);
+        const bool ok = h->engine.DeserializeKV(seq_id, data, static_cast<size_t>(nbytes));
+        return ok ? 0 : -1;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_llm_kv_deserialize: unknown exception");
+        return -1;
+    }
+}
+
 // ─── Preprocessing API ────────────────────────────────────────────────────────
 
 #ifdef INFER_PREPROCESS_AVAILABLE

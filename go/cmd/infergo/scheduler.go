@@ -317,6 +317,107 @@ func (s *schedulerModel) decActiveSeq() {
 	}
 }
 
+// PrefillPrompt tokenizes the prompt, runs a prefill-only forward pass through
+// the model, serializes the resulting KV cache, and returns the bytes plus the
+// prompt token count. Implements server.KVSerializable.
+//
+// This call runs entirely outside the continuous-batching scheduler so it does
+// not interfere with normal generation traffic. The sequence is closed
+// immediately after the KV cache is captured.
+func (s *schedulerModel) PrefillPrompt(ctx context.Context, prompt string) ([]byte, int, error) {
+	tokens, err := s.m.Tokenize(prompt, true, 4096)
+	if err != nil {
+		return nil, 0, fmt.Errorf("prefill: tokenize: %w", err)
+	}
+	if len(tokens) == 0 {
+		return nil, 0, errors.New("prefill: empty prompt after tokenization")
+	}
+
+	seq, err := s.m.NewSequence(tokens)
+	if err != nil {
+		return nil, 0, fmt.Errorf("prefill: new sequence: %w", err)
+	}
+	defer seq.Close()
+
+	// Run one BatchDecode to process all prompt tokens (prefill pass).
+	if err := s.m.BatchDecode([]*llm.Sequence{seq}); err != nil {
+		return nil, 0, fmt.Errorf("prefill: batch decode: %w", err)
+	}
+
+	// Serialize the KV cache for this sequence slot.
+	kvBytes, err := s.m.SerializeKV(seq.SlotID())
+	if err != nil {
+		return nil, 0, fmt.Errorf("prefill: serialize KV: %w", err)
+	}
+
+	return kvBytes, len(tokens), nil
+}
+
+// DecodeFromKV deserializes KV cache bytes into a fresh sequence slot and runs
+// generation for up to maxTokens steps, returning the generated text.
+// Implements server.KVSerializable.
+//
+// Like PrefillPrompt, this bypasses the scheduler and runs synchronously.
+func (s *schedulerModel) DecodeFromKV(ctx context.Context, kvBytes []byte, nPromptToks int, maxTokens int, temp float32) (string, error) {
+	if len(kvBytes) == 0 {
+		return "", errors.New("decode: kvBytes is empty")
+	}
+	if maxTokens <= 0 {
+		maxTokens = 256
+	}
+
+	// Allocate a sequence slot with a single placeholder token.
+	// The slot is needed to reserve a KV cache page; the actual state will be
+	// overwritten by DeserializeKV immediately after.
+	bos := s.m.BOS()
+	if bos < 0 {
+		bos = 1 // fallback
+	}
+	seq, err := s.m.NewSequence([]int32{bos})
+	if err != nil {
+		return "", fmt.Errorf("decode: new sequence: %w", err)
+	}
+	defer seq.Close()
+
+	// Overwrite the slot's KV state with the serialized prefill result.
+	if err := s.m.DeserializeKV(seq.SlotID(), kvBytes); err != nil {
+		return "", fmt.Errorf("decode: deserialize KV: %w", err)
+	}
+
+	// Generation loop.
+	var sb strings.Builder
+	for i := 0; i < maxTokens; i++ {
+		select {
+		case <-ctx.Done():
+			return sb.String(), ctx.Err()
+		default:
+		}
+
+		if err := s.m.BatchDecode([]*llm.Sequence{seq}); err != nil {
+			return sb.String(), fmt.Errorf("decode: batch decode step %d: %w", i, err)
+		}
+
+		tok, err := seq.SampleToken(temp, 0.9)
+		if err != nil {
+			return sb.String(), fmt.Errorf("decode: sample step %d: %w", i, err)
+		}
+
+		if s.m.IsEOG(tok) {
+			break
+		}
+
+		piece, err := s.m.TokenToPiece(tok)
+		if err != nil {
+			return sb.String(), fmt.Errorf("decode: token-to-piece step %d: %w", i, err)
+		}
+
+		seq.AppendToken(tok)
+		sb.WriteString(piece)
+	}
+
+	return sb.String(), nil
+}
+
 // pruneCancelled removes sequences whose client context has been cancelled,
 // freeing their KV cache slots immediately.
 func (s *schedulerModel) pruneCancelled(active []*activeSeq) []*activeSeq {
