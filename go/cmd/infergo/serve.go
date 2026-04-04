@@ -69,8 +69,8 @@ func runServe(args []string) {
 	pipelineStages  := fs.Int("pipeline-stages", 1, "number of pipeline stages for layer-split multi-GPU inference (1 = single GPU, N>1 = N GPUs with LLAMA_SPLIT_MODE_LAYER)")
 	mode         := fs.String("mode", "combined", "server role: combined|prefill|decode")
 	gcInterval   := fs.Int("gc-interval", 100, "call runtime.GC() every N completed requests (0 = disabled)")
-	maxBatchSize := fs.Int("max-batch-size", 8, "max sequences per BatchDecode call (prevents large batches from starving new requests)")
-	batchTimeout := fs.Int("batch-timeout-ms", 5, "ms to wait for more requests after the first arrives before firing a batch (0 = no wait)")
+	maxBatchSize := fs.Int("max-batch-size", 0, "max sequences per BatchDecode call, 0 = unlimited (set >0 to cap batch size)")
+	batchTimeout := fs.Int("batch-timeout-ms", 0, "ms to wait for more requests after the first arrives before firing a batch (0 = no wait)")
 	fs.Parse(args)
 
 	// Apply aggressive GC tuning to reduce heap growth under sustained load.
