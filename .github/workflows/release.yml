@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # ── CPU binary: Linux x86-64 ─────────────────────────────────────────────────
+  release-linux-cpu:
+    name: Linux x86-64 (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build libopenblas-dev wget curl
+
+      - name: Install ONNX Runtime
+        run: |
+          wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-1.24.4.tgz
+          sudo tar -xzf onnxruntime-linux-x64-1.24.4.tgz -C /opt
+          sudo mv /opt/onnxruntime-linux-x64-1.24.4 /opt/onnxruntime
+          echo "/opt/onnxruntime/lib" | sudo tee /etc/ld.so.conf.d/onnxruntime.conf
+          sudo ldconfig
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+
+      - name: Build Rust tokenizer
+        run: cargo build --release --manifest-path tokenizer-rs/Cargo.toml
+
+      - name: Build C++ (CPU)
+        env:
+          ONNXRUNTIME_ROOT: /opt/onnxruntime
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DINFER_CUDA=OFF \
+            -DONNXRUNTIME_ROOT=/opt/onnxruntime
+          cmake --build build --target infer_api -j$(nproc)
+
+      - name: Build Go binary
+        env:
+          CGO_ENABLED: "1"
+          CGO_CFLAGS: "-I${{ github.workspace }}/cpp/include"
+          CGO_LDFLAGS: "-L${{ github.workspace }}/build/cpp/api -linfer_api -Wl,-rpath,/usr/local/lib/infergo"
+        run: go build -C go -ldflags "-s -w" -o ../infergo ./cmd/infergo
+
+      - name: Package
+        run: |
+          tar czf infergo-linux-amd64-cpu.tar.gz infergo
+          sha256sum infergo-linux-amd64-cpu.tar.gz > infergo-linux-amd64-cpu.tar.gz.sha256
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            infergo-linux-amd64-cpu.tar.gz
+            infergo-linux-amd64-cpu.tar.gz.sha256
+
+  # ── macOS Apple Silicon ──────────────────────────────────────────────────────
+  release-macos-arm64:
+    name: macOS Apple Silicon
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: brew install cmake ninja openblas
+
+      - name: Install ONNX Runtime
+        run: |
+          wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-osx-arm64-1.24.4.tgz
+          tar -xzf onnxruntime-osx-arm64-1.24.4.tgz -C /opt/homebrew
+          mv /opt/homebrew/onnxruntime-osx-arm64-1.24.4 /opt/homebrew/onnxruntime
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+
+      - name: Build Rust tokenizer
+        run: cargo build --release --manifest-path tokenizer-rs/Cargo.toml
+
+      - name: Build C++ (CPU/Metal)
+        env:
+          ONNXRUNTIME_ROOT: /opt/homebrew/onnxruntime
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DINFER_CUDA=OFF \
+            -DONNXRUNTIME_ROOT=/opt/homebrew/onnxruntime
+          cmake --build build --target infer_api -j$(sysctl -n hw.logicalcpu)
+
+      - name: Build Go binary
+        env:
+          CGO_ENABLED: "1"
+          CGO_CFLAGS: "-I${{ github.workspace }}/cpp/include"
+          CGO_LDFLAGS: "-L${{ github.workspace }}/build/cpp/api -linfer_api"
+        run: go build -C go -ldflags "-s -w" -o ../infergo ./cmd/infergo
+
+      - name: Package
+        run: |
+          tar czf infergo-darwin-arm64.tar.gz infergo
+          shasum -a 256 infergo-darwin-arm64.tar.gz > infergo-darwin-arm64.tar.gz.sha256
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            infergo-darwin-arm64.tar.gz
+            infergo-darwin-arm64.tar.gz.sha256

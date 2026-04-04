@@ -81,31 +81,35 @@ Go services that need model inference today must call a Python sidecar, pay for 
 
 ## Quickstart
 
-### Requirements
+### Install (pre-built binary)
 
-- CMake 3.20+, GCC 12+ or Clang 15+, Go 1.23+
-- For CUDA: CUDA Toolkit 12.x, compatible GPU driver
-
-### Build
+Download the binary for your platform — no compiler, no CMake, no Python required.
 
 ```bash
-git clone https://github.com/ailakshya/infergo && cd infergo
+# Linux x86-64 (CPU)
+curl -sSL https://github.com/ailakshya/infergo/releases/latest/download/infergo-linux-amd64-cpu.tar.gz \
+  | tar xz && sudo mv infergo /usr/local/bin/
 
-# CPU build
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target infer_api -j$(nproc)
-go build -C go -o ../infergo ./cmd/infergo
+# Linux x86-64 (CUDA)
+curl -sSL https://github.com/ailakshya/infergo/releases/latest/download/infergo-linux-amd64-cuda.tar.gz \
+  | tar xz && sudo mv infergo /usr/local/bin/
+
+# macOS Apple Silicon
+curl -sSL https://github.com/ailakshya/infergo/releases/latest/download/infergo-darwin-arm64.tar.gz \
+  | tar xz && sudo mv infergo /usr/local/bin/
 ```
 
-For CUDA, pass `-DINFER_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89` to cmake (adjust arch: `80` for A100, `89` for RTX 4090, `120` for RTX 5000).
+The only runtime requirement for CUDA builds is an NVIDIA driver (≥ 525) — CUDA Toolkit does **not** need to be installed.
 
 ### Download a model
 
 ```bash
-# One-line download via infergo pull
-./infergo pull bartowski/Meta-Llama-3-8B-Instruct-GGUF --filename Meta-Llama-3-8B-Instruct-Q4_K_M.gguf
+infergo pull bartowski/Meta-Llama-3-8B-Instruct-GGUF --filename Meta-Llama-3-8B-Instruct-Q4_K_M.gguf
+```
 
-# Or directly with wget
+Or directly:
+
+```bash
 mkdir -p models
 wget -O models/llama3-8b-q4.gguf \
   "https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
@@ -273,6 +277,8 @@ serve flags:
 
 ## Go library
 
+The client SDK is pure Go — no CGo, no native libraries, no special setup:
+
 ```bash
 go get github.com/ailakshya/infergo@v0.1.0
 ```
@@ -410,6 +416,30 @@ helm install infergo deploy/helm/infergo/ \
 ```
 
 See [`docs/deployment.md`](docs/deployment.md) for full Kubernetes, systemd, and bare-metal deployment guides.
+
+---
+
+## Build from source
+
+Building from source is only needed to contribute to infergo or to add a new backend. Most users should use the [pre-built binary](#install-pre-built-binary).
+
+```bash
+# Requirements: CMake 3.20+, GCC 12+, Go 1.23+, Rust (for tokenizer)
+git clone https://github.com/ailakshya/infergo && cd infergo
+
+# CPU build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target infer_api -j$(nproc)
+go build -C go -o ../infergo ./cmd/infergo
+
+# CUDA build (requires CUDA Toolkit 12.x)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DINFER_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89
+cmake --build build --target infer_api -j$(nproc)
+go build -C go -o ../infergo ./cmd/infergo
+```
+
+CUDA arch values: `80` = A100, `89` = RTX 4090, `120` = RTX 5000.
 
 ---
 
