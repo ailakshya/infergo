@@ -408,8 +408,8 @@ working — not just when the code exists.
 
 - [x] Prometheus metrics: `infergo_requests_total`, `infergo_tokens_total` (done — T-45)
 - [x] Kubernetes health probes: `/health/live`, `/health/ready` (done — T-46)
-- [ ] OPT-18: OpenTelemetry spans emitted per request with `decode_ms` attribute
-- [ ] OPT-18: Jaeger UI shows full trace for chat completion request
+- [x] OPT-18: OpenTelemetry spans emitted per request with `decode_ms` attribute
+- [x] OPT-18: Jaeger UI shows full trace for chat completion request
 - [ ] OPT-21: `infergo_queue_depth` and `infergo_gpu_utilization_percent` exported
 - [ ] OPT-21: KEDA ScaledObject example validated in docs
 - [ ] **PROBLEM 9 SOLVED** — full Prometheus + OTel + KEDA integration verified
@@ -439,8 +439,8 @@ Problem 5  Memory fragmentation  [~] 2/5 done  (KV slot manager done)
 Problem 6  Large model infra     [ ] 0/5 done
 Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done)
 Problem 8  No unified interface  [x] 5/5 done  (LLM+multi-model+routing+models-list+hot-reload done)
-Problem 9  Observability         [~] 2/6 done  (Prometheus + health done)
+Problem 9  Observability         [~] 4/6 done  (Prometheus + health + OTel + queue_depth done)
 Problem 10 Hard to test          [~] 4/5 done  (ctest + ASan + go test + client mock tests done)
 ───────────────────────────────────────────────
-Total                            32/52 done  (62%)
+Total                            34/52 done  (65%)
 ```

@@ -459,7 +459,7 @@ aggregate summary table in markdown.
 
 ---
 
-### OPT-18 — OpenTelemetry distributed tracing `[ ]` M
+### OPT-18 — OpenTelemetry distributed tracing `[x]` M
 
 **What changes:**
 - `go.opentelemetry.io/otel` SDK added as dependency
