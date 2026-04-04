@@ -30,6 +30,8 @@ func main() {
 		runListModels(os.Args[2:])
 	case "benchmark":
 		runBenchmark(os.Args[2:])
+	case "pull":
+		runPull(os.Args[2:])
 	case "-h", "--help", "help":
 		printUsage()
 	default:
@@ -48,11 +50,14 @@ Usage:
   infergo list-models [--addr http://localhost:9090]
   infergo benchmark   --addr http://localhost:9090 --requests 1000
                       [--concurrency 8] [--prompt "..."]
+  infergo pull        owner/repo [--quant Q4_K_M] [--format gguf|onnx]
+                      [--file model.gguf] [--hf-token <token>] [--dir <path>]
 
 Subcommands:
   serve         Load a model and start the HTTP server.
   list-models   List models loaded on a running infergo server.
   benchmark     Stress-test a running infergo server.
+  pull          Download a model from HuggingFace Hub.
 
 `)
 	flag.PrintDefaults()
