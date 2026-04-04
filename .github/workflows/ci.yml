@@ -51,7 +51,10 @@ jobs:
 
       - name: go test — server (metrics, auth, queue, tracing, websocket)
         working-directory: go
-        # The server package is pure-Go; CGo only enters via llm/onnx in cmd/infergo.
+        # batcher.go has a //go:build cgo constraint so it is excluded here.
+        # All other server code (routing, health, metrics, auth, queue, tracing) is pure Go.
+        env:
+          CGO_ENABLED: "0"
         run: go test -race -count=1 ./server/...
 
   # ── Helm: dry-run validation ──────────────────────────────────────────────────
@@ -100,6 +103,23 @@ jobs:
 
       - name: Build Rust tokenizer
         run: cargo build --release --manifest-path tokenizer-rs/Cargo.toml
+
+      - name: Generate ONNX test fixtures
+        run: |
+          pip install onnx numpy --quiet
+          python3 - <<'EOF'
+          import numpy as np
+          import onnx
+          from onnx import numpy_helper, TensorProto, helper
+          x = helper.make_tensor_value_info('x', TensorProto.FLOAT, [1, 4])
+          y = helper.make_tensor_value_info('y', TensorProto.FLOAT, [1, 4])
+          scale = numpy_helper.from_array(np.array([2.0], dtype=np.float32), name='scale')
+          node = helper.make_node('Mul', inputs=['x', 'scale'], outputs=['y'])
+          graph = helper.make_graph([node], 'scale', [x], [y], initializer=[scale])
+          model = helper.make_model(graph, opset_imports=[helper.make_opsetid('', 17)])
+          onnx.save(model, '/tmp/scale.onnx')
+          print('Created /tmp/scale.onnx')
+          EOF
 
       - name: Configure (CPU only)
         env:

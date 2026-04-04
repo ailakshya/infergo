@@ -1,3 +1,5 @@
+//go:build cgo
+
 // Package server provides serving infrastructure for infergo models.
 package server
 
