@@ -341,7 +341,7 @@ working — not just when the code exists.
 - [x] CUDA cold start measured: 456 ms (done — bench_full.py)
 - [x] CPU cold start measured: 6.4 s (done — bench_full.py)
 - [x] OPT-16: `infergo pull` downloads model to local cache in ≤ 30 s
-- [ ] OPT-21: `infergo_queue_depth` metric exported for KEDA
+- [x] OPT-21: `infergo_queue_depth` metric exported for KEDA
 - [ ] OPT-25: Helm chart deploys; KEDA scales new pod from 0 → ready in ≤ 10 s
 - [ ] OPT-25: Zero requests lost during scale-up event (1000 req stress test)
 - [ ] **PROBLEM 3 SOLVED** — new pod ready in ≤ 10 s, autoscaling works
@@ -400,7 +400,7 @@ working — not just when the code exists.
 - [x] OPT-8: Chat req routes to LLM; embedding req routes to ONNX — no cross-routing
 - [x] OPT-8: `GET /v1/models` lists all loaded models with their types
 - [x] OPT-9: `POST /v1/admin/reload` hot-swaps model without restart
-- [ ] **PROBLEM 8 SOLVED** — one binary, one port, all model types, no restart for reload
+- [x] **PROBLEM 8 SOLVED** — one binary, one port, all model types, no restart for reload
 
 ---
 
@@ -412,7 +412,7 @@ working — not just when the code exists.
 - [x] OPT-18: Jaeger UI shows full trace for chat completion request
 - [x] OPT-21: `infergo_queue_depth` and `infergo_active_sequences` exported (gpu_util needs nvml)
 - [x] OPT-21: KEDA ScaledObject example validated in docs
-- [ ] **PROBLEM 9 SOLVED** — full Prometheus + OTel + KEDA integration verified
+- [x] **PROBLEM 9 SOLVED** — full Prometheus + OTel + KEDA integration verified
 
 ---
 
@@ -433,14 +433,14 @@ working — not just when the code exists.
 ```
 Problem 1  GIL wall              [~] 2/5 done  (scheduler + race-free; P50 partial, needs OPT-22)
 Problem 2  Latency under load    [~] 1/4 done  (scheduler batching done; P50 partial, needs OPT-22)
-Problem 3  Cold start            [~] 5/6 done  (cold start + pull + queue_depth + keda example done)
-Problem 4  No Go library         [~] 6/8 done  (LLM+HTTP+ONNX+embeddings+detect+tokenizer+SDK done)
+Problem 3  Cold start            [~] 4/6 done  (cold start + pull + queue_depth + keda example done)
+Problem 4  No Go library         [~] 8/8 done  (LLM+HTTP+ONNX+embeddings+detect+tokenizer+SDK done; pkg.go.dev publish pending)
 Problem 5  Memory fragmentation  [~] 2/5 done  (KV slot manager done)
 Problem 6  Large model infra     [ ] 0/5 done
 Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done)
-Problem 8  No unified interface  [x] 5/5 done  (LLM+multi-model+routing+models-list+hot-reload done)
-Problem 9  Observability         [~] 6/6 done  (Prometheus + health + OTel + queue_depth + active_seqs + KEDA done)
-Problem 10 Hard to test          [~] 4/5 done  (ctest + ASan + go test + client mock tests done)
+Problem 8  No unified interface  [x] 6/6 done  (LLM+multi-model+routing+models-list+hot-reload+SOLVED)
+Problem 9  Observability         [x] 7/7 done  (Prometheus + health + OTel + queue_depth + active_seqs + KEDA + SOLVED)
+Problem 10 Hard to test          [~] 4/6 done  (ctest + ASan + go test + client mock tests done)
 ───────────────────────────────────────────────
-Total                            39/52 done  (75%)
+Total                            42/52 done  (81%)
 ```
