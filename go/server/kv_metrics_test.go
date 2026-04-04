@@ -10,11 +10,12 @@ import (
 )
 
 // TestKVPageMetricsExported verifies that the KV page metrics are exported in /metrics output.
-// T1: infergo_kv_pages_free appears in metrics output
-// T2: infergo_kv_pages_total appears in metrics output
-// T3: UpdateKVPages sets the correct values visible in /metrics output
+// T1: infergo_kv_pages_free appears in metrics output after a value is set
+// T2: infergo_kv_pages_total appears in metrics output after a value is set
 func TestKVPageMetricsExported(t *testing.T) {
 	m := server.NewMetrics()
+	// Initialize at least one label so the gauges appear in the output.
+	m.UpdateKVPages("test-model", 10, 100)
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rr := httptest.NewRecorder()
