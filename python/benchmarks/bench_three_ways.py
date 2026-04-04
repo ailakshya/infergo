@@ -1,9 +1,16 @@
 """
-Benchmark: 3 ways to use infergo from Python
+Benchmark: 5 ways to run inference from Python
 
-1. Native bindings  — import infergo; llm = infergo.LLM(...)
-2. HTTP client      — import openai; client = openai.OpenAI(base_url=...)
-3. llama-cpp-python — from llama_cpp import Llama (traditional Python approach)
+1. Native bindings    — import infergo; llm = infergo.LLM(...)
+2. HTTP / OpenAI SDK  — import openai; client = openai.OpenAI(base_url=...)
+3. Core Python HTTP   — import requests; requests.post(...)  [no SDK overhead]
+4. infergo CLI        — subprocess: infergo benchmark ...    [pure Go, no Python]
+5. llama-cpp-python   — from llama_cpp import Llama          [traditional Python]
+
+Approaches 2, 3, and 4 all hit the same infergo server so their inference
+time is identical — the difference shows only Python/SDK overhead.
+Approach 1 goes direct to the shared library (no server needed).
+Approach 5 is the traditional in-process Python baseline.
 
 Run:
     python benchmarks/bench_three_ways.py \
@@ -25,6 +32,7 @@ import argparse
 import json
 import os
 import resource
+import subprocess
 import statistics
 import sys
 import threading
@@ -172,6 +180,129 @@ def bench_llama_cpp(model_path: str, n_requests: int, concurrency: int) -> dict:
     return result
 
 
+# ─── approach 4: core Python (raw requests — no OpenAI SDK) ──────────────────
+
+def bench_core_python(server_url: str, n_requests: int, concurrency: int) -> dict:
+    """
+    Uses the built-in urllib.request (zero external deps) to POST directly
+    to /v1/chat/completions.  Shows HTTP overhead without any SDK layer.
+    """
+    import urllib.request
+    import urllib.error
+
+    payload = json.dumps({
+        "model": "llama3-8b-q4",
+        "messages": [{"role": "user", "content": PROMPT}],
+        "max_tokens": MAX_TOKENS,
+    }).encode()
+    url = f"{server_url}/v1/chat/completions"
+
+    def one_request():
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        t0 = time.perf_counter()
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                body = json.loads(resp.read())
+        except urllib.error.URLError as e:
+            raise RuntimeError(str(e))
+        elapsed = time.perf_counter() - t0
+        n_toks = body.get("usage", {}).get("completion_tokens", MAX_TOKENS // 2)
+        return elapsed, n_toks
+
+    return run_bench("core_python_urllib", one_request, n_requests, concurrency)
+
+
+# ─── approach 5: infergo benchmark CLI (pure Go, no Python overhead) ──────────
+
+def bench_infergo_cli(server_url: str, n_requests: int, concurrency: int) -> dict:
+    """
+    Runs `infergo benchmark` as a subprocess.  This is pure Go with no
+    Python interpreter in the hot path — it shows the ceiling performance
+    achievable from the server.
+    """
+    binary = os.environ.get("INFERGO_BIN", "infergo")
+
+    # Check binary exists
+    try:
+        subprocess.run([binary, "--help"], capture_output=True, timeout=5)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {
+            "name": "infergo_cli",
+            "concurrency": concurrency,
+            "error": f"'{binary}' not found. Set INFERGO_BIN or add infergo to PATH.",
+        }
+
+    t0 = time.perf_counter()
+    try:
+        proc = subprocess.run(
+            [
+                binary, "benchmark",
+                "--addr",        server_url,
+                "--model",       "llama3-8b-q4",
+                "--prompt",      PROMPT,
+                "--max-tokens",  str(MAX_TOKENS),
+                "--requests",    str(n_requests),
+                "--concurrency", str(concurrency),
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired:
+        return {"name": "infergo_cli", "concurrency": concurrency, "error": "timed out"}
+
+    wall_elapsed = time.perf_counter() - t0
+
+    if proc.returncode != 0:
+        return {
+            "name": "infergo_cli",
+            "concurrency": concurrency,
+            "error": proc.stderr.strip() or f"exit {proc.returncode}",
+        }
+
+    # Parse JSON output from `infergo benchmark --json`
+    try:
+        data = json.loads(proc.stdout)
+        return {
+            "name": "infergo_cli",
+            "concurrency": concurrency,
+            "n_requests": n_requests,
+            "errors": data.get("errors", 0),
+            "p50_ms": data.get("p50_ms", 0),
+            "p95_ms": data.get("p95_ms", 0),
+            "p99_ms": data.get("p99_ms", 0),
+            "req_per_s": data.get("req_per_s", round(n_requests / wall_elapsed, 2)),
+            "tok_per_s": data.get("tok_per_s", 0),
+            "rss_delta_mb": 0.0,  # measured in Go process, not this Python process
+        }
+    except (json.JSONDecodeError, KeyError):
+        # Fall back: parse the plain-text summary line
+        # e.g. "50 requests  c=4  P50=312ms  P95=489ms  req/s=12.3  tok/s=1108"
+        import re
+        line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+        def _g(pat, default=0.0):
+            m = re.search(pat, line)
+            return float(m.group(1)) if m else default
+        return {
+            "name": "infergo_cli",
+            "concurrency": concurrency,
+            "n_requests": n_requests,
+            "errors": 0,
+            "p50_ms": _g(r"P50=([0-9.]+)ms"),
+            "p95_ms": _g(r"P95=([0-9.]+)ms"),
+            "p99_ms": _g(r"P99=([0-9.]+)ms"),
+            "req_per_s": _g(r"req/s=([0-9.]+)"),
+            "tok_per_s": _g(r"tok/s=([0-9.]+)"),
+            "rss_delta_mb": 0.0,
+        }
+
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 def print_table(results: list[dict]):
@@ -197,7 +328,9 @@ def main():
     ap.add_argument("--server",      default="http://localhost:9090",     help="Running infergo server URL")
     ap.add_argument("--concurrency", nargs="+", type=int, default=[1, 4], help="Concurrency levels to test")
     ap.add_argument("--n-requests",  type=int,  default=30,               help="Total requests per scenario")
-    ap.add_argument("--approaches",  nargs="+", choices=["native", "http", "llamacpp", "all"], default=["all"])
+    ap.add_argument("--approaches",  nargs="+",
+                    choices=["native", "http", "corepython", "infergo", "llamacpp", "all"],
+                    default=["all"])
     ap.add_argument("--output",      default="bench_results.json",        help="JSON output file")
     args = ap.parse_args()
 
@@ -208,15 +341,23 @@ def main():
         print(f"\nConcurrency = {c}, {args.n_requests} requests per approach")
 
         if do_all or "native" in args.approaches:
-            print("  Running native bindings...")
+            print("  [1/5] Native bindings (infergo Python package)...")
             all_results.append(bench_native(args.model, args.n_requests, c))
 
         if do_all or "http" in args.approaches:
-            print("  Running HTTP client...")
+            print("  [2/5] HTTP client (OpenAI SDK → infergo server)...")
             all_results.append(bench_http(args.server, args.n_requests, c))
 
+        if do_all or "corepython" in args.approaches:
+            print("  [3/5] Core Python (urllib, zero deps → infergo server)...")
+            all_results.append(bench_core_python(args.server, args.n_requests, c))
+
+        if do_all or "infergo" in args.approaches:
+            print("  [4/5] infergo CLI benchmark (pure Go, no Python)...")
+            all_results.append(bench_infergo_cli(args.server, args.n_requests, c))
+
         if do_all or "llamacpp" in args.approaches:
-            print("  Running llama-cpp-python...")
+            print("  [5/5] llama-cpp-python (traditional Python, in-process)...")
             all_results.append(bench_llama_cpp(args.model, args.n_requests, c))
 
     print_table(all_results)
