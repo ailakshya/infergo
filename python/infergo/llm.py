@@ -423,8 +423,12 @@ class LLM:
                 f"<|start_header_id|>assistant<|end_header_id|>\n\n"
             )
 
+        # The template already starts with <|begin_of_text|> (the BOS token).
+        # Tokenize with add_bos=False to avoid a double-BOS which causes the
+        # model to output nothing.
+        tokens = self.tokenize(prompt, add_bos=False)
         return self.generate(
-            prompt,
+            tokens,
             max_tokens=max_tokens,
             temperature=temperature,
         )
