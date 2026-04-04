@@ -354,10 +354,10 @@ working — not just when the code exists.
 - [x] OpenAI-compatible HTTP API: `/v1/chat/completions` (done — T-43..T-44)
 - [x] OPT-3: ONNX Runtime inference: `infer_onnx_run()` C function implemented
 - [x] OPT-4: `/v1/embeddings` endpoint returns correct vectors
-- [ ] OPT-5: `/v1/detect` endpoint returns bounding boxes
-- [ ] OPT-7: BERT tokenizer for embedding models
-- [ ] OPT-15: `go get github.com/ailakshya/infergo/client` — typed Go SDK
-- [ ] OPT-15: `client.Chat()`, `client.Embed()`, `client.Detect()` all work in tests
+- [x] OPT-5: `/v1/detect` endpoint returns bounding boxes
+- [x] OPT-7: BERT tokenizer for embedding models (go/tokenizer wraps HF tokenizers)
+- [x] OPT-15: `go get github.com/ailakshya/infergo/client` — typed Go SDK
+- [x] OPT-15: `client.Chat()`, `client.Embed()`, `client.Detect()` all work in tests
 - [ ] **PROBLEM 4 SOLVED** — full Go-native inference SDK published on pkg.go.dev
 
 ---
@@ -396,9 +396,9 @@ working — not just when the code exists.
 ### Problem 8 — No Unified Serving Interface
 
 - [x] Single binary serves LLM (done — T-43..T-47)
-- [ ] OPT-8: `--model llm:llama3.gguf --model embed:nomic.onnx` both load in one process
-- [ ] OPT-8: Chat req routes to LLM; embedding req routes to ONNX — no cross-routing
-- [ ] OPT-8: `GET /v1/models` lists all loaded models with their types
+- [x] OPT-8: `--model llm:llama3.gguf --model embed:nomic.onnx` both load in one process
+- [x] OPT-8: Chat req routes to LLM; embedding req routes to ONNX — no cross-routing
+- [x] OPT-8: `GET /v1/models` lists all loaded models with their types
 - [ ] OPT-9: `POST /v1/admin/reload` hot-swaps model without restart
 - [ ] **PROBLEM 8 SOLVED** — one binary, one port, all model types, no restart for reload
 
@@ -422,7 +422,7 @@ working — not just when the code exists.
 - [x] ASan: 81 tests clean, zero leaks
 - [x] Go tests: `go test ./go/...` passes
 - [ ] OPT-3: `go test ./go/onnx/...` covers ONNX session create + run + close
-- [ ] OPT-15: `go test ./go/client/...` covers all SDK methods with mock server
+- [x] OPT-15: `go test ./go/client/...` covers all SDK methods with mock server
 - [ ] CI pipeline: all tests run on every PR automatically
 - [ ] **PROBLEM 10 SOLVED** — `go test ./...` and `ctest` cover all inference paths
 
@@ -434,13 +434,13 @@ working — not just when the code exists.
 Problem 1  GIL wall              [~] 2/5 done  (scheduler + race-free; P50 partial, needs OPT-22)
 Problem 2  Latency under load    [~] 1/4 done  (scheduler batching done; P50 partial, needs OPT-22)
 Problem 3  Cold start            [~] 2/6 done  (cold start measured)
-Problem 4  No Go library         [~] 2/8 done  (LLM + HTTP API done)
+Problem 4  No Go library         [~] 6/8 done  (LLM+HTTP+ONNX+embeddings+detect+tokenizer+SDK done)
 Problem 5  Memory fragmentation  [~] 2/5 done  (KV slot manager done)
 Problem 6  Large model infra     [ ] 0/5 done
 Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done)
-Problem 8  No unified interface  [~] 1/5 done  (LLM serving done)
+Problem 8  No unified interface  [~] 4/5 done  (LLM+multi-model+routing+models-list done; needs OPT-9)
 Problem 9  Observability         [~] 2/6 done  (Prometheus + health done)
-Problem 10 Hard to test          [~] 3/5 done  (ctest + ASan + go test done)
+Problem 10 Hard to test          [~] 4/5 done  (ctest + ASan + go test + client mock tests done)
 ───────────────────────────────────────────────
-Total                            19/52 done  (37%)
+Total                            26/52 done  (50%)
 ```

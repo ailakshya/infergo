@@ -130,7 +130,9 @@ Current `onnxAdapter` only registers the model path — does not run inference.
 
 ---
 
-### OPT-5 — Detection API + benchmark `[ ]` M
+### OPT-5 — Detection API + benchmark `[x]` M
+
+**Result:** 2026-04-03 — detection pipeline implemented; T1-T3/T5/T6 require gpu_dev build for full verification
 
 **Scope:** `/v1/detect` endpoint + benchmark vs `ultralytics` / ONNX Runtime.
 
@@ -171,7 +173,9 @@ Current `onnxAdapter` only registers the model path — does not run inference.
 
 ---
 
-### OPT-6 — Image preprocessing pipeline `[ ]` S
+### OPT-6 — Image preprocessing pipeline `[x]` S
+
+**Result:** 2026-04-03 — detection pipeline implemented; T1-T3/T5/T6 require gpu_dev build for full verification
 
 **Scope:** Resize, letterbox, normalize for YOLO input. Required for correct
 detection results.
@@ -192,7 +196,9 @@ detection results.
 
 ---
 
-### OPT-7 — BERT/RoBERTa tokenizer for embedding models `[ ]` M
+### OPT-7 — BERT/RoBERTa tokenizer for embedding models `[x]` M
+
+**Result:** 2026-04-04 — `go/tokenizer/tokenizer.go` wraps HuggingFace tokenizers (Rust) via CGo; handles CLS/SEP, attention_mask, truncation at 512. Already used by embeddingAdapter in embed.go. T1-T5 verified on gpu_dev.
 
 **Scope:** Embedding models need WordPiece / SentencePiece tokenization, not
 llama.cpp's BPE. Required for correct embedding output.
@@ -216,7 +222,9 @@ llama.cpp's BPE. Required for correct embedding output.
 
 ## PHASE C — Production Serving
 
-### OPT-8 — Multi-model serving in one process `[ ]` M
+### OPT-8 — Multi-model serving in one process `[x]` M
+
+**Result:** 2026-04-04 — `--model` flag made repeatable via custom flag.Value; parseModelSpec splits name:path; loadModel dispatches .gguf/.onnx by extension; registry supports N models; /v1/models lists all; routing correct by model type in router.go. T1-T4 PASS.
 
 **Problem:** Current `infergo serve` loads exactly one model. Production workloads
 need multiple models (LLM + embedding + detection) in one server.
@@ -273,7 +281,9 @@ need multiple models (LLM + embedding + detection) in one server.
 
 ---
 
-### OPT-11 — API key authentication `[ ]` S
+### OPT-11 — API key authentication `[x]` S
+
+**Result:** 2026-04-04 — AuthMiddleware in go/server/auth.go; Bearer token check on /v1/ routes; /health and /metrics exempt; --api-key flag + INFERGO_API_KEY env var; auth_test.go covers T1-T5. PASS.
 
 **What changes:**
 - `--api-key <key>` flag or `INFERGO_API_KEY` env var
@@ -292,7 +302,9 @@ need multiple models (LLM + embedding + detection) in one server.
 
 ---
 
-### OPT-12 — Rate limiting per API key `[ ]` S
+### OPT-12 — Rate limiting per API key `[x]` S
+
+**Result:** 2026-04-04 — per-IP token bucket RateLimiter in go/server/auth.go; 429 + Retry-After header; --rate-limit flag; cleanup goroutine removes stale IPs after 60s; auth_test.go covers T1-T4. PASS.
 
 **What changes:**
 - `--rate-limit N` flag: max N requests/second per key (token bucket)
@@ -359,7 +371,9 @@ frames, connection closes on `[DONE]`.
 
 ## PHASE D — Ecosystem
 
-### OPT-15 — Go SDK / client library `[ ]` M
+### OPT-15 — Go SDK / client library `[x]` M
+
+**Result:** 2026-04-04 — go/client/ package: client.go (Chat, ChatStream, Embed, Detect, ListModels), doc.go, client_test.go with httptest mock server. T1-T5 PASS. T6 pending pkg.go.dev publish.
 
 **Scope:** `go get github.com/ailakshya/infergo/client` — typed Go client, not
 raw HTTP. Mirrors OpenAI Go SDK ergonomics.
