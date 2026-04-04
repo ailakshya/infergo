@@ -282,23 +282,25 @@ def bench_infergo_cli(server_url: str, n_requests: int, concurrency: int) -> dic
             "rss_delta_mb": 0.0,  # measured in Go process, not this Python process
         }
     except (json.JSONDecodeError, KeyError):
-        # Fall back: parse the plain-text summary line
-        # e.g. "50 requests  c=4  P50=312ms  P95=489ms  req/s=12.3  tok/s=1108"
+        # Parse infergo benchmark plain-text output:
+        #   Throughput:   2.1 req/s
+        #   Latency P50:  467 ms
+        #   Latency P99:  486 ms
         import re
-        line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+        out = proc.stdout
         def _g(pat, default=0.0):
-            m = re.search(pat, line)
+            m = re.search(pat, out)
             return float(m.group(1)) if m else default
         return {
             "name": "infergo_cli",
             "concurrency": concurrency,
             "n_requests": n_requests,
-            "errors": 0,
-            "p50_ms": _g(r"P50=([0-9.]+)ms"),
-            "p95_ms": _g(r"P95=([0-9.]+)ms"),
-            "p99_ms": _g(r"P99=([0-9.]+)ms"),
-            "req_per_s": _g(r"req/s=([0-9.]+)"),
-            "tok_per_s": _g(r"tok/s=([0-9.]+)"),
+            "errors": int(_g(r"(\d+) errors", 0)),
+            "p50_ms": _g(r"P50:\s+([\d.]+)\s*ms"),
+            "p95_ms": _g(r"P95:\s+([\d.]+)\s*ms"),
+            "p99_ms": _g(r"P99:\s+([\d.]+)\s*ms"),
+            "req_per_s": _g(r"Throughput:\s+([\d.]+)\s*req/s"),
+            "tok_per_s": _g(r"tok/s:\s+([\d.]+)"),
             "rss_delta_mb": 0.0,
         }
 
