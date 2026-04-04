@@ -94,6 +94,30 @@ func (m *Model) IsEOG(token int32) bool {
 	return C.infer_llm_is_eog(m.ptr, C.int(token)) != 0
 }
 
+// KVPagesFree returns the number of free KV cache pages.
+func (m *Model) KVPagesFree() int {
+	if m.ptr == nil {
+		return 0
+	}
+	return int(C.infer_llm_kv_pages_free(m.ptr))
+}
+
+// KVPagesTotal returns total KV cache pages (= ctx_size / page_size).
+func (m *Model) KVPagesTotal() int {
+	if m.ptr == nil {
+		return 0
+	}
+	return int(C.infer_llm_kv_pages_total(m.ptr))
+}
+
+// KVPageSize returns the page size in tokens (16).
+func (m *Model) KVPageSize() int {
+	if m.ptr == nil {
+		return 0
+	}
+	return int(C.infer_llm_kv_page_size(m.ptr))
+}
+
 // NewSequence creates a new inference sequence with the given prompt tokens.
 // The returned Sequence holds a KV cache slot; always call Close when done.
 // Returns an error if the KV slot pool is exhausted.

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/ailakshya/infergo/llm"
+	"github.com/ailakshya/infergo/server"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -42,22 +43,28 @@ type activeSeq struct {
 // Implements server.Model, server.LLMModel, and server.StreamingLLMModel.
 type schedulerModel struct {
 	m               *llm.Model
+	modelName       string
 	submitCh        chan *schedRequest
 	stopCh          chan struct{}
 	wg              sync.WaitGroup
 	activeSeqGauge  prometheus.Gauge
+	metrics         *server.Metrics
 }
 
 // newSchedulerModel creates and starts a schedulerModel for the given model.
 // The scheduler goroutine runs until Close is called.
 // activeSeqGauge may be nil; when non-nil it tracks the number of sequences
 // currently decoding (incremented on initSeq, decremented on sequence close).
-func newSchedulerModel(m *llm.Model, activeSeqGauge prometheus.Gauge) *schedulerModel {
+// metrics may be nil; when non-nil KV page gauges are updated after each
+// BatchDecode call.
+func newSchedulerModel(m *llm.Model, modelName string, activeSeqGauge prometheus.Gauge, metrics *server.Metrics) *schedulerModel {
 	s := &schedulerModel{
 		m:              m,
+		modelName:      modelName,
 		submitCh:       make(chan *schedRequest, 256),
 		stopCh:         make(chan struct{}),
 		activeSeqGauge: activeSeqGauge,
+		metrics:        metrics,
 	}
 	s.wg.Add(1)
 	go s.run()
@@ -209,6 +216,9 @@ func (s *schedulerModel) run() {
 			active = active[:0]
 			continue
 		}
+		if s.metrics != nil {
+			s.metrics.UpdateKVPages(s.modelName, s.m.KVPagesFree(), s.m.KVPagesTotal())
+		}
 
 		// Sample one token per sequence and route it.
 		var next []*activeSeq
@@ -278,6 +288,14 @@ func (s *schedulerModel) initSeq(req *schedRequest) *activeSeq {
 		close(req.tokenCh)
 		return nil
 	default:
+	}
+
+	// Check if enough KV pages are free (need at least 1 page = 16 tokens minimum).
+	free := s.m.KVPagesFree()
+	if free <= 0 {
+		req.tokenCh <- TokenEvent{Err: errors.New("KV cache exhausted: no pages free")}
+		close(req.tokenCh)
+		return nil
 	}
 
 	seq, err := s.m.NewSequence(req.tokens)

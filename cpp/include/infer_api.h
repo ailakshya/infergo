@@ -332,6 +332,19 @@ int infer_postprocess_nms(InferTensor predictions,
 // No-op if the L2 norm is zero. Returns INFER_OK on success, or -1 on error.
 InferError infer_postprocess_normalize_embedding(InferTensor t);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// KV PAGE METRICS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Returns number of KV cache pages currently free.
+int infer_llm_kv_pages_free(InferLLM llm);
+
+// Returns total KV cache pages available (= ctx_size / page_size).
+int infer_llm_kv_pages_total(InferLLM llm);
+
+// Returns the page size in tokens (always 16 in this build).
+int infer_llm_kv_page_size(InferLLM llm);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

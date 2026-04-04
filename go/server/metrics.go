@@ -33,6 +33,12 @@ type Metrics struct {
 
 	// infergo_active_sequences: gauge of LLM sequences currently decoding
 	ActiveSequences prometheus.Gauge
+
+	// infergo_kv_pages_free: KV cache pages currently available
+	KVPagesFree *prometheus.GaugeVec // label: model
+
+	// infergo_kv_pages_total: total KV cache pages (set once at startup)
+	KVPagesTotal *prometheus.GaugeVec // label: model
 }
 
 // NewMetrics creates and registers all metrics on a fresh Prometheus registry.
@@ -78,6 +84,16 @@ func NewMetrics() *Metrics {
 			Name: "infergo_active_sequences",
 			Help: "Number of LLM sequences currently decoding.",
 		}),
+
+		KVPagesFree: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "infergo_kv_pages_free",
+			Help: "KV cache pages currently available (each page = page_size tokens).",
+		}, []string{"model"}),
+
+		KVPagesTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "infergo_kv_pages_total",
+			Help: "Total KV cache pages for this model instance.",
+		}, []string{"model"}),
 	}
 
 	reg.MustRegister(
@@ -88,6 +104,8 @@ func NewMetrics() *Metrics {
 		m.GPUMemoryBytes,
 		m.QueueDepth,
 		m.ActiveSequences,
+		m.KVPagesFree,
+		m.KVPagesTotal,
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 	)
@@ -117,6 +135,12 @@ func (m *Metrics) ObserveTokensPerSecond(model string, tokens int, elapsed time.
 // SetGPUMemory records current GPU memory usage for a device.
 func (m *Metrics) SetGPUMemory(deviceID int, bytes int64) {
 	m.GPUMemoryBytes.WithLabelValues(strconv.Itoa(deviceID)).Set(float64(bytes))
+}
+
+// UpdateKVPages sets the KV page metrics for a model.
+func (m *Metrics) UpdateKVPages(modelName string, free, total int) {
+	m.KVPagesFree.WithLabelValues(modelName).Set(float64(free))
+	m.KVPagesTotal.WithLabelValues(modelName).Set(float64(total))
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────

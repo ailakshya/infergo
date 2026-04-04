@@ -196,7 +196,7 @@ func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, g
 	if err != nil {
 		return err
 	}
-	return reg.Load(name, newSchedulerModel(m, metrics.ActiveSequences))
+	return reg.Load(name, newSchedulerModel(m, name, metrics.ActiveSequences, metrics))
 }
 
 // onnxAdapter is a placeholder for ONNX models that lack a recognized

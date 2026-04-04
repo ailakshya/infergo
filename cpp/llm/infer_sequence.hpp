@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kv_cache.hpp"
+#include "kv_paged.hpp"
 #include "sampler.hpp"
 
 #include <cstdint>
@@ -24,6 +25,12 @@ public:
     /// Allocate a KV slot and initialise the sequence with prompt tokens.
     /// Throws std::runtime_error if no slot is available.
     InferSequence(KVCacheSlotManager& slot_manager,
+                  std::vector<int32_t> prompt_tokens,
+                  int32_t eos_token_id);
+
+    /// Allocate a paged KV slot and initialise the sequence with prompt tokens.
+    /// Throws std::runtime_error if no page slot is available.
+    InferSequence(KVPageAllocator& allocator,
                   std::vector<int32_t> prompt_tokens,
                   int32_t eos_token_id);
 
@@ -74,7 +81,8 @@ public:
     }
 
 private:
-    KVCacheSlotManager& slot_manager_;
+    KVCacheSlotManager* slot_manager_ = nullptr;  // non-owning; null if using paged allocator
+    KVPageAllocator*    page_alloc_   = nullptr;  // non-owning; null if using old slot manager
     int                 slot_id_     = -1;
     int32_t             eos_token_id_;
     std::vector<int32_t> tokens_;     // prompt + generated

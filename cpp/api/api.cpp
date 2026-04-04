@@ -3,6 +3,7 @@
 #include "../onnx/onnx_session.hpp"
 #include "../tokenizer/tokenizer.hpp"
 #include "../llm/kv_cache.hpp"
+#include "../llm/kv_paged.hpp"
 #include "../llm/llm_engine.hpp"
 #include "../llm/infer_sequence.hpp"
 #include "../../vendor/llama.cpp/include/llama.h"
@@ -441,11 +442,18 @@ void infer_tokenizer_destroy(InferTokenizer tok) {
 
 // ─── LLM Engine API ───────────────────────────────────────────────────────────
 
-// Internal handle: owns the engine and the slot manager together.
+// Internal handle: owns the engine and the paged KV allocator together.
 struct LLMHandle {
-    infergo::LLMEngine          engine;
-    infergo::KVCacheSlotManager slots;
-    explicit LLMHandle(int n_seq_max) : slots(n_seq_max) {}
+    infergo::LLMEngine       engine;
+    infergo::KVPageAllocator pages;  // replaces KVCacheSlotManager
+    int n_ctx = 0;
+
+    LLMHandle(int n_seq_max, int ctx_size)
+        : pages(infergo::KVPageAllocator::kDefaultPageSize,
+                n_seq_max,
+                ctx_size / infergo::KVPageAllocator::kDefaultPageSize)
+        , n_ctx(ctx_size)
+    {}
 };
 
 // Internal handle: owns one InferSequence + its last decoded logits.
@@ -454,11 +462,11 @@ struct SeqHandle {
     std::vector<float>      logits;  // updated by infer_llm_batch_decode
     llama_context*          ctx;     // needed to clear KV cache on destroy
 
-    SeqHandle(infergo::KVCacheSlotManager& mgr,
+    SeqHandle(infergo::KVPageAllocator& alloc,
               std::vector<int32_t> tokens,
               int32_t eos,
               llama_context* ctx_)
-        : seq(mgr, std::move(tokens), eos), ctx(ctx_) {}
+        : seq(alloc, std::move(tokens), eos), ctx(ctx_) {}
 
     ~SeqHandle() {
         // Remove this sequence's KV cache entries so the slot can be reused
@@ -486,7 +494,7 @@ InferLLM infer_llm_create(const char* path,
             infergo::set_last_error("infer_llm_create: n_seq_max must be > 0");
             return nullptr;
         }
-        auto* h = new LLMHandle(n_seq_max);
+        auto* h = new LLMHandle(n_seq_max, ctx_size);
         h->engine.LoadModel(path, n_gpu_layers, ctx_size, n_seq_max, n_batch);
         return static_cast<InferLLM>(h);
     } catch (const std::exception& e) {
@@ -521,6 +529,21 @@ int infer_llm_eos(InferLLM llm) {
 int infer_llm_is_eog(InferLLM llm, int token) {
     if (llm == nullptr) return 0;
     return static_cast<LLMHandle*>(llm)->engine.IsEOG(static_cast<int32_t>(token)) ? 1 : 0;
+}
+
+int infer_llm_kv_pages_free(InferLLM llm) {
+    if (llm == nullptr) return 0;
+    return static_cast<LLMHandle*>(llm)->pages.FreePages();
+}
+
+int infer_llm_kv_pages_total(InferLLM llm) {
+    if (llm == nullptr) return 0;
+    return static_cast<LLMHandle*>(llm)->pages.TotalPages();
+}
+
+int infer_llm_kv_page_size(InferLLM llm) {
+    if (llm == nullptr) return 0;
+    return static_cast<LLMHandle*>(llm)->pages.PageSize();
 }
 
 int infer_llm_tokenize(InferLLM llm, const char* text, int add_bos,
@@ -571,7 +594,7 @@ InferSeq infer_seq_create(InferLLM llm, const int* tokens, int n_tokens) {
         }
         auto* h = static_cast<LLMHandle*>(llm);
         std::vector<int32_t> tok_vec(tokens, tokens + n_tokens);
-        auto* s = new SeqHandle(h->slots, std::move(tok_vec),
+        auto* s = new SeqHandle(h->pages, std::move(tok_vec),
                                 static_cast<int32_t>(h->engine.EOS()),
                                 h->engine.Context());
         return static_cast<InferSeq>(s);
