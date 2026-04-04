@@ -84,9 +84,26 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y cmake ninja-build libopenblas-dev
+          sudo apt-get install -y cmake ninja-build libopenblas-dev libgtest-dev libgmock-dev wget curl
+
+      - name: Install ONNX Runtime
+        run: |
+          ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/aarch64/')
+          wget -q "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-${ARCH}-1.24.4.tgz"
+          sudo tar -xzf "onnxruntime-linux-${ARCH}-1.24.4.tgz" -C /opt
+          sudo mv "/opt/onnxruntime-linux-${ARCH}-1.24.4" /opt/onnxruntime
+          echo "/opt/onnxruntime/lib" | sudo tee /etc/ld.so.conf.d/onnxruntime.conf
+          sudo ldconfig
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust tokenizer
+        run: cargo build --release --manifest-path tokenizer-rs/Cargo.toml
 
       - name: Configure (CPU only)
+        env:
+          ONNXRUNTIME_ROOT: /opt/onnxruntime
         run: |
           cmake -S . -B build \
             -G Ninja \
@@ -95,7 +112,8 @@ jobs:
             -DGGML_BLAS=ON \
             -DGGML_BLAS_VENDOR=OpenBLAS \
             -DINFER_CUDA=OFF \
-            -DINFER_TESTS=ON
+            -DINFER_TESTS=ON \
+            -DONNXRUNTIME_ROOT=/opt/onnxruntime
 
       - name: Build
         run: cmake --build build -j$(nproc)
