@@ -585,7 +585,7 @@ before needing to scale out.
 
 ### OPT-23 — Tensor parallelism (multi-GPU, single node) `[~]` XL
 
-**Result:** 2026-04-04 — --tensor-split flag implemented; single-GPU smoke test passes; multi-GPU test hardware-blocked
+**Result:** 2026-04-04 — --tensor-split flag implemented; single-GPU smoke test passes (T4 PASS); multi-GPU tests pending — planned for AWS (p3.8xlarge or p4d.24xlarge, 4× V100/A100).
 
 **Problem:** Models larger than one GPU's VRAM (70B = ~40 GB) cannot run on a
 single RTX 5070 Ti (16 GB). Tensor parallelism splits each weight matrix across
@@ -611,7 +611,7 @@ N GPUs — each GPU holds 1/N of the weights and computes 1/N of each layer.
 
 ### OPT-24 — Pipeline parallelism (multi-GPU, model layers split) `[~]` XL
 
-**Result:** 2026-04-04 — --pipeline-stages flag implemented with LLAMA_SPLIT_MODE_LAYER; single-stage smoke test passes on gpu_dev; multi-GPU tests hardware-blocked (need 2+ GPUs)
+**Result:** 2026-04-04 — --pipeline-stages flag implemented with LLAMA_SPLIT_MODE_LAYER; T0 (stages=1) PASS; T0b (stages=2 single-GPU graceful fallback) PASS; multi-GPU tests pending — planned for AWS (p3.8xlarge, 4× V100, PCIe).
 
 **Problem:** Tensor parallelism requires high-bandwidth NVLink between GPUs (PCIe
 is too slow for all-reduce). Pipeline parallelism splits layers across GPUs — GPU 0
@@ -640,7 +640,7 @@ the PCIe bus. Works on consumer GPUs without NVLink.
 
 ### OPT-25 — Horizontal scaling: multi-node inference cluster `[~]` XL
 
-**Partial result:** 2026-04-03 — Helm chart written at deploy/helm/infergo/ (Deployment, Service, KEDA ScaledObject, PVC, PDB, Ingress, _helpers.tpl). T1 (helm lint + dry-run) verified by CI workflow. T2-T6 require Kubernetes cluster with KEDA installed.
+**Result:** 2026-04-03 — Helm chart written at deploy/helm/infergo/ (Deployment, Service, KEDA ScaledObject, PVC, PDB, Ingress, _helpers.tpl). T1 (helm lint + dry-run) PASS in CI. T2-T6 pending — planned for AWS EKS with KEDA (3× g4dn.xlarge nodes).
 
 **Problem:** Single-node inference (even multi-GPU) has a throughput ceiling. At
 very high load (1000+ req/s), you need multiple infergo instances behind a load

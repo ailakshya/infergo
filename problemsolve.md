@@ -375,13 +375,12 @@ working — not just when the code exists.
 
 ### Problem 6 — Large Models Require vLLM + Ray
 
-- [ ] OPT-23: `--tensor-split 0.5,0.5` loads model across 2 GPUs — SKIP: needs 2-GPU hardware; flag implemented (T4 single-GPU fallback PASS)
-- [ ] OPT-23: 2-GPU tok/s ≥ 1.6× 1-GPU tok/s for same model — SKIP: hardware-blocked
-- [ ] OPT-23: Llama-3-70B-Q4 loads in 2× 40 GB GPU without OOM — SKIP: hardware-blocked
-- [x] OPT-24: `--pipeline-stages` flag + LLAMA_SPLIT_MODE_LAYER implemented; T0 (stages=1) PASS; T0b (stages=2 single-GPU graceful fallback) PASS (2026-04-04)
-- [x] OPT-26: KV serialization (SerializeKV/DeserializeKV) + `--mode prefill/decode/combined` flag + `/v1/prefill` + `/v1/decode` endpoints implemented; T1 PASS, 250/250 ctest pass (2026-04-04)
-- [ ] OPT-24: 2-GPU pipeline stages (true layer split over PCIe) — SKIP: hardware-blocked
-- [ ] OPT-26: Prefill node + decode node architecture running end-to-end — SKIP: needs 2 GPU nodes
+- [ ] OPT-23: `--tensor-split 0.5,0.5` loads model across 2 GPUs — pending AWS (p3.8xlarge/p4d.24xlarge)
+- [ ] OPT-23: 2-GPU tok/s ≥ 1.6× 1-GPU tok/s for same model — pending AWS
+- [ ] OPT-23: Llama-3-70B-Q4 loads in 2× 40 GB GPU without OOM — pending AWS (p4d.24xlarge, 8× A100-40GB)
+- [ ] OPT-24: `--pipeline-stages 2` works over PCIe across 2 GPUs — pending AWS (p3.8xlarge, 4× V100)
+- [ ] OPT-25: KEDA scales up/down on EKS — pending AWS EKS (3× g4dn.xlarge)
+- [ ] OPT-26: Prefill node + decode node end-to-end — pending AWS (2× g4dn.xlarge)
 - [ ] **PROBLEM 6 SOLVED** — 70B model served with one flag, no Ray/vLLM needed
 
 ---
@@ -438,11 +437,11 @@ Problem 2  Latency under load    [~] 4/5 done  (scheduler + OPT-22 P50 improveme
 Problem 3  Cold start            [~] 4/6 done  (cold start + pull + queue_depth + keda example done)
 Problem 4  No Go library         [~] 8/8 done  (LLM+HTTP+ONNX+embeddings+detect+tokenizer+SDK done; pkg.go.dev publish pending)
 Problem 5  Memory fragmentation  [~] 4/5 done  (KV slot manager + OPT-22 allocator + pages freed + ASan 1000 ONNX runs PASS; RSS +11.9% over 1000 req — Go GC, not KV leak; 5% target not met)
-Problem 6  Large model infra     [~] 3/5 done  (OPT-23 tensor-split + OPT-24 pipeline-stages + OPT-26 KV serialization implemented; multi-GPU/multi-node tests hardware-blocked)
+Problem 6  Large model infra     [~] 0/6 done  (implementations complete; all tests pending AWS multi-GPU/EKS cluster)
 Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done)
 Problem 8  No unified interface  [x] 6/6 done  (LLM+multi-model+routing+models-list+hot-reload+SOLVED)
 Problem 9  Observability         [x] 7/7 done  (Prometheus + health + OTel + queue_depth + active_seqs + KEDA + SOLVED)
 Problem 10 Hard to test          [x] 7/7 done  (ctest + ASan + go test + onnx + client mock + CI + SOLVED)
 ───────────────────────────────────────────────
-Total                            52/53 done  (98%) — +1 ASan ONNX leak check confirmed; +2 OPT-24/OPT-26 implementations; RSS 5% target pending (Go GC, not KV leak)
+Total                            46/52 done  (88%) — remaining: P50 target, RSS 5% target, Problem 6 AWS multi-GPU tests, Problem 3/7 EKS tests, pkg.go.dev publish
 ```
