@@ -263,6 +263,7 @@ func TestContextCancel(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	c := client.New(srv.URL, client.WithTimeout(10*time.Second))
 	tokenCh, errCh := c.ChatStream(ctx, client.ChatRequest{
