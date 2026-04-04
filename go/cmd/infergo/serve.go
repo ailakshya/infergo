@@ -58,8 +58,9 @@ func runServe(args []string) {
 	minModels := fs.Int("min-models", 1, "minimum models required for /health/ready")
 	apiKey    := fs.String("api-key", "", "API key for Bearer auth (empty = open, or set INFERGO_API_KEY env var)")
 	rateLimit := fs.Float64("rate-limit", 0, "max requests/second per client IP (0 = unlimited)")
-	maxQueue  := fs.Int("max-queue", 100, "max in-flight requests (active+waiting); 503 beyond this")
-	maxActive := fs.Int("max-active", 0, "max concurrent request handlers (0 = same as --max-queue)")
+	maxQueue     := fs.Int("max-queue", 100, "max in-flight requests (active+waiting); 503 beyond this")
+	maxActive    := fs.Int("max-active", 0, "max concurrent request handlers (0 = same as --max-queue)")
+	otlpEndpoint := fs.String("otlp-endpoint", "", "OTLP HTTP endpoint for tracing (e.g. localhost:4318; empty = disabled)")
 	fs.Parse(args)
 
 	if *apiKey == "" {
@@ -71,6 +72,17 @@ func runServe(args []string) {
 		fs.Usage()
 		os.Exit(1)
 	}
+
+	// Initialize OpenTelemetry tracer (no-op if --otlp-endpoint not set).
+	tracerShutdown, err := server.InitTracer("infergo", *otlpEndpoint)
+	if err != nil {
+		log.Fatalf("init tracer: %v", err)
+	}
+	defer func() {
+		if err := tracerShutdown(context.Background()); err != nil {
+			log.Printf("tracer shutdown: %v", err)
+		}
+	}()
 
 	reg := server.NewRegistry()
 	health := server.NewHealthChecker(reg, *minModels)
@@ -94,7 +106,7 @@ func runServe(args []string) {
 		return loadModel(reg, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs)
 	})
 
-	var v1Handler http.Handler = metrics.WrapServer(apiSrv)
+	var v1Handler http.Handler = server.WrapTracing(metrics.WrapServer(apiSrv), "infergo.v1")
 	if *maxQueue > 0 {
 		queueGauge := metrics.QueueDepth
 		pq := server.NewQueueMiddleware(*maxActive, *maxQueue, queueGauge)
