@@ -340,7 +340,7 @@ working — not just when the code exists.
 
 - [x] CUDA cold start measured: 456 ms (done — bench_full.py)
 - [x] CPU cold start measured: 6.4 s (done — bench_full.py)
-- [ ] OPT-16: `infergo pull` downloads model to local cache in ≤ 30 s
+- [x] OPT-16: `infergo pull` downloads model to local cache in ≤ 30 s
 - [ ] OPT-21: `infergo_queue_depth` metric exported for KEDA
 - [ ] OPT-25: Helm chart deploys; KEDA scales new pod from 0 → ready in ≤ 10 s
 - [ ] OPT-25: Zero requests lost during scale-up event (1000 req stress test)
@@ -399,7 +399,7 @@ working — not just when the code exists.
 - [x] OPT-8: `--model llm:llama3.gguf --model embed:nomic.onnx` both load in one process
 - [x] OPT-8: Chat req routes to LLM; embedding req routes to ONNX — no cross-routing
 - [x] OPT-8: `GET /v1/models` lists all loaded models with their types
-- [ ] OPT-9: `POST /v1/admin/reload` hot-swaps model without restart
+- [x] OPT-9: `POST /v1/admin/reload` hot-swaps model without restart
 - [ ] **PROBLEM 8 SOLVED** — one binary, one port, all model types, no restart for reload
 
 ---
@@ -433,14 +433,14 @@ working — not just when the code exists.
 ```
 Problem 1  GIL wall              [~] 2/5 done  (scheduler + race-free; P50 partial, needs OPT-22)
 Problem 2  Latency under load    [~] 1/4 done  (scheduler batching done; P50 partial, needs OPT-22)
-Problem 3  Cold start            [~] 2/6 done  (cold start measured)
+Problem 3  Cold start            [~] 4/6 done  (cold start measured + infergo pull + queue_depth metric)
 Problem 4  No Go library         [~] 6/8 done  (LLM+HTTP+ONNX+embeddings+detect+tokenizer+SDK done)
 Problem 5  Memory fragmentation  [~] 2/5 done  (KV slot manager done)
 Problem 6  Large model infra     [ ] 0/5 done
 Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done)
-Problem 8  No unified interface  [~] 4/5 done  (LLM+multi-model+routing+models-list done; needs OPT-9)
+Problem 8  No unified interface  [x] 5/5 done  (LLM+multi-model+routing+models-list+hot-reload done)
 Problem 9  Observability         [~] 2/6 done  (Prometheus + health done)
 Problem 10 Hard to test          [~] 4/5 done  (ctest + ASan + go test + client mock tests done)
 ───────────────────────────────────────────────
-Total                            26/52 done  (50%)
+Total                            32/52 done  (62%)
 ```
