@@ -1,5 +1,5 @@
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM nvidia/cuda:12.4.0-devel-ubuntu24.04 AS builder
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -9,60 +9,101 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ninja-build \
         git \
         ca-certificates \
-        golang-1.23 \
+        curl \
+        wget \
         libopencv-dev \
+        libgtest-dev \
+        libgmock-dev \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PATH="/usr/lib/go-1.23/bin:${PATH}"
+# Install Go 1.23 (not in Ubuntu 22.04 repos)
+RUN wget -q https://go.dev/dl/go1.23.4.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go1.23.4.linux-amd64.tar.gz \
+    && rm go1.23.4.linux-amd64.tar.gz
+
+# Install Rust (needed for tokenizer-rs)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:/usr/local/go/bin:${PATH}"
+
+# Install ONNX Runtime (CPU only — LLM uses CUDA via llama.cpp, ONNX models use CPU)
+RUN wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.21.0/onnxruntime-linux-x64-1.21.0.tgz \
+    && tar -xzf onnxruntime-linux-x64-1.21.0.tgz \
+    && mv onnxruntime-linux-x64-1.21.0 /opt/onnxruntime \
+    && rm onnxruntime-linux-x64-1.21.0.tgz
 
 WORKDIR /src
 COPY . .
 
-# Build C++ shared library with CUDA enabled
+# Build Rust tokenizer library
+RUN cd tokenizer-rs && cargo build --release
+
+# Build C++ with CUDA. PTX-only for SM 90 — JIT-compiled at runtime for any
+# SM ≥ 90 GPU (including Blackwell SM 120). Much smaller than multi-arch SASS.
 RUN cmake -S . -B build \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DINFER_CUDA=ON \
-        -DCMAKE_CUDA_ARCHITECTURES="75;86;89;90" \
+        -DCMAKE_CUDA_ARCHITECTURES="90-virtual" \
+        -DONNXRUNTIME_ROOT=/opt/onnxruntime \
     && cmake --build build --target infer_api -j$(nproc)
 
-# Build Go binary
+# Collect and strip shared libraries
+RUN mkdir -p /out/lib \
+    && cp build/cpp/api/libinfer_api.so                /out/lib/ \
+    && cp build/cpp/tensor/libinfer_tensor.so          /out/lib/ \
+    && cp build/cpp/onnx/libinfer_onnx.so              /out/lib/ \
+    && cp build/cpp/tokenizer/libinfer_tokenizer_cpp.so /out/lib/ \
+    && cp tokenizer-rs/target/release/libinfer_tokenizer.so /out/lib/ \
+    && cp /opt/onnxruntime/lib/libonnxruntime.so.1.21.0 /out/lib/ \
+    && ln -s libonnxruntime.so.1.21.0 /out/lib/libonnxruntime.so.1 \
+    && ln -s libonnxruntime.so.1      /out/lib/libonnxruntime.so \
+    && strip --strip-debug /out/lib/libinfer_api.so \
+    && strip --strip-unneeded /out/lib/libinfer_tokenizer.so \
+    && strip --strip-unneeded /out/lib/libonnxruntime.so.1.21.0
+
+# Copy only the CUDA runtime libs we actually need — real files + symlinks
+RUN mkdir -p /out/cuda \
+    && cp -P /usr/local/cuda/lib64/libcudart.so.12*   /out/cuda/ \
+    && cp -P /usr/local/cuda/lib64/libcublas.so.12*   /out/cuda/ \
+    && cp -P /usr/local/cuda/lib64/libcublasLt.so.12* /out/cuda/
+
+# Build Go binary (link against CUDA driver stub for build-time resolution)
 RUN CGO_ENABLED=1 \
     CGO_CFLAGS="-I/src/cpp/include" \
-    CGO_LDFLAGS="-L/src/build/cpp/api -linfer_api -Wl,-rpath,/usr/local/lib/infergo" \
+    CGO_LDFLAGS="-L/src/build/cpp/api -linfer_api -L/usr/local/cuda/lib64/stubs -lcuda -Wl,-rpath,/usr/local/lib/infergo" \
     go build -C go \
         -ldflags "-s -w" \
         -o /out/infergo \
         ./cmd/infergo
 
-RUN cp /src/build/cpp/api/libinfer_api.so /out/libinfer_api.so
-
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-# Use runtime image (no compiler, no headers) — much smaller than devel
-FROM nvidia/cuda:12.4.0-runtime-ubuntu24.04
+# Minimal base — no CUDA libs pre-installed, we copy only what we need.
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV LD_LIBRARY_PATH=/usr/local/lib/infergo
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libstdc++6 \
         libgomp1 \
-        libopencv-core406t64 \
-        libopencv-imgproc406t64 \
-        libopencv-imgcodecs406t64 \
+        libopencv-core4.5d \
+        libopencv-imgproc4.5d \
+        libopencv-imgcodecs4.5d \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /out/infergo          /usr/local/bin/infergo
-COPY --from=builder /out/libinfer_api.so  /usr/local/lib/infergo/libinfer_api.so
+COPY --from=builder /out/infergo      /usr/local/bin/infergo
+COPY --from=builder /out/lib/         /usr/local/lib/infergo/
+COPY --from=builder /out/cuda/        /usr/local/lib/infergo/
 
-# CUDA libs are provided by the base image — just re-run ldconfig
-RUN ldconfig
+RUN ldconfig /usr/local/lib/infergo
 
 VOLUME ["/models"]
 
 EXPOSE 9090
 
-# nvidia-container-runtime sets CUDA_VISIBLE_DEVICES; pass --provider cuda at runtime
 ENTRYPOINT ["infergo"]
 CMD ["serve", "--model", "/models/model.gguf", "--provider", "cuda", "--port", "9090", "--gpu-layers", "999"]

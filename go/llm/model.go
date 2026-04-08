@@ -229,7 +229,7 @@ func (m *Model) TokenToPiece(id int32) (string, error) {
 	}
 	var buf [256]C.char
 	rc := C.infer_llm_token_to_piece(m.ptr, C.int(id), &buf[0], C.int(len(buf)))
-	if rc != 0 {
+	if rc < 0 {
 		return "", fmt.Errorf("llm: TokenToPiece(%d) failed: %w", id, lastError())
 	}
 	return C.GoString(&buf[0]), nil

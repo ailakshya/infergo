@@ -1,6 +1,6 @@
 # Infergo — Full Roadmap to a Complete Go Inference Library
 
-> **Status legend:** `[ ]` pending · `[~]` in progress · `[x]` done  
+> **Status legend:** `[ ]` pending · `[~]` in progress · `[x]` done · `[FUTURE]` deferred — needs multi-GPU / AWS cluster  
 > **Effort:** S = 1–2 days · M = 3–5 days · L = 1–2 weeks · XL = 2–4 weeks
 
 ---
@@ -583,7 +583,7 @@ before needing to scale out.
 
 ---
 
-### OPT-23 — Tensor parallelism (multi-GPU, single node) `[~]` XL
+### OPT-23 — Tensor parallelism (multi-GPU, single node) `[FUTURE]` XL
 
 **Result:** 2026-04-04 — --tensor-split flag implemented; single-GPU smoke test passes (T4 PASS); multi-GPU tests pending — planned for AWS (p3.8xlarge or p4d.24xlarge, 4× V100/A100).
 
@@ -609,7 +609,7 @@ N GPUs — each GPU holds 1/N of the weights and computes 1/N of each layer.
 
 ---
 
-### OPT-24 — Pipeline parallelism (multi-GPU, model layers split) `[~]` XL
+### OPT-24 — Pipeline parallelism (multi-GPU, model layers split) `[FUTURE]` XL
 
 **Result:** 2026-04-04 — --pipeline-stages flag implemented with LLAMA_SPLIT_MODE_LAYER; T0 (stages=1) PASS; T0b (stages=2 single-GPU graceful fallback) PASS; multi-GPU tests pending — planned for AWS (p3.8xlarge, 4× V100, PCIe).
 
@@ -638,7 +638,7 @@ the PCIe bus. Works on consumer GPUs without NVLink.
 
 ---
 
-### OPT-25 — Horizontal scaling: multi-node inference cluster `[~]` XL
+### OPT-25 — Horizontal scaling: multi-node inference cluster `[FUTURE]` XL
 
 **Result:** 2026-04-03 — Helm chart written at deploy/helm/infergo/ (Deployment, Service, KEDA ScaledObject, PVC, PDB, Ingress, _helpers.tpl). T1 (helm lint + dry-run) PASS in CI. T2-T6 pending — planned for AWS EKS with KEDA (3× g4dn.xlarge nodes).
 
@@ -675,7 +675,7 @@ clients ──► nginx / ├─ infergo-0  │ GPU node 0
 
 ---
 
-### OPT-26 — Disaggregated prefill / decode (Prefill-Decode separation) `[~]` XL
+### OPT-26 — Disaggregated prefill / decode (Prefill-Decode separation) `[FUTURE]` XL
 
 **Result:** 2026-04-04 — KV serialization API implemented (SerializeKV/DeserializeKV via llama_state_seq_get_data); --mode prefill/decode/combined flag added; PrefillPrompt + DecodeFromKV on schedulerModel; /v1/prefill + /v1/decode HTTP endpoints; single-node build + Go test PASS; multi-node transfer test hardware-blocked (needs 2 GPU nodes)
 

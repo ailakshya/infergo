@@ -437,11 +437,13 @@ Problem 2  Latency under load    [~] 4/5 done  (scheduler + OPT-22 P50 improveme
 Problem 3  Cold start            [~] 4/6 done  (cold start + pull + queue_depth + keda example done)
 Problem 4  No Go library         [x] 9/9 done  (LLM+HTTP+ONNX+embeddings+detect+tokenizer+SDK+pkg.go.dev+Awesome Go PR — SOLVED 2026-04-04)
 Problem 5  Memory fragmentation  [x] 5/5 done  (KV slot manager + OPT-22 allocator + pages freed + ASan 1000 ONNX runs + RSS +0.3% PASS — SOLVED 2026-04-04)
-Problem 6  Large model infra     [~] 0/6 done  (implementations complete; all tests pending AWS multi-GPU/EKS cluster)
-Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done)
+Problem 6  Large model infra     [FUTURE] OPT-23/24/25/26 deferred — needs multi-GPU AWS cluster; single-GPU implementations complete
+Problem 7  Container bloat       [~] 2/3 done  (Dockerfiles done — CUDA image build in progress on gpu_dev)
 Problem 8  No unified interface  [x] 6/6 done  (LLM+multi-model+routing+models-list+hot-reload+SOLVED)
 Problem 9  Observability         [x] 7/7 done  (Prometheus + health + OTel + queue_depth + active_seqs + KEDA + SOLVED)
 Problem 10 Hard to test          [x] 7/7 done  (ctest + ASan + go test + onnx + client mock + CI + SOLVED)
 ───────────────────────────────────────────────
-Total                            49/54 done  (91%) — SOLVED: P4 (pkg.go.dev v0.1.0 + Awesome Go PR), P5 (RSS +0.3% PASS); remaining: P50 ≤600ms (1063ms, needs V100), P6 AWS multi-GPU, P3/P7 EKS
+Active total                     49/54 done (91%) — SOLVED: P4, P5, P8, P9, P10
+Future vision (deferred)         OPT-23 tensor parallelism · OPT-24 pipeline parallelism · OPT-25 multi-node cluster · OPT-26 disaggregated prefill/decode
+Remaining active                 P1/P2 P50 ≤600ms (needs faster GPU) · P3 EKS cold start · P7 CUDA image build
 ```
