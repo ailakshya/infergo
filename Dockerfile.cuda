@@ -1,5 +1,5 @@
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM nvidia/cuda:12.4.0-devel-ubuntu24.04 AS builder
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -9,11 +9,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ninja-build \
         git \
         ca-certificates \
-        golang-1.23 \
+        wget \
         libopencv-dev \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PATH="/usr/lib/go-1.23/bin:${PATH}"
+# Install Go 1.23 (not in ubuntu22.04 apt)
+RUN wget -q https://go.dev/dl/go1.23.0.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz \
+    && rm go1.23.0.linux-amd64.tar.gz
+
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 WORKDIR /src
 COPY . .
@@ -40,16 +45,16 @@ RUN cp /src/build/cpp/api/libinfer_api.so /out/libinfer_api.so
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 # Use runtime image (no compiler, no headers) — much smaller than devel
-FROM nvidia/cuda:12.4.0-runtime-ubuntu24.04
+FROM nvidia/cuda:12.4.0-base-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libstdc++6 \
         libgomp1 \
-        libopencv-core406t64 \
-        libopencv-imgproc406t64 \
-        libopencv-imgcodecs406t64 \
+        libopencv-core4.5d \
+        libopencv-imgproc4.5d \
+        libopencv-imgcodecs4.5d \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
