@@ -797,6 +797,85 @@ per-request backend field
 
 ---
 
+### OPT-29 — Training-to-production bridge: `infergo convert` + `infergo validate` `[ ]` M
+
+**Problem:** The gap between training and production is where teams lose weeks. PyTorch trains the model — but exporting it correctly (ONNX opset, input shapes, dynamic axes, precision), validating it didn't lose accuracy, and verifying it serves correctly in infergo requires manual steps spread across multiple tools. There is no single command that takes a checkpoint and gets it production-ready.
+
+**What infergo is NOT doing:** Building a training library. PyTorch owns training — autograd, optimizers, data loaders. infergo owns the bridge from trained checkpoint → verified running model.
+
+**What changes:**
+
+- `go/cmd/infergo/convert.go` — new `infergo convert` subcommand
+- `go/cmd/infergo/validate.go` — new `infergo validate` subcommand
+- `tools/convert_to_torchscript.py` — already exists, extend it
+- `tools/validate_export.py` — new: compares PyTorch vs exported model outputs
+- `go/cmd/infergo/registry.go` — model version registry (name, source checkpoint, export date, backend, metrics)
+- `go/server/router.go` — `/v1/models` lists registry entries with metadata
+
+**Commands:**
+
+```bash
+# Export: PyTorch checkpoint → ONNX or TorchScript
+infergo convert \
+  --input models/best.pt \
+  --format onnx \           # onnx | torchscript
+  --imgsz 640 \
+  --output models/best.onnx
+
+# Validate: compare PyTorch vs exported model on sample inputs
+infergo validate \
+  --source models/best.pt \
+  --export models/best.onnx \
+  --samples 100 \
+  --tolerance 1e-4          # max allowed output difference
+
+# Watch: hot-reload when a new checkpoint appears (already have hot-reload — wire it up)
+infergo serve --watch-dir models/ --auto-convert onnx
+```
+
+**Model registry entry (stored in models/registry.json):**
+```json
+{
+  "name": "yolo-potato-v3",
+  "source": "models/active_v3/weights/best.pt",
+  "export": "models/best.onnx",
+  "format": "onnx",
+  "exported_at": "2026-04-10T09:00:00Z",
+  "imgsz": 640,
+  "validation": {
+    "samples": 100,
+    "max_diff": 0.0003,
+    "passed": true
+  }
+}
+```
+
+**What this completes:**
+```
+Train (PyTorch) → infergo convert → infergo validate → infergo serve
+                                                              ↑
+                                              hot-reload when new checkpoint saved
+```
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-29-T1 | `infergo convert --format onnx` exports valid ONNX | `onnxruntime` loads file without error, output shape matches | |
+| OPT-29-T2 | `infergo convert --format torchscript` exports valid TorchScript | `torch.jit.load` succeeds, output shape matches | |
+| OPT-29-T3 | `infergo validate` passes when outputs match | 100 random inputs, max diff < 1e-4 → PASS printed | |
+| OPT-29-T4 | `infergo validate` fails when outputs diverge | Inject precision error → clear FAIL with diff value printed | |
+| OPT-29-T5 | Registry written to `models/registry.json` after convert | File exists, contains source path, format, timestamp, imgsz | |
+| OPT-29-T6 | `/v1/models` returns registry metadata | HTTP 200, JSON includes validation.passed and exported_at | |
+| OPT-29-T7 | `--watch-dir` auto-converts new `.pt` files | Drop `new.pt` into watched dir → `new.onnx` appears within 10s | |
+| OPT-29-T8 | `--watch-dir` + `--auto-reload` hot-loads new export | infergo serves new model without restart after auto-convert | |
+| OPT-29-T9 | Wrong `--format` gives clear error | `infergo convert --format tflite` → descriptive error, exit 1 | |
+| OPT-29-T10 | Convert fails on corrupt checkpoint | Clear error message, no panic, exit 1 | |
+| OPT-29-T11 | Validate tolerance flag respected | `--tolerance 0.5` passes even with large diff; `--tolerance 0` fails on any diff | |
+| OPT-29-T12 | Dynamic batch axis preserved in ONNX export | ONNX model accepts batch size 1, 4, 8 without reshape error | |
+
+---
+
 ## Execution order
 
 ```
@@ -837,6 +916,7 @@ OPT-25  horizontal scaling    ← requires OPT-21 (KEDA metrics)
 OPT-26  prefill/decode split  ← requires OPT-2 + OPT-13 + OPT-25
 OPT-27  scalability benchmark ← requires OPT-2 + OPT-10 + OPT-22
 OPT-28  adaptive config vars  ← requires OPT-5 (detection API) + adaptive selector
+OPT-29  training-to-prod bridge ← requires OPT-3 (ONNX) + OPT-8 (multi-model) + OPT-9 (hot-reload)
 ```
 
 ---
