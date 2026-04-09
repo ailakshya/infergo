@@ -744,6 +744,59 @@ exists to produce real measured numbers — not theoretical calculations.
 
 ---
 
+### OPT-28 — Adaptive detection backend: user-configurable variables `[ ]` S
+
+**Problem:** Adaptive backend selector fixes all routing decisions internally. Users cannot control which backend runs, how many GPU slots are reserved, or which backend is used for final counting decisions. Warm-up is not guaranteed, causing random slow first requests.
+
+**What changes:**
+
+- `go/cmd/infergo/adaptive.go` — read all config vars at startup, expose slot reservation, warm-up, canonical backend, benchmark lock
+- `go/server/router.go` — accept `"backend"` field in `/v1/detect` request body; override adaptive when set
+- `go/cmd/infergo/serve.go` — `--warmup-backends` flag; `--detect-gpu-slots N` flag
+- `detection/experiments/infergo/config.py` — add all new env vars with defaults
+
+**Config variables:**
+
+```bash
+INFERGO_DETECT_BACKEND=auto           # auto | torch-gpu | onnx-cuda | tensorrt | cpu
+INFERGO_DETECT_WARMUP=true            # warm up all backends at startup
+INFERGO_DETECT_GPU_SLOTS=8            # max concurrent GPU inference slots (reservation)
+INFERGO_DETECT_GPU_CAMERAS=8          # first N cameras assigned to GPU, rest to CPU
+INFERGO_DETECT_FALLBACK_BACKEND=cpu   # backend when GPU slots exhausted
+INFERGO_DETECT_CANONICAL_BACKEND=torch-gpu  # backend used for final count decision
+INFERGO_DETECT_BENCHMARK_BACKEND=     # if set, locks backend (disables adaptive)
+```
+
+**Per-request override (highest priority):**
+```json
+{"model": "yolo11m", "backend": "torch-gpu", "image_b64": "..."}
+```
+
+**Priority order (most specific wins):**
+```
+per-request backend field
+    → INFERGO_DETECT_BENCHMARK_BACKEND env var
+        → INFERGO_DETECT_BACKEND env var
+            → adaptive (default)
+```
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-28-T1 | `INFERGO_DETECT_BACKEND=cpu` forces CPU for all requests | All requests use CPU backend, GPU idle | |
+| OPT-28-T2 | Per-request `"backend": "torch-gpu"` overrides server config | Single request uses GPU despite server set to CPU | |
+| OPT-28-T3 | `INFERGO_DETECT_WARMUP=true` — no slow first request | First 10 requests all within 2× median latency | |
+| OPT-28-T4 | `INFERGO_DETECT_GPU_SLOTS=2` limits concurrency | Only 2 GPU requests run simultaneously; extras go to CPU | |
+| OPT-28-T5 | `INFERGO_DETECT_BENCHMARK_BACKEND=onnx-cuda` locks backend | All requests use ONNX CUDA, adaptive disabled | |
+| OPT-28-T6 | `INFERGO_DETECT_CANONICAL_BACKEND=torch-gpu` — counting always uses same backend | Bounding boxes reproducible across runs | |
+| OPT-28-T7 | `INFERGO_DETECT_GPU_CAMERAS=4` with 8 cameras | Cameras 1-4 always GPU (6-7ms), cameras 5-8 always CPU (63ms) | |
+| OPT-28-T8 | Invalid backend value gives clear error | Server refuses to start with descriptive error message | |
+| OPT-28-T9 | Defaults work with no env vars set | Adaptive behaviour unchanged when no vars set | |
+| OPT-28-T10 | Race condition: GPU slots exhausted mid-request | Overflow routes to fallback backend, zero errors | |
+
+---
+
 ## Execution order
 
 ```
@@ -783,6 +836,7 @@ OPT-24  pipeline parallelism  ← alternative to OPT-23 for PCIe systems
 OPT-25  horizontal scaling    ← requires OPT-21 (KEDA metrics)
 OPT-26  prefill/decode split  ← requires OPT-2 + OPT-13 + OPT-25
 OPT-27  scalability benchmark ← requires OPT-2 + OPT-10 + OPT-22
+OPT-28  adaptive config vars  ← requires OPT-5 (detection API) + adaptive selector
 ```
 
 ---
