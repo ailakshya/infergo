@@ -71,6 +71,20 @@ func OpenDecoder(url string, hwAccel bool) (*Decoder, error) {
 	return d, nil
 }
 
+// SetOutputSize tells the decoder to resize frames during the sws_scale
+// color conversion — zero extra cost (same FFmpeg call). Call once after
+// OpenDecoder, before reading frames. Pass (0,0) for native resolution.
+func (d *Decoder) SetOutputSize(w, h int) {
+	if d.ptr == nil {
+		return
+	}
+	C.infer_video_decoder_set_output_size(d.ptr, C.int(w), C.int(h))
+	if w > 0 && h > 0 {
+		d.width = w
+		d.height = h
+	}
+}
+
 // NextFrame decodes the next frame and returns RGB24 pixel data.
 // The returned byte slice is a copy of the internal buffer and is safe to
 // retain after subsequent calls.
@@ -148,6 +162,10 @@ func (d *Decoder) FPS() float64 { return d.fps }
 // IsHWAccelerated returns true if NVDEC hardware decoding is active.
 func (d *Decoder) IsHWAccelerated() bool { return d.hwAccel }
 
+// Ptr returns the raw C decoder handle for use with pipeline functions
+// like infer_pipeline_detect_frame. The caller must not free the pointer.
+func (d *Decoder) Ptr() unsafe.Pointer { return d.ptr }
+
 // Close releases all decoder resources. Safe to call multiple times.
 func (d *Decoder) Close() {
 	if d.ptr == nil {
@@ -156,4 +174,36 @@ func (d *Decoder) Close() {
 	C.infer_video_decoder_close(d.ptr)
 	d.ptr = nil
 	runtime.SetFinalizer(d, nil)
+}
+
+// NextFrameZeroCopy decodes the next frame and returns a direct pointer to the
+// C decoder's internal RGB buffer WITHOUT copying to Go memory.
+// WARNING: the returned slice is only valid until the next call to any NextFrame
+// method. The caller must NOT retain it.
+func (d *Decoder) NextFrameZeroCopy() ([]byte, FrameInfo, error) {
+	if d.ptr == nil {
+		return nil, FrameInfo{}, errors.New("video: NextFrameZeroCopy called on closed decoder")
+	}
+
+	var rgb *C.uint8_t
+	var w, h C.int
+	var pts C.int64_t
+	var frameNum C.int
+
+	ret := C.infer_video_decoder_next_frame(d.ptr, &rgb, &w, &h, &pts, &frameNum)
+	if ret == 0 {
+		return nil, FrameInfo{}, fmt.Errorf("video: EOF or decode error")
+	}
+
+	info := FrameInfo{
+		Width:       int(w),
+		Height:      int(h),
+		PTS:         int64(pts),
+		FrameNumber: int(frameNum),
+	}
+
+	// Create a Go slice header pointing directly at C memory — zero copy.
+	nbytes := int(w) * int(h) * 3
+	data := unsafe.Slice((*byte)(unsafe.Pointer(rgb)), nbytes)
+	return data, info, nil
 }

@@ -361,3 +361,126 @@ func AnnotateFull(rgb []byte, w, h int, input AnnotateFullInput, outW, outH, qua
 	C.infer_frame_jpeg_free(outJPEG)
 	return result, nil
 }
+
+// PipelineResult holds the output of a full C pipeline frame.
+type PipelineResult struct {
+	JPEG    []byte          // annotated JPEG
+	Boxes   []PipelineBox   // detected objects
+	HasFrame bool
+}
+
+// PipelineBox is a detected object from the C pipeline.
+type PipelineBox struct {
+	X1, Y1, X2, Y2 float32
+	ClassID         int
+	Confidence      float32
+}
+
+// PipelineDetectFrame runs the full detection pipeline in C:
+// decode → detect → annotate → JPEG. Go never touches raw pixel data.
+// decoder: video.Decoder handle
+// detector: torch.Session handle (unsafe.Pointer to C session)
+// Returns PipelineResult with JPEG and detected boxes.
+func PipelineDetectFrame(
+	decoderPtr unsafe.Pointer,
+	detectorPtr unsafe.Pointer,
+	conf, iou float32,
+	input AnnotateFullInput,
+	jpegW, jpegH, quality int,
+) (PipelineResult, error) {
+	var result PipelineResult
+
+	// Convert overlays to C.
+	nLines := len(input.Lines)
+	var cLines *C.InferLine
+	if nLines > 0 {
+		lines := make([]C.InferLine, nLines)
+		for i, l := range input.Lines {
+			lines[i] = C.InferLine{
+				x1: C.int(l.X1), y1: C.int(l.Y1), x2: C.int(l.X2), y2: C.int(l.Y2),
+				r: C.uint8_t(l.R), g: C.uint8_t(l.G), b: C.uint8_t(l.B),
+				thickness: C.int(l.Thickness),
+			}
+		}
+		cLines = &lines[0]
+	}
+
+	nPolygons := len(input.Polygons)
+	var cPolygons *C.InferPolygonOverlay
+	if nPolygons > 0 {
+		polys := make([]C.InferPolygonOverlay, nPolygons)
+		for i, p := range input.Polygons {
+			polys[i].n_pts = C.int(len(p.Points))
+			polys[i].r = C.uint8_t(p.R); polys[i].g = C.uint8_t(p.G)
+			polys[i].b = C.uint8_t(p.B); polys[i].alpha = C.uint8_t(p.Alpha)
+			for j := 0; j < len(p.Points) && j < 8; j++ {
+				polys[i].pts[j].x = C.int(p.Points[j][0])
+				polys[i].pts[j].y = C.int(p.Points[j][1])
+			}
+		}
+		cPolygons = &polys[0]
+	}
+
+	nTexts := len(input.Texts)
+	var cTexts *C.InferTextOverlay
+	if nTexts > 0 {
+		texts := make([]C.InferTextOverlay, nTexts)
+		for i, t := range input.Texts {
+			cStr := C.CString(t.Text)
+			C.set_text_overlay(&texts[i], C.int(t.X), C.int(t.Y), cStr,
+				C.uint8_t(t.R), C.uint8_t(t.G), C.uint8_t(t.B), C.int(t.Scale))
+			C.free(unsafe.Pointer(cStr))
+		}
+		cTexts = &texts[0]
+	}
+
+	nRects := len(input.Rects)
+	var cRects *C.InferFilledRect
+	if nRects > 0 {
+		rects := make([]C.InferFilledRect, nRects)
+		for i, r := range input.Rects {
+			rects[i] = C.InferFilledRect{
+				x1: C.int(r.X1), y1: C.int(r.Y1), x2: C.int(r.X2), y2: C.int(r.Y2),
+				r: C.uint8_t(r.R), g: C.uint8_t(r.G), b: C.uint8_t(r.B), alpha: C.uint8_t(r.Alpha),
+			}
+		}
+		cRects = &rects[0]
+	}
+
+	// Output buffers.
+	var outJPEG *C.uint8_t
+	var outSize C.int
+	const maxBoxes = 100
+	cBoxes := make([]C.InferBox, maxBoxes)
+	var nBoxes C.int
+
+	ret := C.infer_pipeline_detect_frame(
+		decoderPtr, detectorPtr,
+		C.float(conf), C.float(iou),
+		cLines, C.int(nLines),
+		cPolygons, C.int(nPolygons),
+		cTexts, C.int(nTexts),
+		cRects, C.int(nRects),
+		C.int(jpegW), C.int(jpegH), C.int(quality),
+		&outJPEG, &outSize,
+		&cBoxes[0], &nBoxes, C.int(maxBoxes))
+
+	if ret == 0 {
+		return result, fmt.Errorf("pipeline: EOF or error")
+	}
+
+	result.HasFrame = true
+	result.JPEG = C.GoBytes(unsafe.Pointer(outJPEG), outSize)
+	C.infer_frame_jpeg_free(outJPEG)
+
+	for i := 0; i < int(nBoxes); i++ {
+		result.Boxes = append(result.Boxes, PipelineBox{
+			X1: float32(cBoxes[i].x1), Y1: float32(cBoxes[i].y1),
+			X2: float32(cBoxes[i].x2), Y2: float32(cBoxes[i].y2),
+			ClassID:    int(cBoxes[i].class_idx),
+			Confidence: float32(cBoxes[i].confidence),
+		})
+	}
+
+	return result, nil
+}

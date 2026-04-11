@@ -55,6 +55,13 @@ public:
     int height() const;
     double fps() const;
 
+    /// Set target output size. sws_scale will resize during RGB conversion
+    /// at zero extra cost (same FFmpeg call, just different output dimensions).
+    /// Call before next_frame(). Set (0,0) to disable resize and use native size.
+    void set_output_size(int w, int h);
+    int output_width() const { return out_w_ > 0 ? out_w_ : width(); }
+    int output_height() const { return out_h_ > 0 ? out_h_ : height(); }
+
     void close();
     bool is_open() const;
     bool is_hw_accelerated() const;
@@ -80,6 +87,8 @@ private:
     bool             hw_accel_      = false;
     bool             open_          = false;
     double           fps_           = 0.0;
+    int              out_w_         = 0;  // target output width (0 = native)
+    int              out_h_         = 0;  // target output height (0 = native)
 
     // NVDEC hardware context
     AVBufferRef*     hw_device_ctx_ = nullptr;

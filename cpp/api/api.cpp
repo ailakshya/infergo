@@ -1582,6 +1582,7 @@ int infer_video_decoder_next_frame_resized(void* dec, int target_w, int target_h
         if (target_w > 0 && target_h > 0 &&
             (target_w != info.width || target_h != info.height)) {
 #ifdef INFER_OPENCV_AVAILABLE
+            fprintf(stderr, "[resize] %dx%d -> %dx%d\n", info.width, info.height, target_w, target_h);
             cv::Mat src(info.height, info.width, CV_8UC3, data);
             cv::Mat dst(target_h, target_w, CV_8UC3);
             cv::resize(src, dst, cv::Size(target_w, target_h), 0, 0, cv::INTER_LINEAR);
@@ -1609,6 +1610,95 @@ int infer_video_decoder_next_frame_resized(void* dec, int target_w, int target_h
 #else
     (void)dec;(void)target_w;(void)target_h;(void)out_rgb;(void)out_w;(void)out_h;(void)out_pts;(void)out_frame_num;
     return 0;
+#endif
+}
+
+int infer_pipeline_detect_frame(
+    void* decoder, void* detector,
+    float conf_thresh, float iou_thresh,
+    const InferLine* lines, int n_lines,
+    const InferPolygonOverlay* polygons, int n_polygons,
+    const InferTextOverlay* texts, int n_texts,
+    const InferFilledRect* rects, int n_rects,
+    int jpeg_w, int jpeg_h, int jpeg_quality,
+    uint8_t** out_jpeg, int* out_jpeg_size,
+    InferBox* out_boxes, int* out_nboxes, int max_boxes)
+{
+#if defined(INFER_VIDEO_AVAILABLE) && defined(INFER_TORCH_AVAILABLE)
+    if (!decoder || !detector || !out_jpeg || !out_jpeg_size) return 0;
+    try {
+        auto* dec = static_cast<infergo::VideoDecoder*>(decoder);
+
+        // 1. Decode next frame (internal C buffer — zero copy).
+        infergo::FrameInfo fi{};
+        uint8_t* rgb = nullptr;
+        if (!dec->next_frame(&rgb, &fi)) return 0;
+        int w = fi.width, h = fi.height;
+
+        // 2. Detect with YOLO (GPU inference on the C buffer directly).
+        int nboxes = infer_torch_detect_gpu_raw(
+            detector, rgb, w, h, conf_thresh, iou_thresh, out_boxes, max_boxes);
+        if (out_nboxes) *out_nboxes = nboxes > 0 ? nboxes : 0;
+
+        // 3. Convert InferBox to InferAnnotateBox for the annotator.
+        std::vector<infergo::AnnotateBox> aboxes(nboxes > 0 ? nboxes : 0);
+        for (int i = 0; i < nboxes && i < max_boxes; i++) {
+            aboxes[i].x1 = out_boxes[i].x1;
+            aboxes[i].y1 = out_boxes[i].y1;
+            aboxes[i].x2 = out_boxes[i].x2;
+            aboxes[i].y2 = out_boxes[i].y2;
+            aboxes[i].class_id = out_boxes[i].class_idx;
+            aboxes[i].confidence = out_boxes[i].confidence;
+            aboxes[i].track_id = i;
+            snprintf(aboxes[i].label, 64, "cls%d %.0f%%",
+                     out_boxes[i].class_idx, out_boxes[i].confidence * 100);
+        }
+
+        // 4. Annotate + resize + JPEG encode in one call.
+        auto* cpp_lines = reinterpret_cast<const infergo::FrameAnnotator::Line*>(lines);
+        auto* cpp_polys = reinterpret_cast<const infergo::FrameAnnotator::PolygonOverlay*>(polygons);
+        auto* cpp_texts = reinterpret_cast<const infergo::FrameAnnotator::TextOverlay*>(texts);
+        auto* cpp_rects = reinterpret_cast<const infergo::FrameAnnotator::FilledRect*>(rects);
+
+        int out_w = (jpeg_w > 0) ? jpeg_w : w;
+        int out_h = (jpeg_h > 0) ? jpeg_h : h;
+
+        int size = 0;
+        uint8_t* jpeg = infergo::FrameAnnotator::annotate_full(
+            rgb, w, h,
+            aboxes.data(), static_cast<int>(aboxes.size()),
+            cpp_lines, n_lines,
+            cpp_polys, n_polygons,
+            cpp_texts, n_texts,
+            cpp_rects, n_rects,
+            out_w, out_h, jpeg_quality, &size);
+
+        if (!jpeg) return 0;
+        *out_jpeg = jpeg;
+        *out_jpeg_size = size;
+        return 1;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return 0;
+    } catch (...) {
+        return 0;
+    }
+#else
+    (void)decoder;(void)detector;(void)conf_thresh;(void)iou_thresh;
+    (void)lines;(void)n_lines;(void)polygons;(void)n_polygons;
+    (void)texts;(void)n_texts;(void)rects;(void)n_rects;
+    (void)jpeg_w;(void)jpeg_h;(void)jpeg_quality;
+    (void)out_jpeg;(void)out_jpeg_size;(void)out_boxes;(void)out_nboxes;(void)max_boxes;
+    return 0;
+#endif
+}
+
+void infer_video_decoder_set_output_size(void* dec, int target_w, int target_h) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!dec) return;
+    static_cast<infergo::VideoDecoder*>(dec)->set_output_size(target_w, target_h);
+#else
+    (void)dec; (void)target_w; (void)target_h;
 #endif
 }
 

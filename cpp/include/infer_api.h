@@ -551,6 +551,10 @@ int infer_video_decoder_height(void* dec);
 double infer_video_decoder_fps(void* dec);
 int infer_video_decoder_is_hw(void* dec);
 
+// Set decoder output resolution. sws_scale resizes during color conversion
+// at zero extra cost (same FFmpeg call). Call once after open. (0,0) = native.
+void infer_video_decoder_set_output_size(void* dec, int target_w, int target_h);
+
 // Decode next frame, resize to target dimensions, and return RGB24 data.
 // out_rgb points to an internal buffer (overwritten on next call).
 // Returns 1 on success, 0 on EOF/error.
@@ -670,7 +674,22 @@ InferError infer_frame_annotate_full(
     int out_w, int out_h, int quality,
     uint8_t** out_jpeg, int* out_size);
 
-// Free a JPEG buffer returned by infer_frame_annotate_jpeg / resize / combine.
+// ── Full C pipeline: decode → detect → annotate → JPEG (zero Go copies) ────
+
+// Process one frame: decode → YOLO detect → annotate → resize → JPEG.
+// Go never touches raw pixels. Returns 1 on success, 0 on EOF/error.
+int infer_pipeline_detect_frame(
+    void* decoder, void* detector,
+    float conf_thresh, float iou_thresh,
+    const InferLine* lines, int n_lines,
+    const InferPolygonOverlay* polygons, int n_polygons,
+    const InferTextOverlay* texts, int n_texts,
+    const InferFilledRect* rects, int n_rects,
+    int jpeg_w, int jpeg_h, int jpeg_quality,
+    uint8_t** out_jpeg, int* out_jpeg_size,
+    InferBox* out_boxes, int* out_nboxes, int max_boxes);
+
+// Free a JPEG buffer returned by infer_frame_annotate_jpeg / resize / combine / pipeline.
 void infer_frame_jpeg_free(uint8_t* buf);
 
 #ifdef __cplusplus

@@ -65,8 +65,8 @@ bool VideoDecoder::next_frame(uint8_t** out_data, FrameInfo* info) {
                     if (!convert_to_rgb(frame_)) return false;
                     if (out_data) *out_data = rgb_buffer_;
                     if (info) {
-                        info->width        = codec_ctx_->width;
-                        info->height       = codec_ctx_->height;
+                        info->width        = output_width();
+                        info->height       = output_height();
                         info->pts          = frame_->pts != AV_NOPTS_VALUE
                             ? av_rescale_q(frame_->pts,
                                            fmt_ctx_->streams[video_stream_idx_]->time_base,
@@ -116,8 +116,8 @@ bool VideoDecoder::next_frame(uint8_t** out_data, FrameInfo* info) {
             if (!convert_to_rgb(frame_)) return false;
             if (out_data) *out_data = rgb_buffer_;
             if (info) {
-                info->width        = codec_ctx_->width;
-                info->height       = codec_ctx_->height;
+                info->width        = output_width();
+                info->height       = output_height();
                 info->pts          = frame_->pts != AV_NOPTS_VALUE
                     ? av_rescale_q(frame_->pts,
                                    fmt_ctx_->streams[video_stream_idx_]->time_base,
@@ -340,8 +340,8 @@ bool VideoDecoder::next_frame_yuv(uint8_t** out_data, int* out_linesize,
             if (out_linesize) *out_linesize = frame_->linesize[0];
             if (out_format) *out_format = frame_->format;
             if (info) {
-                info->width = codec_ctx_->width;
-                info->height = codec_ctx_->height;
+                info->width = output_width();
+                info->height = output_height();
                 info->pts = frame_->pts;
                 info->frame_number = frame_count_;
                 info->on_gpu = hw_accel_;
@@ -376,8 +376,8 @@ bool VideoDecoder::next_frame_yuv(uint8_t** out_data, int* out_linesize,
             if (out_linesize) *out_linesize = frame_->linesize[0];
             if (out_format) *out_format = frame_->format;
             if (info) {
-                info->width = codec_ctx_->width;
-                info->height = codec_ctx_->height;
+                info->width = output_width();
+                info->height = output_height();
                 info->pts = frame_->pts;
                 info->frame_number = frame_count_;
                 info->on_gpu = hw_accel_;
@@ -392,7 +392,11 @@ bool VideoDecoder::convert_to_rgb(AVFrame* src) {
     int w = src->width;
     int h = src->height;
 
-    alloc_rgb_buffer(w, h);
+    // Use target output dimensions if set (resize during sws_scale — zero extra cost).
+    int dst_w = (out_w_ > 0) ? out_w_ : w;
+    int dst_h = (out_h_ > 0) ? out_h_ : h;
+
+    alloc_rgb_buffer(dst_w, dst_h);
     if (!rgb_buffer_) {
         fprintf(stderr, "[VideoDecoder] failed to allocate RGB buffer\n");
         return false;
@@ -402,7 +406,7 @@ bool VideoDecoder::convert_to_rgb(AVFrame* src) {
     auto src_fmt = static_cast<AVPixelFormat>(src->format);
     sws_ctx_ = sws_getCachedContext(sws_ctx_,
                                     w, h, src_fmt,
-                                    w, h, AV_PIX_FMT_RGB24,
+                                    dst_w, dst_h, AV_PIX_FMT_RGB24,
                                     SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!sws_ctx_) {
         fprintf(stderr, "[VideoDecoder] sws_getCachedContext failed\n");
@@ -411,13 +415,28 @@ bool VideoDecoder::convert_to_rgb(AVFrame* src) {
 
     // Set up frame_rgb_ to point at our reusable buffer.
     av_image_fill_arrays(frame_rgb_->data, frame_rgb_->linesize,
-                         rgb_buffer_, AV_PIX_FMT_RGB24, w, h, 1);
+                         rgb_buffer_, AV_PIX_FMT_RGB24, dst_w, dst_h, 1);
 
     sws_scale(sws_ctx_,
               src->data, src->linesize, 0, h,
               frame_rgb_->data, frame_rgb_->linesize);
 
     return true;
+}
+
+void VideoDecoder::set_output_size(int w, int h) {
+    if (w > 0 && h > 0) {
+        out_w_ = w;
+        out_h_ = h;
+        // Force sws context recreation on next frame.
+        if (sws_ctx_) {
+            sws_freeContext(sws_ctx_);
+            sws_ctx_ = nullptr;
+        }
+    } else {
+        out_w_ = 0;
+        out_h_ = 0;
+    }
 }
 
 } // namespace infergo
