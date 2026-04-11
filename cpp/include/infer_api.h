@@ -418,6 +418,58 @@ int infer_sampler_sample_seq(InferSampler smpl, InferSeq seq);
 void infer_sampler_free(InferSampler smpl);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SPECULATIVE DECODING API
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef void* InferSpeculative;
+
+// Token callback for streaming during speculative generation.
+// token: the accepted token ID.
+// piece: null-terminated string piece for this token.
+// user_data: opaque pointer passed through from infer_speculative_generate.
+// Return 1 to continue, 0 to stop generation.
+typedef int (*InferTokenCallback)(int token, const char* piece, void* user_data);
+
+// Create a speculative decoder with a draft model.
+// The draft model must share the same vocabulary as the target LLM.
+// n_draft: number of tokens to draft per step (default 5).
+// Returns NULL on failure (vocab mismatch, load error).
+InferSpeculative infer_speculative_create(InferLLM     target,
+                                           const char* draft_path,
+                                           int         n_gpu_layers,
+                                           int         n_draft);
+
+// Run the full speculative generation loop in C++ (one CGo call).
+// Drafts, verifies, accepts/rejects — everything runs natively.
+//
+// prompt_tokens: pre-tokenized prompt (including BOS).
+// max_tokens: max generation length.
+// temperature: sampling temperature (0 = greedy).
+// callback: called for each accepted token (NULL = collect all silently).
+// user_data: passed through to callback.
+// out_text: buffer for the generated text (null-terminated).
+// max_text_len: capacity of out_text.
+// out_n_predict: total tokens generated.
+// out_n_drafted: total tokens drafted.
+// out_n_accepted: total draft tokens accepted by target.
+// Returns 0 on success, -1 on error.
+int infer_speculative_generate(InferSpeculative spec,
+                                const int*      prompt_tokens,
+                                int             n_prompt,
+                                int             max_tokens,
+                                float           temperature,
+                                InferTokenCallback callback,
+                                void*           user_data,
+                                char*           out_text,
+                                int             max_text_len,
+                                int*            out_n_predict,
+                                int*            out_n_drafted,
+                                int*            out_n_accepted);
+
+// Free speculative decoder. Safe to call with NULL.
+void infer_speculative_free(InferSpeculative spec);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PREPROCESSING API
 // ─────────────────────────────────────────────────────────────────────────────
 

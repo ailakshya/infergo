@@ -10,6 +10,7 @@
 #include "../llm/kv_paged.hpp"
 #include "../llm/llm_engine.hpp"
 #include "../llm/infer_sequence.hpp"
+#include "../llm/speculative.hpp"
 #include "../../vendor/llama.cpp/include/llama.h"
 #ifdef INFER_PREPROCESS_AVAILABLE
 #include "../preprocess/preprocess.hpp"
@@ -1413,6 +1414,105 @@ int infer_sampler_sample_seq(InferSampler smpl, InferSeq seq) {
 void infer_sampler_free(InferSampler smpl) {
     if (smpl == nullptr) return;
     try { delete static_cast<SamplerHandle*>(smpl); } catch (...) {}
+}
+
+// ─── Speculative Decoding API ────────────────────────────────────────────────
+
+struct SpecHandle {
+    infergo::SpeculativeDecoder decoder;
+};
+
+InferSpeculative infer_speculative_create(InferLLM     target,
+                                           const char* draft_path,
+                                           int         n_gpu_layers,
+                                           int         n_draft) {
+    try {
+        if (target == nullptr || draft_path == nullptr) {
+            infergo::set_last_error("infer_speculative_create: null argument");
+            return nullptr;
+        }
+        auto* h = static_cast<LLMHandle*>(target);
+
+        auto* sh = new SpecHandle();
+        if (!sh->decoder.Init(
+                llama_get_model(h->engine.Context()),
+                h->engine.Context(),
+                draft_path,
+                n_gpu_layers,
+                n_draft > 0 ? n_draft : 5)) {
+            delete sh;
+            infergo::set_last_error("infer_speculative_create: init failed (vocab mismatch or load error)");
+            return nullptr;
+        }
+        return static_cast<InferSpeculative>(sh);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_speculative_create: unknown exception");
+        return nullptr;
+    }
+}
+
+// Trampoline: converts C callback to C++ lambda
+struct CallbackCtx {
+    InferTokenCallback cb;
+    void* user_data;
+};
+
+int infer_speculative_generate(InferSpeculative spec,
+                                const int*      prompt_tokens,
+                                int             n_prompt,
+                                int             max_tokens,
+                                float           temperature,
+                                InferTokenCallback callback,
+                                void*           user_data,
+                                char*           out_text,
+                                int             max_text_len,
+                                int*            out_n_predict,
+                                int*            out_n_drafted,
+                                int*            out_n_accepted) {
+    try {
+        if (spec == nullptr || prompt_tokens == nullptr || n_prompt <= 0) {
+            infergo::set_last_error("infer_speculative_generate: invalid argument");
+            return -1;
+        }
+        auto* sh = static_cast<SpecHandle*>(spec);
+
+        std::vector<int32_t> tokens(prompt_tokens, prompt_tokens + n_prompt);
+
+        infergo::SpeculativeDecoder::TokenCallback cpp_cb = nullptr;
+        if (callback) {
+            cpp_cb = [callback, user_data](int32_t token, const char* piece) -> bool {
+                return callback(static_cast<int>(token), piece, user_data) != 0;
+            };
+        }
+
+        int np = 0, nd = 0, na = 0;
+        std::string text = sh->decoder.Generate(
+            tokens, max_tokens, temperature, "", cpp_cb, &np, &nd, &na);
+
+        if (out_text && max_text_len > 0) {
+            int n = std::min(static_cast<int>(text.size()), max_text_len - 1);
+            std::memcpy(out_text, text.data(), static_cast<size_t>(n));
+            out_text[n] = '\0';
+        }
+        if (out_n_predict)  *out_n_predict  = np;
+        if (out_n_drafted)  *out_n_drafted  = nd;
+        if (out_n_accepted) *out_n_accepted = na;
+        return 0;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_speculative_generate: unknown exception");
+        return -1;
+    }
+}
+
+void infer_speculative_free(InferSpeculative spec) {
+    if (spec == nullptr) return;
+    try { delete static_cast<SpecHandle*>(spec); } catch (...) {}
 }
 
 // ─── Preprocessing API ────────────────────────────────────────────────────────
