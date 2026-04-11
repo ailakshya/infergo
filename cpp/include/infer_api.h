@@ -376,6 +376,42 @@ InferError infer_llm_batch_decode(InferLLM llm, InferSeq* seqs, int n_seqs);
 InferError infer_seq_get_logits(InferSeq seq, float* out_logits, int vocab_size);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GRAMMAR-CONSTRAINED SAMPLER API
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef void* InferSampler;
+
+// Create a sampler chain with GBNF grammar constraint.
+// Every token sampled through this sampler is forced to comply with the grammar.
+//
+// llm:          the LLM engine (needed to access the vocabulary).
+// grammar_str:  GBNF grammar string (e.g., "root ::= ..."); must not be NULL.
+// grammar_root: root rule name; NULL defaults to "root".
+// temperature:  sampling temperature (0 = greedy argmax).
+// top_p:        nucleus sampling threshold (1.0 = disabled).
+// top_k:        top-k filter (0 = disabled).
+// seed:         random seed for reproducibility (0 = random).
+// Returns NULL on failure; call infer_last_error_string() for details.
+InferSampler infer_sampler_create(InferLLM     llm,
+                                   const char* grammar_str,
+                                   const char* grammar_root,
+                                   float       temperature,
+                                   float       top_p,
+                                   int         top_k,
+                                   uint32_t    seed);
+
+// Sample one token from logits using the sampler chain.
+// Applies grammar filtering, temperature, top-k, top-p, then picks a token.
+// Automatically advances grammar state after sampling (accept).
+// logits:     [vocab_size] raw logits from the last BatchDecode.
+// vocab_size: length of the logits array.
+// Returns the sampled token ID, or -1 on error.
+int infer_sampler_sample(InferSampler smpl, const float* logits, int vocab_size);
+
+// Free sampler chain and all resources. Safe to call with NULL.
+void infer_sampler_free(InferSampler smpl);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PREPROCESSING API
 // ─────────────────────────────────────────────────────────────────────────────
 
