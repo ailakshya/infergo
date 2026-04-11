@@ -2,6 +2,7 @@ package llm
 
 /*
 #include "infer_api.h"
+#include <stdlib.h>
 */
 import "C"
 
