@@ -408,6 +408,12 @@ InferSampler infer_sampler_create(InferLLM     llm,
 // Returns the sampled token ID, or -1 on error.
 int infer_sampler_sample(InferSampler smpl, const float* logits, int vocab_size);
 
+// Zero-copy variant: sample directly from a sequence's internal logits buffer.
+// Reads logits stored by the last infer_llm_batch_decode call — no data crosses
+// the CGo boundary. This is the fast path for grammar-constrained generation.
+// Returns the sampled token ID, or -1 on error.
+int infer_sampler_sample_seq(InferSampler smpl, InferSeq seq);
+
 // Free sampler chain and all resources. Safe to call with NULL.
 void infer_sampler_free(InferSampler smpl);
 

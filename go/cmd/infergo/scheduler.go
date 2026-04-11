@@ -280,13 +280,9 @@ func (s *schedulerModel) run() {
 			var tok int32
 			var err error
 			if a.sampler != nil {
-				// Grammar-constrained sampling: get logits, sample through C++ chain.
-				logits, lerr := a.seq.Logits()
-				if lerr != nil {
-					err = lerr
-				} else {
-					tok, err = a.sampler.Sample(logits)
-				}
+				// Grammar-constrained sampling: zero-copy path.
+				// Reads logits directly from C++ SeqHandle — no data crosses CGo.
+				tok, err = a.sampler.SampleSeq(a.seq)
 			} else {
 				// Standard Go-side sampling.
 				tok, err = a.seq.SampleToken(a.req.temp, 0.9)

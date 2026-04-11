@@ -79,6 +79,23 @@ func (s *Sampler) Sample(logits []float32) (int32, error) {
 	return int32(tok), nil
 }
 
+// SampleSeq samples directly from a sequence's internal logits buffer.
+// Zero copy — logits never cross the CGo boundary. This is the fast path.
+func (s *Sampler) SampleSeq(seq *Sequence) (int32, error) {
+	if s.ptr == nil {
+		return -1, errors.New("llm: SampleSeq called on closed sampler")
+	}
+	if seq == nil || seq.ptr == nil {
+		return -1, errors.New("llm: SampleSeq called on nil sequence")
+	}
+
+	tok := C.infer_sampler_sample_seq(s.ptr, seq.ptr)
+	if tok < 0 {
+		return -1, fmt.Errorf("llm: SampleSeq failed: %w", lastError())
+	}
+	return int32(tok), nil
+}
+
 // Close frees the sampler chain. Safe to call multiple times.
 func (s *Sampler) Close() {
 	if s.ptr == nil {

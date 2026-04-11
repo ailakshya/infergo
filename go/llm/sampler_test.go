@@ -75,21 +75,17 @@ func TestGrammarSamplerJSONOutput(t *testing.T) {
 	}
 	defer smpl.Close()
 
-	// Generate up to 64 tokens using grammar-constrained sampling.
+	// Generate up to 64 tokens using zero-copy grammar-constrained sampling.
 	var output []byte
 	for i := 0; i < 64; i++ {
 		if err := m.BatchDecode([]*llm.Sequence{seq}); err != nil {
 			t.Fatalf("BatchDecode step %d: %v", i, err)
 		}
 
-		logits, err := seq.Logits()
+		// Zero-copy path: SampleSeq reads logits directly in C++.
+		tok, err := smpl.SampleSeq(seq)
 		if err != nil {
-			t.Fatalf("Logits step %d: %v", i, err)
-		}
-
-		tok, err := smpl.Sample(logits)
-		if err != nil {
-			t.Fatalf("Sample step %d: %v", i, err)
+			t.Fatalf("SampleSeq step %d: %v", i, err)
 		}
 
 		if m.IsEOG(tok) {
@@ -150,13 +146,9 @@ func TestGrammarSamplerCustom(t *testing.T) {
 		if err := m.BatchDecode([]*llm.Sequence{seq}); err != nil {
 			t.Fatalf("BatchDecode step %d: %v", i, err)
 		}
-		logits, err := seq.Logits()
+		tok, err := smpl.SampleSeq(seq)
 		if err != nil {
-			t.Fatalf("Logits step %d: %v", i, err)
-		}
-		tok, err := smpl.Sample(logits)
-		if err != nil {
-			t.Fatalf("Sample step %d: %v", i, err)
+			t.Fatalf("SampleSeq step %d: %v", i, err)
 		}
 		if m.IsEOG(tok) {
 			break

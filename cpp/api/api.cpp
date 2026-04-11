@@ -1362,6 +1362,54 @@ int infer_sampler_sample(InferSampler smpl, const float* logits, int vocab_size)
     }
 }
 
+int infer_sampler_sample_seq(InferSampler smpl, InferSeq seq) {
+    try {
+        if (smpl == nullptr || seq == nullptr) {
+            infergo::set_last_error("infer_sampler_sample_seq: invalid argument");
+            return -1;
+        }
+        auto* sh   = static_cast<SamplerHandle*>(smpl);
+        auto* seqh = static_cast<SeqHandle*>(seq);
+
+        if (seqh->logits.empty()) {
+            infergo::set_last_error("infer_sampler_sample_seq: no logits (call batch_decode first)");
+            return -1;
+        }
+
+        const int vocab_size = static_cast<int>(seqh->logits.size());
+        const float* logits  = seqh->logits.data();  // direct pointer — zero copy
+
+        // Build token_data_array pointing into the existing buffer
+        std::vector<llama_token_data> candidates(static_cast<size_t>(vocab_size));
+        for (int i = 0; i < vocab_size; ++i) {
+            candidates[i] = llama_token_data{
+                static_cast<llama_token>(i), logits[i], 0.0f};
+        }
+        llama_token_data_array cur_p = {
+            candidates.data(),
+            static_cast<size_t>(vocab_size),
+            /*selected=*/-1,
+            /*sorted=*/false
+        };
+
+        llama_sampler_apply(sh->chain, &cur_p);
+
+        if (cur_p.selected < 0 || cur_p.selected >= static_cast<int64_t>(cur_p.size)) {
+            infergo::set_last_error("infer_sampler_sample_seq: no token selected");
+            return -1;
+        }
+        llama_token token = cur_p.data[cur_p.selected].id;
+        llama_sampler_accept(sh->chain, token);
+        return static_cast<int>(token);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_sampler_sample_seq: unknown exception");
+        return -1;
+    }
+}
+
 void infer_sampler_free(InferSampler smpl) {
     if (smpl == nullptr) return;
     try { delete static_cast<SamplerHandle*>(smpl); } catch (...) {}
