@@ -11,6 +11,10 @@ namespace infergo {
 SpeculativeDecoder::SpeculativeDecoder() = default;
 
 SpeculativeDecoder::~SpeculativeDecoder() {
+    if (target_ctx_) {
+        llama_free(target_ctx_);
+        target_ctx_ = nullptr;
+    }
     if (draft_ctx_) {
         llama_free(draft_ctx_);
         draft_ctx_ = nullptr;
@@ -21,13 +25,12 @@ SpeculativeDecoder::~SpeculativeDecoder() {
     }
 }
 
-bool SpeculativeDecoder::Init(llama_model* target_model,
-                               llama_context* target_ctx,
+bool SpeculativeDecoder::Init(const llama_model* target_model,
+                               int target_ctx_size,
                                const std::string& draft_path,
                                int n_gpu_layers,
                                int n_draft) {
     target_model_ = target_model;
-    target_ctx_   = target_ctx;
     n_draft_      = n_draft;
 
     // Load draft model
@@ -50,21 +53,45 @@ bool SpeculativeDecoder::Init(llama_model* target_model,
     }
 
     vocab_size_ = std::min(n_tgt, n_dft);
+    int ctx_size = target_ctx_size > 0 ? target_ctx_size : 4096;
 
-    // Create draft context — small, single-sequence
-    llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx      = llama_n_ctx(target_ctx_);
-    cparams.n_batch    = static_cast<uint32_t>(n_draft + 1);
-    cparams.n_ubatch   = static_cast<uint32_t>(n_draft + 1);
-    cparams.n_seq_max  = 1;
-    cparams.offload_kqv = true;
-    cparams.no_perf     = true;
+    // Create dedicated target context
+    {
+        llama_context_params cparams = llama_context_default_params();
+        cparams.n_ctx      = static_cast<uint32_t>(ctx_size);
+        cparams.n_batch    = 512;
+        cparams.n_ubatch   = 512;
+        cparams.n_seq_max  = 1;
+        cparams.offload_kqv = true;
+        cparams.no_perf     = true;
 
-    draft_ctx_ = llama_init_from_model(draft_model_, cparams);
-    if (!draft_ctx_) {
-        llama_model_free(draft_model_);
-        draft_model_ = nullptr;
-        return false;
+        target_ctx_ = llama_init_from_model(
+            const_cast<llama_model*>(target_model_), cparams);
+        if (!target_ctx_) {
+            llama_model_free(draft_model_);
+            draft_model_ = nullptr;
+            return false;
+        }
+    }
+
+    // Create draft context
+    {
+        llama_context_params cparams = llama_context_default_params();
+        cparams.n_ctx      = static_cast<uint32_t>(ctx_size);
+        cparams.n_batch    = 512;
+        cparams.n_ubatch   = 512;
+        cparams.n_seq_max  = 1;
+        cparams.offload_kqv = true;
+        cparams.no_perf     = true;
+
+        draft_ctx_ = llama_init_from_model(draft_model_, cparams);
+        if (!draft_ctx_) {
+            llama_free(target_ctx_);
+            target_ctx_ = nullptr;
+            llama_model_free(draft_model_);
+            draft_model_ = nullptr;
+            return false;
+        }
     }
 
     return true;
@@ -76,7 +103,6 @@ int32_t SpeculativeDecoder::SampleFromCtx(llama_context* ctx, int batch_idx,
     if (!logits) return -1;
 
     if (temperature <= 0.0f) {
-        // Greedy argmax
         int32_t best = 0;
         for (int i = 1; i < vocab_size_; ++i) {
             if (logits[i] > logits[best]) best = i;
@@ -84,9 +110,7 @@ int32_t SpeculativeDecoder::SampleFromCtx(llama_context* ctx, int batch_idx,
         return best;
     }
 
-    // Temperature + multinomial
     thread_local std::mt19937 rng(std::random_device{}());
-
     float max_logit = *std::max_element(logits, logits + vocab_size_);
     std::vector<float> probs(static_cast<size_t>(vocab_size_));
     float sum = 0.0f;
@@ -100,11 +124,28 @@ int32_t SpeculativeDecoder::SampleFromCtx(llama_context* ctx, int batch_idx,
     return static_cast<int32_t>(dist(rng));
 }
 
+// Helper: clear a batch for reuse (like common_batch_clear)
+static void batch_clear(llama_batch& batch) {
+    batch.n_tokens = 0;
+}
+
+// Helper: add one token to a batch (like common_batch_add)
+static void batch_add(llama_batch& batch, llama_token token, llama_pos pos,
+                       bool logits) {
+    const int i = batch.n_tokens;
+    batch.token[i]      = token;
+    batch.pos[i]        = pos;
+    batch.n_seq_id[i]   = 1;
+    batch.seq_id[i][0]  = 0;
+    batch.logits[i]     = logits ? 1 : 0;
+    batch.n_tokens++;
+}
+
 std::string SpeculativeDecoder::Generate(
     const std::vector<int32_t>& prompt_tokens,
     int max_tokens,
     float temperature,
-    const std::string& grammar_str,
+    const std::string& grammar_str [[maybe_unused]],
     TokenCallback callback,
     int* out_n_predict,
     int* out_n_drafted,
@@ -117,52 +158,33 @@ std::string SpeculativeDecoder::Generate(
     const llama_vocab* vocab = llama_model_get_vocab(target_model_);
     const int n_prompt = static_cast<int>(prompt_tokens.size());
 
+    // Pre-allocate batches (reused throughout generation)
+    llama_batch batch_tgt = llama_batch_init(512, 0, 1);
+    llama_batch batch_dft = llama_batch_init(512, 0, 1);
+
     // ── Prefill: process prompt through both models ──
-
-    // Target prefill (all prompt tokens except last)
-    {
-        llama_batch batch = llama_batch_init(n_prompt, 0, 1);
-        for (int i = 0; i < n_prompt; ++i) {
-            batch.token[i]    = prompt_tokens[i];
-            batch.pos[i]      = i;
-            batch.n_seq_id[i] = 1;
-            batch.seq_id[i][0] = 0;
-            batch.logits[i]   = (i == n_prompt - 1) ? 1 : 0;
-            batch.n_tokens++;
-        }
-        if (llama_decode(target_ctx_, batch) != 0) {
-            llama_batch_free(batch);
-            throw std::runtime_error("speculative: target prefill failed");
-        }
-        llama_batch_free(batch);
+    batch_clear(batch_tgt);
+    for (int i = 0; i < n_prompt; ++i) {
+        batch_add(batch_tgt, prompt_tokens[i], i, i == n_prompt - 1);
+    }
+    if (llama_decode(target_ctx_, batch_tgt) != 0) {
+        llama_batch_free(batch_tgt);
+        llama_batch_free(batch_dft);
+        throw std::runtime_error("speculative: target prefill failed");
     }
 
-    // Draft prefill (same prompt)
-    {
-        llama_batch batch = llama_batch_init(n_prompt, 0, 1);
-        for (int i = 0; i < n_prompt; ++i) {
-            batch.token[i]    = prompt_tokens[i];
-            batch.pos[i]      = i;
-            batch.n_seq_id[i] = 1;
-            batch.seq_id[i][0] = 0;
-            batch.logits[i]   = (i == n_prompt - 1) ? 1 : 0;
-            batch.n_tokens++;
-        }
-        if (llama_decode(draft_ctx_, batch) != 0) {
-            llama_batch_free(batch);
-            throw std::runtime_error("speculative: draft prefill failed");
-        }
-        llama_batch_free(batch);
+    batch_clear(batch_dft);
+    for (int i = 0; i < n_prompt; ++i) {
+        batch_add(batch_dft, prompt_tokens[i], i, i == n_prompt - 1);
+    }
+    if (llama_decode(draft_ctx_, batch_dft) != 0) {
+        llama_batch_free(batch_tgt);
+        llama_batch_free(batch_dft);
+        throw std::runtime_error("speculative: draft prefill failed");
     }
 
-    // Sample first token from target model
-    int32_t id_last = SampleFromCtx(target_ctx_, n_prompt - 1, temperature);
-    if (id_last < 0 || llama_vocab_is_eog(vocab, id_last)) {
-        if (out_n_predict) *out_n_predict = 0;
-        if (out_n_drafted)  *out_n_drafted = 0;
-        if (out_n_accepted) *out_n_accepted = 0;
-        return "";
-    }
+    // Sample first token from target (logits at the last batch slot)
+    int32_t id_last = SampleFromCtx(target_ctx_, batch_tgt.n_tokens - 1, temperature);
 
     std::string result;
     int n_past_tgt = n_prompt;
@@ -170,125 +192,78 @@ std::string SpeculativeDecoder::Generate(
     int n_predict = 0;
     int n_drafted = 0;
     int n_accepted = 0;
+    bool stopped = false;
+
+    if (id_last < 0 || llama_vocab_is_eog(vocab, id_last)) {
+        stopped = true;
+    }
 
     // Output first token
-    {
+    if (!stopped) {
         char buf[256];
         int n = llama_token_to_piece(vocab, id_last, buf, sizeof(buf), 0, false);
         if (n > 0) {
+            buf[n] = '\0';
             result.append(buf, static_cast<size_t>(n));
-            if (callback && !callback(id_last, buf)) {
-                goto done;
-            }
+            if (callback && !callback(id_last, buf)) stopped = true;
         }
         n_predict++;
     }
 
     // ── Main speculative loop ──
-    while (n_predict < max_tokens) {
-        // ── Step 1: Draft N tokens using draft model ──
+    while (!stopped && n_predict < max_tokens) {
+
+        // ── Draft N tokens ──
         std::vector<int32_t> draft_tokens;
         draft_tokens.reserve(static_cast<size_t>(n_draft_));
 
-        {
-            // First, decode id_last in draft model
-            llama_batch batch = llama_batch_init(1, 0, 1);
-            batch.token[0]    = id_last;
-            batch.pos[0]      = n_past_dft;
-            batch.n_seq_id[0] = 1;
-            batch.seq_id[0][0] = 0;
-            batch.logits[0]   = 1;
-            batch.n_tokens    = 1;
+        // Feed id_last to draft model
+        batch_clear(batch_dft);
+        batch_add(batch_dft, id_last, n_past_dft, true);
+        if (llama_decode(draft_ctx_, batch_dft) != 0) break;
+        n_past_dft++;
 
-            if (llama_decode(draft_ctx_, batch) != 0) {
-                llama_batch_free(batch);
-                break;
-            }
-            llama_batch_free(batch);
-            n_past_dft++;
+        int32_t draft_tok = SampleFromCtx(draft_ctx_, 0, temperature);
+        if (draft_tok >= 0 && !llama_vocab_is_eog(vocab, draft_tok)) {
+            draft_tokens.push_back(draft_tok);
 
-            // Sample from draft model
-            int32_t draft_tok = SampleFromCtx(draft_ctx_, 0, temperature);
-            if (draft_tok < 0 || llama_vocab_is_eog(vocab, draft_tok)) {
-                // Draft model hit EOS — just verify last token
-            } else {
+            for (int d = 1; d < n_draft_; ++d) {
+                batch_clear(batch_dft);
+                batch_add(batch_dft, draft_tok, n_past_dft, true);
+                if (llama_decode(draft_ctx_, batch_dft) != 0) break;
+                n_past_dft++;
+
+                draft_tok = SampleFromCtx(draft_ctx_, 0, temperature);
+                if (draft_tok < 0 || llama_vocab_is_eog(vocab, draft_tok)) break;
                 draft_tokens.push_back(draft_tok);
-
-                // Continue drafting
-                for (int d = 1; d < n_draft_; ++d) {
-                    llama_batch b1 = llama_batch_init(1, 0, 1);
-                    b1.token[0]    = draft_tok;
-                    b1.pos[0]      = n_past_dft;
-                    b1.n_seq_id[0] = 1;
-                    b1.seq_id[0][0] = 0;
-                    b1.logits[0]   = 1;
-                    b1.n_tokens    = 1;
-
-                    if (llama_decode(draft_ctx_, b1) != 0) {
-                        llama_batch_free(b1);
-                        break;
-                    }
-                    llama_batch_free(b1);
-                    n_past_dft++;
-
-                    draft_tok = SampleFromCtx(draft_ctx_, 0, temperature);
-                    if (draft_tok < 0 || llama_vocab_is_eog(vocab, draft_tok)) break;
-                    draft_tokens.push_back(draft_tok);
-                }
             }
         }
 
         n_drafted += static_cast<int>(draft_tokens.size());
 
-        // ── Step 2: Verify with target model ──
-        // Feed [id_last, d0, d1, ..., dN-1] to target in ONE batch
-        {
-            const int verify_len = 1 + static_cast<int>(draft_tokens.size());
-            llama_batch batch = llama_batch_init(verify_len, 0, 1);
-
-            batch.token[0]    = id_last;
-            batch.pos[0]      = n_past_tgt;
-            batch.n_seq_id[0] = 1;
-            batch.seq_id[0][0] = 0;
-            batch.logits[0]   = 1;
-            batch.n_tokens    = 1;
-
-            for (int i = 0; i < static_cast<int>(draft_tokens.size()); ++i) {
-                int idx = i + 1;
-                batch.token[idx]    = draft_tokens[i];
-                batch.pos[idx]      = n_past_tgt + idx;
-                batch.n_seq_id[idx] = 1;
-                batch.seq_id[idx][0] = 0;
-                batch.logits[idx]   = 1;
-                batch.n_tokens++;
-            }
-
-            if (llama_decode(target_ctx_, batch) != 0) {
-                llama_batch_free(batch);
-                break;
-            }
-            llama_batch_free(batch);
+        // ── Verify: feed [id_last, d0..dN-1] to target in ONE batch ──
+        batch_clear(batch_tgt);
+        batch_add(batch_tgt, id_last, n_past_tgt, true);
+        for (int i = 0; i < static_cast<int>(draft_tokens.size()); ++i) {
+            batch_add(batch_tgt, draft_tokens[i], n_past_tgt + 1 + i, true);
         }
+        if (llama_decode(target_ctx_, batch_tgt) != 0) break;
 
-        // ── Step 3: Accept/Reject ──
-        // For each draft token, check if target model agrees
+        // ── Accept/Reject ──
         int accepted_this_step = 0;
-        bool stopped = false;
 
         for (int i = 0; i < static_cast<int>(draft_tokens.size()); ++i) {
             int32_t target_tok = SampleFromCtx(target_ctx_, i, temperature);
-            if (target_tok < 0) break;
+            if (target_tok < 0) { stopped = true; break; }
 
             if (target_tok == draft_tokens[i]) {
-                // Accept: output this token
+                // Accept
                 char buf[256];
                 int n = llama_token_to_piece(vocab, target_tok, buf, sizeof(buf), 0, false);
                 if (n > 0) {
+                    buf[n] = '\0';
                     result.append(buf, static_cast<size_t>(n));
-                    if (callback && !callback(target_tok, buf)) {
-                        stopped = true;
-                        break;
-                    }
+                    if (callback && !callback(target_tok, buf)) { stopped = true; break; }
                 }
                 n_predict++;
                 accepted_this_step++;
@@ -298,38 +273,36 @@ std::string SpeculativeDecoder::Generate(
                     break;
                 }
             } else {
-                // Reject: use target's token instead, discard rest
+                // Reject: use target's token
                 char buf[256];
                 int n = llama_token_to_piece(vocab, target_tok, buf, sizeof(buf), 0, false);
                 if (n > 0) {
+                    buf[n] = '\0';
                     result.append(buf, static_cast<size_t>(n));
-                    if (callback && !callback(target_tok, buf)) {
-                        stopped = true;
-                        break;
-                    }
+                    if (callback) callback(target_tok, buf);
                 }
                 id_last = target_tok;
                 n_predict++;
-
                 if (llama_vocab_is_eog(vocab, target_tok) || n_predict >= max_tokens) {
                     stopped = true;
                 }
-                break;  // Stop accepting from this draft
+                break;
             }
         }
 
-        // If all drafts accepted, sample one more from the last target logit
+        // If all drafts accepted, sample bonus token from last target logit
         if (!stopped && accepted_this_step == static_cast<int>(draft_tokens.size())) {
-            int32_t bonus_tok = SampleFromCtx(target_ctx_,
+            int32_t bonus = SampleFromCtx(target_ctx_,
                 static_cast<int>(draft_tokens.size()), temperature);
-            if (bonus_tok >= 0 && !llama_vocab_is_eog(vocab, bonus_tok)) {
+            if (bonus >= 0 && !llama_vocab_is_eog(vocab, bonus)) {
                 char buf[256];
-                int n = llama_token_to_piece(vocab, bonus_tok, buf, sizeof(buf), 0, false);
+                int n = llama_token_to_piece(vocab, bonus, buf, sizeof(buf), 0, false);
                 if (n > 0) {
+                    buf[n] = '\0';
                     result.append(buf, static_cast<size_t>(n));
-                    if (callback) callback(bonus_tok, buf);
+                    if (callback) callback(bonus, buf);
                 }
-                id_last = bonus_tok;
+                id_last = bonus;
                 n_predict++;
                 accepted_this_step++;
             } else {
@@ -339,20 +312,17 @@ std::string SpeculativeDecoder::Generate(
 
         n_accepted += accepted_this_step;
 
-        if (stopped) break;
-
-        // If we rejected, id_last is already set to the target's token
-        // If all accepted, id_last is the bonus token
-        // Update n_past for both models
+        // Update positions and clear rejected KV entries
         n_past_tgt += accepted_this_step;
-        n_past_dft = n_past_tgt;  // Re-sync draft to target position
+        n_past_dft = n_past_tgt;  // re-sync draft
 
-        // Clear rejected KV entries from both models
         llama_memory_seq_rm(llama_get_memory(target_ctx_), 0, n_past_tgt, -1);
         llama_memory_seq_rm(llama_get_memory(draft_ctx_), 0, n_past_dft, -1);
     }
 
-done:
+    llama_batch_free(batch_tgt);
+    llama_batch_free(batch_dft);
+
     if (out_n_predict)  *out_n_predict  = n_predict;
     if (out_n_drafted)  *out_n_drafted  = n_drafted;
     if (out_n_accepted) *out_n_accepted = n_accepted;

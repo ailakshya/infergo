@@ -1436,7 +1436,7 @@ InferSpeculative infer_speculative_create(InferLLM     target,
         auto* sh = new SpecHandle();
         if (!sh->decoder.Init(
                 llama_get_model(h->engine.Context()),
-                h->engine.Context(),
+                static_cast<int>(llama_n_ctx(h->engine.Context())),
                 draft_path,
                 n_gpu_layers,
                 n_draft > 0 ? n_draft : 5)) {

@@ -30,10 +30,12 @@ public:
     SpeculativeDecoder(const SpeculativeDecoder&) = delete;
     SpeculativeDecoder& operator=(const SpeculativeDecoder&) = delete;
 
-    /// Load the draft model. target_ctx is borrowed (not owned).
+    /// Load the draft model and create a dedicated target context.
+    /// target_model is borrowed (not owned). A separate context is created
+    /// for the target model to avoid conflicts with the scheduler.
     /// Returns false on failure (incompatible vocab, load error, etc.)
-    bool Init(llama_model* target_model,
-              llama_context* target_ctx,
+    bool Init(const llama_model* target_model,
+              int target_ctx_size,
               const std::string& draft_path,
               int n_gpu_layers,
               int n_draft);
@@ -61,8 +63,8 @@ public:
     int NDraft() const noexcept { return n_draft_; }
 
 private:
-    llama_model*   target_model_  = nullptr;  // borrowed
-    llama_context* target_ctx_    = nullptr;  // borrowed
+    const llama_model* target_model_ = nullptr;  // borrowed
+    llama_context* target_ctx_    = nullptr;  // OWNED — dedicated context for speculative
     llama_model*   draft_model_   = nullptr;  // owned
     llama_context* draft_ctx_     = nullptr;  // owned
     int            n_draft_       = 5;
