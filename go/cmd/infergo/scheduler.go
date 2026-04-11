@@ -57,6 +57,7 @@ type schedulerModel struct {
 	batchTimeout    time.Duration // how long to wait for more requests after first arrives
 	gcInterval      int           // call runtime.GC() every N completed requests (0 = disabled)
 	completedReqs   int           // count of requests completed since last GC (scheduler goroutine only)
+	specDecoder     *llm.SpeculativeDecoder // optional: speculative decoding engine
 }
 
 // newSchedulerModel creates and starts a schedulerModel for the given model.
@@ -92,6 +93,9 @@ func newSchedulerModel(m *llm.Model, modelName string, activeSeqGauge prometheus
 func (s *schedulerModel) Close() {
 	close(s.stopCh)
 	s.wg.Wait()
+	if s.specDecoder != nil {
+		s.specDecoder.Close()
+	}
 	s.m.Close()
 }
 
@@ -103,6 +107,18 @@ func (s *schedulerModel) Generate(ctx context.Context, prompt string, maxTokens 
 		return "", 0, 0, fmt.Errorf("tokenize: %w", err)
 	}
 	promptToks := len(tokens)
+
+	// Speculative decoding fast path: entire generate loop runs in C++.
+	// Bypasses the per-token scheduler — one CGo call for the full generation.
+	_, hasGrammar := server.GrammarFromContext(ctx)
+	if s.specDecoder != nil && !hasGrammar {
+		text, stats, err := s.specDecoder.Generate(tokens, maxTokens, temp)
+		if err != nil {
+			return "", promptToks, 0, fmt.Errorf("speculative: %w", err)
+		}
+		_ = stats // TODO: expose stats via metrics
+		return text, promptToks, stats.Predicted, nil
+	}
 
 	grammar, _ := server.GrammarFromContext(ctx)
 	tokenCh, err := s.enqueue(ctx, tokens, maxTokens, temp, grammar)

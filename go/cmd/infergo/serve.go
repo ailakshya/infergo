@@ -49,6 +49,13 @@ func parseModelSpec(spec string) (name, path string) {
 	return modelName(spec), spec
 }
 
+// Package-level speculative decoding config (set by --draft-model flag).
+// Used by loadLLM to configure the scheduler.
+var (
+	specDraftPath string
+	specNDraft    int
+)
+
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	var models modelFlags
@@ -78,7 +85,13 @@ func runServe(args []string) {
 	batchThreshold := fs.Int("batch-threshold", 3, "queue depth at which adaptive detector switches from single-image to batch mode")
 	warmupBackends := fs.Bool("warmup-backends", true, "warm up all detection backends with dummy inferences at startup")
 	detectGPUSlots := fs.Int("detect-gpu-slots", 8, "max concurrent GPU detection inference slots (overflow routes to fallback)")
+	draftModel  := fs.String("draft-model", "", "path to draft GGUF model for speculative decoding (must share vocab with target LLM)")
+	nDraft      := fs.Int("n-draft", 5, "number of tokens to draft per speculative step")
 	fs.Parse(args)
+
+	// Store speculative config for loadLLM.
+	specDraftPath = *draftModel
+	specNDraft = *nDraft
 
 	// Apply aggressive GC tuning to reduce heap growth under sustained load.
 	// GOGC=50 means GC triggers at 50% heap growth (default is 100%).
@@ -295,7 +308,20 @@ func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, g
 		return err
 	}
 	log.Printf("scheduler tuning: max-batch-size=%d, batch-timeout-ms=%d, gc-interval=%d", maxBatchSize, batchTimeoutMs, gcInterval)
-	return reg.Load(name, newSchedulerModel(m, name, metrics.ActiveSequences, metrics, maxBatchSize, batchTimeoutMs, gcInterval))
+	sm := newSchedulerModel(m, name, metrics.ActiveSequences, metrics, maxBatchSize, batchTimeoutMs, gcInterval)
+
+	// Enable speculative decoding if a draft model is configured.
+	if specDraftPath != "" {
+		sd, err := llm.NewSpeculativeDecoder(m, specDraftPath, gpuLayers, specNDraft)
+		if err != nil {
+			log.Printf("[infergo] WARNING: speculative decoding disabled: %v", err)
+		} else {
+			sm.specDecoder = sd
+			log.Printf("[infergo] speculative decoding enabled: draft=%s, n_draft=%d", filepath.Base(specDraftPath), specNDraft)
+		}
+	}
+
+	return reg.Load(name, sm)
 }
 
 // parseTensorSplit parses a comma-separated string of floats into []float32.
