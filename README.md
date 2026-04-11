@@ -65,6 +65,7 @@ infergo serve --model models/llama3-8b-q4.gguf --port 9090
 - [Supported models](#supported-models)
 - [Inference backends](#inference-backends)
 - [Object detection](docs/detection.md)
+- [Video pipeline](docs/video-annotation.md)
 - [Multi-GPU](#multi-gpu)
 - [Kubernetes](#kubernetes)
 - [Testing](#testing)
@@ -100,6 +101,14 @@ infergo serve --model models/llama3-8b-q4.gguf --port 9090
 - **TensorRT backend** — 1.5-2x faster ONNX detection on NVIDIA GPUs
 - **Torch backend** — TorchScript inference with shared CUDA allocator, lower VRAM than TRT
 - **CoreML backend** — Apple Silicon ONNX model acceleration
+- **C video pipeline** — decode → detect → annotate → JPEG all in C; 63 FPS dual 2560x1440 cameras (2.6× Python)
+- **Zero-copy decode** — `NextFrameZeroCopy()` returns C buffer pointer; no frame data crosses CGo
+- **sws_scale resize** — `SetOutputSize(960, 540)` resizes during FFmpeg color conversion at zero extra cost
+- **TurboJPEG encoding** — C-accelerated JPEG: 2ms vs 15ms Go stdlib (7.5× faster)
+- **Frame annotation** — `AnnotateFull()`: boxes + labels + lines + polygons + text + resize + JPEG in one C call
+- **ByteTrack tracking** — multi-object tracker with Kalman filter and Hungarian matching
+- **Video decode/encode** — NVDEC hardware decode, NVENC hardware encode, HLS streaming
+- **[Video annotation guide](docs/video-annotation.md)** — full API reference for the video pipeline
 - **Graceful shutdown** — in-flight requests complete before exit; SIGTERM-safe
 - **Docker** — CPU image **0.18 GB**, CUDA image ~2.5 GB; weights via volume mount
 
