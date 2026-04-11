@@ -90,7 +90,7 @@ static uint8_t* encode_jpeg(const uint8_t* rgb, int w, int h,
     unsigned long jpeg_size = 0;
 
     int ret = tjCompress2(tj,
-                          rgb, w, 0, h, TJPF_RGB,
+                          rgb, w, 0, h, TJPF_BGR,
                           &jpeg_buf, &jpeg_size,
                           TJSAMP_420, quality, TJFLAG_FASTDCT);
     if (ret != 0) {
@@ -550,7 +550,7 @@ uint8_t* FrameAnnotator::annotate_full(
         thread_local tjhandle tj = tjInitCompress();
         unsigned char* jpegBuf = nullptr;
         unsigned long jpegSize = 0;
-        int rc = tjCompress2(tj, buf, w, 0, h, TJPF_RGB,
+        int rc = tjCompress2(tj, buf, w, 0, h, TJPF_BGR,
                              &jpegBuf, &jpegSize, TJSAMP_420, quality, TJFLAG_FASTDCT);
         if (rc == 0 && jpegBuf) {
             result = static_cast<uint8_t*>(malloc(jpegSize));
