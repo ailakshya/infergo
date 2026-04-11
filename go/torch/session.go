@@ -89,6 +89,10 @@ func NewSession(provider string, deviceID int) (*Session, error) {
 	return s, nil
 }
 
+// Ptr returns the raw C session handle for use with pipeline functions
+// like infer_pipeline_detect_frame. The caller must not free the pointer.
+func (s *Session) Ptr() unsafe.Pointer { return s.ptr }
+
 // Close destroys the session. Safe to call multiple times.
 func (s *Session) Close() {
 	if s.ptr == nil {
