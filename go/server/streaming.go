@@ -80,7 +80,8 @@ func (s *sseWriter) sendDone() {
 
 // streamChatCompletions handles the streaming path of /v1/chat/completions.
 // Called from handleChatCompletions when req.Stream == true.
-func (s *Server) streamChatCompletions(w http.ResponseWriter, r *http.Request, req ChatCompletionRequest) {
+// ctx carries the grammar context value (if any) set by the caller.
+func (s *Server) streamChatCompletions(w http.ResponseWriter, ctx context.Context, req ChatCompletionRequest) {
 	ref, err := s.registry.Get(req.Model)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -96,7 +97,7 @@ func (s *Server) streamChatCompletions(w http.ResponseWriter, r *http.Request, r
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("model %q does not support chat completions", req.Model))
 			return
 		}
-		s.streamViaBatch(w, r, req, llm)
+		s.streamViaBatch(w, ctx, req, llm)
 		return
 	}
 
@@ -106,7 +107,7 @@ func (s *Server) streamChatCompletions(w http.ResponseWriter, r *http.Request, r
 		maxToks = 256
 	}
 
-	tokens, err := sllm.Stream(r.Context(), prompt, maxToks, req.Temp)
+	tokens, err := sllm.Stream(ctx, prompt, maxToks, req.Temp)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "stream failed: "+err.Error())
 		return
@@ -139,14 +140,14 @@ func (s *Server) streamChatCompletions(w http.ResponseWriter, r *http.Request, r
 
 // streamViaBatch buffers the full response then streams it as a single chunk.
 // Used when the model implements LLMModel but not StreamingLLMModel.
-func (s *Server) streamViaBatch(w http.ResponseWriter, r *http.Request, req ChatCompletionRequest, llm LLMModel) {
+func (s *Server) streamViaBatch(w http.ResponseWriter, ctx context.Context, req ChatCompletionRequest, llm LLMModel) {
 	prompt := buildPrompt(req.Messages)
 	maxToks := req.MaxTokens
 	if maxToks <= 0 {
 		maxToks = 256
 	}
 
-	text, _, _, err := llm.Generate(r.Context(), prompt, maxToks, req.Temp)
+	text, _, _, err := llm.Generate(ctx, prompt, maxToks, req.Temp)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "generation failed: "+err.Error())
 		return

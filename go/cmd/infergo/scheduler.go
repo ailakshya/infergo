@@ -27,14 +27,16 @@ type schedRequest struct {
 	tokens    []int32       // pre-tokenized prompt
 	maxTokens int           // max generation tokens
 	temp      float32       // sampling temperature
+	grammar   string        // GBNF grammar constraint (empty = none)
 	tokenCh   chan TokenEvent // scheduler writes here; closed when done
 }
 
 // activeSeq tracks one in-progress sequence inside the scheduler goroutine.
 type activeSeq struct {
-	req *schedRequest
-	seq *llm.Sequence
-	gen int // tokens generated so far
+	req     *schedRequest
+	seq     *llm.Sequence
+	sampler *llm.Sampler // grammar-constrained sampler (nil = use Go-side sampling)
+	gen     int          // tokens generated so far
 }
 
 // schedulerModel wraps an llm.Model with a continuous batching scheduler.
@@ -102,7 +104,8 @@ func (s *schedulerModel) Generate(ctx context.Context, prompt string, maxTokens 
 	}
 	promptToks := len(tokens)
 
-	tokenCh, err := s.enqueue(ctx, tokens, maxTokens, temp)
+	grammar, _ := server.GrammarFromContext(ctx)
+	tokenCh, err := s.enqueue(ctx, tokens, maxTokens, temp, grammar)
 	if err != nil {
 		return "", promptToks, 0, err
 	}
@@ -128,7 +131,8 @@ func (s *schedulerModel) Stream(ctx context.Context, prompt string, maxTokens in
 		return nil, fmt.Errorf("tokenize: %w", err)
 	}
 
-	tokenCh, err := s.enqueue(ctx, tokens, maxTokens, temp)
+	grammar, _ := server.GrammarFromContext(ctx)
+	tokenCh, err := s.enqueue(ctx, tokens, maxTokens, temp, grammar)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +156,7 @@ func (s *schedulerModel) Stream(ctx context.Context, prompt string, maxTokens in
 
 // enqueue submits a pre-tokenized request to the scheduler.
 // Returns the channel to read tokens from, or an error.
-func (s *schedulerModel) enqueue(ctx context.Context, tokens []int32, maxTokens int, temp float32) (<-chan TokenEvent, error) {
+func (s *schedulerModel) enqueue(ctx context.Context, tokens []int32, maxTokens int, temp float32, grammar string) (<-chan TokenEvent, error) {
 	if maxTokens <= 0 {
 		maxTokens = 256
 	}
@@ -164,6 +168,7 @@ func (s *schedulerModel) enqueue(ctx context.Context, tokens []int32, maxTokens 
 		tokens:    tokens,
 		maxTokens: maxTokens,
 		temp:      temp,
+		grammar:   grammar,
 		tokenCh:   make(chan TokenEvent, 64),
 	}
 	select {
@@ -219,8 +224,7 @@ func (s *schedulerModel) run() {
 						deadline.Stop()
 						for _, a := range active {
 							close(a.req.tokenCh)
-							a.seq.Close()
-							s.decActiveSeq()
+							s.closeActiveSeq(a)
 						}
 						return
 					}
@@ -261,8 +265,7 @@ func (s *schedulerModel) run() {
 			for _, a := range active {
 				a.req.tokenCh <- TokenEvent{Err: err}
 				close(a.req.tokenCh)
-				a.seq.Close()
-				s.decActiveSeq()
+				s.closeActiveSeq(a)
 			}
 			active = active[:0]
 			continue
@@ -274,20 +277,27 @@ func (s *schedulerModel) run() {
 		// Sample one token per sequence and route it.
 		var next []*activeSeq
 		for _, a := range active {
-			tok, err := a.seq.SampleToken(a.req.temp, 0.9)
+			var tok int32
+			var err error
+			if a.sampler != nil {
+				// Grammar-constrained sampling: zero-copy path.
+				// Reads logits directly from C++ SeqHandle — no data crosses CGo.
+				tok, err = a.sampler.SampleSeq(a.seq)
+			} else {
+				// Standard Go-side sampling.
+				tok, err = a.seq.SampleToken(a.req.temp, 0.9)
+			}
 			if err != nil {
 				a.req.tokenCh <- TokenEvent{Err: err}
 				close(a.req.tokenCh)
-				a.seq.Close()
-				s.decActiveSeq()
+				s.closeActiveSeq(a)
 				continue
 			}
 
 			// End of generation: EOG token or max_tokens reached.
 			if s.m.IsEOG(tok) || a.gen >= a.req.maxTokens {
 				close(a.req.tokenCh)
-				a.seq.Close()
-				s.decActiveSeq()
+				s.closeActiveSeq(a)
 				s.maybeGC()
 				continue
 			}
@@ -296,8 +306,7 @@ func (s *schedulerModel) run() {
 			if err != nil {
 				a.req.tokenCh <- TokenEvent{Err: err}
 				close(a.req.tokenCh)
-				a.seq.Close()
-				s.decActiveSeq()
+				s.closeActiveSeq(a)
 				continue
 			}
 
@@ -310,8 +319,7 @@ func (s *schedulerModel) run() {
 				next = append(next, a)
 			case <-a.req.ctx.Done():
 				close(a.req.tokenCh)
-				a.seq.Close()
-				s.decActiveSeq()
+				s.closeActiveSeq(a)
 			}
 		}
 		active = next
@@ -321,8 +329,7 @@ func (s *schedulerModel) run() {
 		case <-s.stopCh:
 			for _, a := range active {
 				close(a.req.tokenCh)
-				a.seq.Close()
-				s.decActiveSeq()
+				s.closeActiveSeq(a)
 			}
 			return
 		default:
@@ -356,10 +363,23 @@ func (s *schedulerModel) initSeq(req *schedRequest) *activeSeq {
 		close(req.tokenCh)
 		return nil
 	}
+
+	// Create grammar-constrained sampler if requested.
+	var sampler *llm.Sampler
+	if req.grammar != "" {
+		sampler, err = llm.NewGrammarSampler(s.m, req.grammar, "root", req.temp, 0.9, 0, 0)
+		if err != nil {
+			seq.Close()
+			req.tokenCh <- TokenEvent{Err: fmt.Errorf("grammar sampler: %w", err)}
+			close(req.tokenCh)
+			return nil
+		}
+	}
+
 	if s.activeSeqGauge != nil {
 		s.activeSeqGauge.Inc()
 	}
-	return &activeSeq{req: req, seq: seq}
+	return &activeSeq{req: req, seq: seq, sampler: sampler}
 }
 
 // decActiveSeq decrements the active-sequences gauge if one is configured.
@@ -367,6 +387,16 @@ func (s *schedulerModel) decActiveSeq() {
 	if s.activeSeqGauge != nil {
 		s.activeSeqGauge.Dec()
 	}
+}
+
+// closeActiveSeq closes the sequence, its grammar sampler (if any), and
+// decrements the active gauge. Centralises cleanup to avoid leaking samplers.
+func (s *schedulerModel) closeActiveSeq(a *activeSeq) {
+	if a.sampler != nil {
+		a.sampler.Close()
+	}
+	a.seq.Close()
+	s.decActiveSeq()
 }
 
 // maybeGC increments the completed-request counter and calls runtime.GC()
@@ -492,8 +522,7 @@ func (s *schedulerModel) pruneCancelled(active []*activeSeq) []*activeSeq {
 		select {
 		case <-a.req.ctx.Done():
 			close(a.req.tokenCh)
-			a.seq.Close()
-			s.decActiveSeq()
+			s.closeActiveSeq(a)
 		default:
 			out = append(out, a)
 		}

@@ -1242,6 +1242,179 @@ int infer_llm_kv_deserialize(InferLLM llm, int seq_id,
     }
 }
 
+// ─── Grammar-Constrained Sampler API ─────────────────────────────────────────
+
+// Internal handle: owns a llama_sampler chain with grammar + sampling stages.
+struct SamplerHandle {
+    llama_sampler* chain = nullptr;
+
+    ~SamplerHandle() {
+        if (chain) {
+            llama_sampler_free(chain);
+            chain = nullptr;
+        }
+    }
+};
+
+InferSampler infer_sampler_create(InferLLM     llm,
+                                   const char* grammar_str,
+                                   const char* grammar_root,
+                                   float       temperature,
+                                   float       top_p,
+                                   int         top_k,
+                                   uint32_t    seed) {
+    try {
+        if (llm == nullptr) {
+            infergo::set_last_error("infer_sampler_create: null llm");
+            return nullptr;
+        }
+        if (grammar_str == nullptr || grammar_str[0] == '\0') {
+            infergo::set_last_error("infer_sampler_create: grammar_str must not be NULL or empty");
+            return nullptr;
+        }
+
+        auto* h = static_cast<LLMHandle*>(llm);
+        const llama_vocab* vocab = llama_model_get_vocab(
+            llama_get_model(h->engine.Context()));
+
+        const char* root = (grammar_root != nullptr && grammar_root[0] != '\0')
+                           ? grammar_root : "root";
+
+        // Build sampler chain: grammar → temperature → top-k → top-p → dist
+        auto sparams = llama_sampler_chain_default_params();
+        sparams.no_perf = true;
+        llama_sampler* chain = llama_sampler_chain_init(sparams);
+
+        // Grammar constraint (must be first — filters illegal tokens before sampling)
+        llama_sampler* grammar = llama_sampler_init_grammar(vocab, grammar_str, root);
+        if (grammar == nullptr) {
+            llama_sampler_free(chain);
+            infergo::set_last_error("infer_sampler_create: failed to parse GBNF grammar");
+            return nullptr;
+        }
+        llama_sampler_chain_add(chain, grammar);
+
+        // Sampling stages
+        if (top_k > 0) {
+            llama_sampler_chain_add(chain, llama_sampler_init_top_k(top_k));
+        }
+        if (top_p > 0.0f && top_p < 1.0f) {
+            llama_sampler_chain_add(chain, llama_sampler_init_top_p(top_p, /*min_keep=*/1));
+        }
+        if (temperature > 0.0f) {
+            llama_sampler_chain_add(chain, llama_sampler_init_temp(temperature));
+        }
+        llama_sampler_chain_add(chain, llama_sampler_init_dist(seed));
+
+        auto* sh = new SamplerHandle();
+        sh->chain = chain;
+        return static_cast<InferSampler>(sh);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_sampler_create: unknown exception");
+        return nullptr;
+    }
+}
+
+int infer_sampler_sample(InferSampler smpl, const float* logits, int vocab_size) {
+    try {
+        if (smpl == nullptr || logits == nullptr || vocab_size <= 0) {
+            infergo::set_last_error("infer_sampler_sample: invalid argument");
+            return -1;
+        }
+        auto* sh = static_cast<SamplerHandle*>(smpl);
+
+        // Build token_data_array from raw logits
+        std::vector<llama_token_data> candidates(static_cast<size_t>(vocab_size));
+        for (int i = 0; i < vocab_size; ++i) {
+            candidates[i] = llama_token_data{
+                static_cast<llama_token>(i), logits[i], 0.0f};
+        }
+        llama_token_data_array cur_p = {
+            candidates.data(),
+            static_cast<size_t>(vocab_size),
+            /*selected=*/-1,
+            /*sorted=*/false
+        };
+
+        // Apply the full sampler chain (grammar + temp + top-k + top-p + dist)
+        llama_sampler_apply(sh->chain, &cur_p);
+
+        // Get the selected token
+        if (cur_p.selected < 0 || cur_p.selected >= static_cast<int64_t>(cur_p.size)) {
+            infergo::set_last_error("infer_sampler_sample: no token selected");
+            return -1;
+        }
+        llama_token token = cur_p.data[cur_p.selected].id;
+
+        // Advance grammar state
+        llama_sampler_accept(sh->chain, token);
+
+        return static_cast<int>(token);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_sampler_sample: unknown exception");
+        return -1;
+    }
+}
+
+int infer_sampler_sample_seq(InferSampler smpl, InferSeq seq) {
+    try {
+        if (smpl == nullptr || seq == nullptr) {
+            infergo::set_last_error("infer_sampler_sample_seq: invalid argument");
+            return -1;
+        }
+        auto* sh   = static_cast<SamplerHandle*>(smpl);
+        auto* seqh = static_cast<SeqHandle*>(seq);
+
+        if (seqh->logits.empty()) {
+            infergo::set_last_error("infer_sampler_sample_seq: no logits (call batch_decode first)");
+            return -1;
+        }
+
+        const int vocab_size = static_cast<int>(seqh->logits.size());
+        const float* logits  = seqh->logits.data();  // direct pointer — zero copy
+
+        // Build token_data_array pointing into the existing buffer
+        std::vector<llama_token_data> candidates(static_cast<size_t>(vocab_size));
+        for (int i = 0; i < vocab_size; ++i) {
+            candidates[i] = llama_token_data{
+                static_cast<llama_token>(i), logits[i], 0.0f};
+        }
+        llama_token_data_array cur_p = {
+            candidates.data(),
+            static_cast<size_t>(vocab_size),
+            /*selected=*/-1,
+            /*sorted=*/false
+        };
+
+        llama_sampler_apply(sh->chain, &cur_p);
+
+        if (cur_p.selected < 0 || cur_p.selected >= static_cast<int64_t>(cur_p.size)) {
+            infergo::set_last_error("infer_sampler_sample_seq: no token selected");
+            return -1;
+        }
+        llama_token token = cur_p.data[cur_p.selected].id;
+        llama_sampler_accept(sh->chain, token);
+        return static_cast<int>(token);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_sampler_sample_seq: unknown exception");
+        return -1;
+    }
+}
+
+void infer_sampler_free(InferSampler smpl) {
+    if (smpl == nullptr) return;
+    try { delete static_cast<SamplerHandle*>(smpl); } catch (...) {}
+}
+
 // ─── Preprocessing API ────────────────────────────────────────────────────────
 
 #ifdef INFER_PREPROCESS_AVAILABLE

@@ -81,13 +81,23 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
+// ResponseFormat specifies the output format for chat completions.
+// Supports OpenAI-compatible response_format field.
+type ResponseFormat struct {
+	// Type: "text" (default), "json_object" (any valid JSON), or "grammar" (custom GBNF).
+	Type string `json:"type"`
+	// Grammar is a custom GBNF grammar string. Only used when Type == "grammar".
+	Grammar string `json:"grammar,omitempty"`
+}
+
 // ChatCompletionRequest mirrors the OpenAI /v1/chat/completions body.
 type ChatCompletionRequest struct {
-	Model     string        `json:"model"`
-	Messages  []ChatMessage `json:"messages"`
-	MaxTokens int           `json:"max_tokens"`
-	Temp      float32       `json:"temperature"`
-	Stream    bool          `json:"stream"`
+	Model          string          `json:"model"`
+	Messages       []ChatMessage   `json:"messages"`
+	MaxTokens      int             `json:"max_tokens"`
+	Temp           float32         `json:"temperature"`
+	Stream         bool            `json:"stream"`
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 }
 
 // ChatCompletionResponse mirrors the OpenAI chat completion object.
@@ -335,8 +345,28 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve response_format to a GBNF grammar string (if any).
+	ctx := r.Context()
+	if req.ResponseFormat != nil {
+		switch req.ResponseFormat.Type {
+		case "json_object":
+			ctx = WithGrammar(ctx, JSONGrammar)
+		case "grammar":
+			if req.ResponseFormat.Grammar == "" {
+				writeError(w, http.StatusBadRequest, "response_format type 'grammar' requires a non-empty 'grammar' field")
+				return
+			}
+			ctx = WithGrammar(ctx, req.ResponseFormat.Grammar)
+		case "text", "":
+			// No grammar — default text output.
+		default:
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported response_format type: %q", req.ResponseFormat.Type))
+			return
+		}
+	}
+
 	if req.Stream {
-		s.streamChatCompletions(w, r, req)
+		s.streamChatCompletions(w, ctx, req)
 		return
 	}
 
@@ -360,7 +390,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		maxToks = 256
 	}
 
-	text, promptToks, genToks, err := llm.Generate(r.Context(), prompt, maxToks, req.Temp)
+	text, promptToks, genToks, err := llm.Generate(ctx, prompt, maxToks, req.Temp)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "generation failed: "+err.Error())
 		return
