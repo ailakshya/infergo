@@ -20,7 +20,28 @@ if(TARGET infer_preprocess)
     target_compile_definitions(infer_api PRIVATE INFER_PREPROCESS_AVAILABLE=1)
 endif()
 
+if(TARGET infer_torch)
+    target_link_libraries(infer_api PRIVATE infer_torch)
+    target_compile_definitions(infer_api PRIVATE INFER_TORCH_AVAILABLE=1)
+endif()
+
 target_link_libraries(infer_api PRIVATE infer_postprocess)
+
+if(TARGET infer_video)
+    target_link_libraries(infer_api PRIVATE infer_video)
+    target_compile_definitions(infer_api PRIVATE INFER_VIDEO_AVAILABLE=1)
+    # Propagate OpenCV availability for resized decoder in api.cpp
+    find_package(OpenCV QUIET COMPONENTS core imgproc)
+    if(OpenCV_FOUND)
+        target_include_directories(infer_api PRIVATE ${OpenCV_INCLUDE_DIRS})
+        target_link_libraries(infer_api PRIVATE ${OpenCV_LIBS})
+        target_compile_definitions(infer_api PRIVATE INFER_OPENCV_AVAILABLE=1)
+    endif()
+endif()
+
+if(TARGET infer_cuda_monitor)
+    target_link_libraries(infer_api PRIVATE infer_cuda_monitor)
+endif()
 
 set_target_properties(infer_api PROPERTIES
     BUILD_RPATH "${CMAKE_SOURCE_DIR}/tokenizer-rs/target/release"
@@ -54,6 +75,14 @@ endif()
 
 if(TARGET infer_preprocess)
     target_compile_definitions(api_test PRIVATE INFER_PREPROCESS_AVAILABLE=1)
+endif()
+
+if(TARGET infer_torch)
+    target_compile_definitions(api_test PRIVATE INFER_TORCH_AVAILABLE=1)
+endif()
+
+if(TARGET infer_video)
+    target_compile_definitions(api_test PRIVATE INFER_VIDEO_AVAILABLE=1)
 endif()
 
 include(GoogleTest)

@@ -4,6 +4,7 @@ infergo — Native Python bindings for the infergo inference engine.
 
 from .llm import LLM
 from .session import Session
+from .torch_session import TorchSession
 from .tokenizer import Tokenizer
 from .tensor import Tensor
 from . import preprocess, postprocess
@@ -23,6 +24,7 @@ __version__ = "0.1.0"
 __all__ = [
     "LLM",
     "Session",
+    "TorchSession",
     "Tokenizer",
     "Tensor",
     "preprocess",

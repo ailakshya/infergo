@@ -303,3 +303,173 @@ func TestRouter_Detect_InvalidBase64(t *testing.T) {
 		t.Errorf("expected 400, got %d", rr.Code)
 	}
 }
+
+// ─── POST /v1/detect/binary ──────────────────────────────────────────────────
+
+func doBinaryRequest(t *testing.T, srv http.Handler, path string, body []byte, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	return rr
+}
+
+func TestHandleDetectBinary(t *testing.T) {
+	srv, reg := newTestServer(t)
+	reg.Load("yolo", &mockDetector{objs: []server.DetectedObject{
+		{X1: 10, Y1: 20, X2: 50, Y2: 60, ClassID: 0, Confidence: 0.9},
+	}})
+
+	rr := doBinaryRequest(t, srv,
+		"/v1/detect/binary?model=yolo&conf=0.3&iou=0.5",
+		[]byte("fakeimagebytes"),
+		map[string]string{"Content-Type": "image/jpeg"},
+	)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp server.DetectResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Model != "yolo" {
+		t.Errorf("expected model=yolo, got %q", resp.Model)
+	}
+	if len(resp.Objects) != 1 {
+		t.Fatalf("expected 1 object, got %d", len(resp.Objects))
+	}
+	if resp.Objects[0].Confidence != 0.9 {
+		t.Errorf("unexpected confidence: %v", resp.Objects[0].Confidence)
+	}
+}
+
+func TestHandleDetectBinary_ModelFromHeader(t *testing.T) {
+	srv, reg := newTestServer(t)
+	reg.Load("yolo", &mockDetector{objs: []server.DetectedObject{
+		{X1: 1, Y1: 2, X2: 3, Y2: 4, ClassID: 0, Confidence: 0.8},
+	}})
+
+	rr := doBinaryRequest(t, srv,
+		"/v1/detect/binary",
+		[]byte("fakeimagebytes"),
+		map[string]string{"Content-Type": "image/jpeg", "X-Model": "yolo"},
+	)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp server.DetectResponse
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if resp.Model != "yolo" {
+		t.Errorf("expected model=yolo, got %q", resp.Model)
+	}
+}
+
+func TestHandleDetectBinaryNoModel(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	rr := doBinaryRequest(t, srv,
+		"/v1/detect/binary",
+		[]byte("fakeimagebytes"),
+		map[string]string{"Content-Type": "image/jpeg"},
+	)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleDetectBinaryEmptyBody(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	rr := doBinaryRequest(t, srv,
+		"/v1/detect/binary?model=yolo",
+		nil,
+		map[string]string{"Content-Type": "image/jpeg"},
+	)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleDetectBinary_ModelNotFound(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	rr := doBinaryRequest(t, srv,
+		"/v1/detect/binary?model=nonexistent",
+		[]byte("fakeimagebytes"),
+		map[string]string{"Content-Type": "image/jpeg"},
+	)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleDetectBinary_DefaultThresholds(t *testing.T) {
+	srv, reg := newTestServer(t)
+	reg.Load("yolo", &mockDetector{objs: []server.DetectedObject{}})
+
+	// No conf/iou params — should use defaults (0.25, 0.45) and not error.
+	rr := doBinaryRequest(t, srv,
+		"/v1/detect/binary?model=yolo",
+		[]byte("fakeimagebytes"),
+		map[string]string{"Content-Type": "image/jpeg"},
+	)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func BenchmarkHandleDetect(b *testing.B) {
+	reg := server.NewRegistry()
+	srv := server.NewServer(reg)
+	reg.Load("yolo", &mockDetector{objs: []server.DetectedObject{
+		{X1: 10, Y1: 20, X2: 50, Y2: 60, ClassID: 0, Confidence: 0.9},
+	}})
+
+	// Create a ~100KB base64 payload to simulate realistic overhead.
+	fakeImg := make([]byte, 75*1024) // 75KB raw → ~100KB base64
+	imgB64 := base64.StdEncoding.EncodeToString(fakeImg)
+	body, _ := json.Marshal(server.DetectRequest{
+		Model:    "yolo",
+		ImageB64: imgB64,
+	})
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/detect", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			b.Fatalf("expected 200, got %d", rr.Code)
+		}
+	}
+}
+
+func BenchmarkHandleDetectBinary(b *testing.B) {
+	reg := server.NewRegistry()
+	srv := server.NewServer(reg)
+	reg.Load("yolo", &mockDetector{objs: []server.DetectedObject{
+		{X1: 10, Y1: 20, X2: 50, Y2: 60, ClassID: 0, Confidence: 0.9},
+	}})
+
+	// 75KB raw image bytes — no base64 overhead.
+	fakeImg := make([]byte, 75*1024)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/detect/binary?model=yolo&conf=0.25&iou=0.45", bytes.NewReader(fakeImg))
+		req.Header.Set("Content-Type", "image/jpeg")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			b.Fatalf("expected 200, got %d", rr.Code)
+		}
+	}
+}

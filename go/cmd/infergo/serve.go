@@ -20,6 +20,7 @@ import (
 	"github.com/ailakshya/infergo/llm"
 	"github.com/ailakshya/infergo/onnx"
 	"github.com/ailakshya/infergo/server"
+	"github.com/ailakshya/infergo/torch"
 )
 
 const shutdownTimeout = 15 * time.Second
@@ -51,8 +52,9 @@ func parseModelSpec(spec string) (name, path string) {
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	var models modelFlags
-	fs.Var(&models, "model", "model to load; repeatable. Format: [name:]path.{gguf,onnx}")
+	fs.Var(&models, "model", "model to load; repeatable. Format: [name:]path.{gguf,onnx,pt,pth}")
 	provider  := fs.String("provider", "cpu", "execution provider: cpu|cuda|tensorrt|coreml")
+	backend   := fs.String("backend", "auto", "inference backend: auto|onnx|tensorrt|torch")
 	port      := fs.Int("port", 9090, "HTTP listen port")
 	gpuLayers := fs.Int("gpu-layers", 999, "number of transformer layers to offload to GPU (LLM only)")
 	ctxSize   := fs.Int("ctx-size", 16384, "total KV cache tokens (divided by --max-seqs to get per-sequence budget)")
@@ -71,6 +73,11 @@ func runServe(args []string) {
 	gcInterval   := fs.Int("gc-interval", 100, "call runtime.GC() every N completed requests (0 = disabled)")
 	maxBatchSize := fs.Int("max-batch-size", 0, "max sequences per BatchDecode call, 0 = unlimited (set >0 to cap batch size)")
 	batchTimeout := fs.Int("batch-timeout-ms", 0, "ms to wait for more requests after the first arrives before firing a batch (0 = no wait)")
+	adaptiveFlag := fs.Bool("adaptive", false, "enable adaptive hybrid detection: auto-route requests to the optimal backend based on queue depth")
+	safeModeFlag := fs.Bool("safe-mode", false, "disable adaptive detection and batch loop; use single-image libtorch only")
+	batchThreshold := fs.Int("batch-threshold", 3, "queue depth at which adaptive detector switches from single-image to batch mode")
+	warmupBackends := fs.Bool("warmup-backends", true, "warm up all detection backends with dummy inferences at startup")
+	detectGPUSlots := fs.Int("detect-gpu-slots", 8, "max concurrent GPU detection inference slots (overflow routes to fallback)")
 	fs.Parse(args)
 
 	// Apply aggressive GC tuning to reduce heap growth under sustained load.
@@ -116,10 +123,21 @@ func runServe(args []string) {
 	health := server.NewHealthChecker(reg, *minModels)
 	metrics := server.NewMetrics()
 
+	if err := validateBackend(*backend); err != nil {
+		fmt.Fprintf(os.Stderr, "serve: --backend: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Build adaptive config from env vars, then override with CLI flags.
+	adaptiveCfg := LoadAdaptiveConfig()
+	// CLI flags override env defaults when explicitly set.
+	adaptiveCfg.Warmup = *warmupBackends
+	adaptiveCfg.GPUSlots = *detectGPUSlots
+
 	// Load all specified models.
 	for _, spec := range models {
 		name, path := parseModelSpec(spec)
-		if err := loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit, *pipelineStages, *gcInterval, *maxBatchSize, *batchTimeout); err != nil {
+		if err := loadModel(reg, metrics, name, path, *provider, *backend, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit, *pipelineStages, *gcInterval, *maxBatchSize, *batchTimeout, *adaptiveFlag, *safeModeFlag, *batchThreshold, adaptiveCfg); err != nil {
 			log.Fatalf("failed to load model %q: %v", spec, err)
 		}
 		log.Printf("loaded model %q (%s)", name, path)
@@ -132,7 +150,7 @@ func runServe(args []string) {
 
 	// Inject the hot-reload function so POST /v1/admin/reload works.
 	apiSrv.SetReloader(func(name, path string) error {
-		return loadModel(reg, metrics, name, path, *provider, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit, *pipelineStages, *gcInterval, *maxBatchSize, *batchTimeout)
+		return loadModel(reg, metrics, name, path, *provider, *backend, *gpuLayers, *ctxSize, *threads, *maxSeqs, tensorSplit, *pipelineStages, *gcInterval, *maxBatchSize, *batchTimeout, *adaptiveFlag, *safeModeFlag, *batchThreshold, adaptiveCfg)
 	})
 
 	var v1Handler http.Handler = server.WrapTracing(metrics.WrapServer(apiSrv), "infergo.v1")
@@ -197,15 +215,55 @@ func modelName(path string) string {
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
-func loadModel(reg *server.Registry, metrics *server.Metrics, name, path, provider string, gpuLayers, ctxSize, threads, maxSeqs int, tensorSplit []float32, pipelineStages, gcInterval, maxBatchSize, batchTimeoutMs int) error {
+func loadModel(reg *server.Registry, metrics *server.Metrics, name, path, provider, backend string, gpuLayers, ctxSize, threads, maxSeqs int, tensorSplit []float32, pipelineStages, gcInterval, maxBatchSize, batchTimeoutMs int, adaptive, safeMode bool, batchThreshold int, adaptiveCfg AdaptiveConfig) error {
 	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".gguf":
+
+	// Resolve effective backend: explicit flag overrides auto-detection.
+	effectiveBackend := backend
+	if effectiveBackend == "auto" {
+		switch ext {
+		case ".gguf":
+			effectiveBackend = "llm"
+		case ".onnx":
+			effectiveBackend = "onnx"
+		case ".pt", ".pth":
+			effectiveBackend = "torch"
+		default:
+			return fmt.Errorf("unsupported model extension %q (want .gguf, .onnx, .pt, or .pth)", ext)
+		}
+	}
+
+	// --adaptive backend: build an AdaptiveDetector from all available backends.
+	if effectiveBackend == "adaptive" {
+		return loadAdaptive(reg, name, path, provider, batchThreshold, adaptiveCfg)
+	}
+
+	// --safe-mode: disable batch loop, use single-image libtorch only.
+	if safeMode && (effectiveBackend == "torch") {
+		return loadTorchSafeMode(reg, name, path, provider)
+	}
+
+	// --adaptive flag (not backend): wrap torch detection in adaptive if possible.
+	if adaptive && effectiveBackend == "torch" {
+		lname := strings.ToLower(filepath.Base(path))
+		if strings.Contains(lname, "yolo") {
+			return loadAdaptive(reg, name, path, provider, batchThreshold, adaptiveCfg)
+		}
+	}
+
+	switch effectiveBackend {
+	case "llm":
 		return loadLLM(reg, metrics, name, path, gpuLayers, ctxSize, threads, maxSeqs, tensorSplit, pipelineStages, gcInterval, maxBatchSize, batchTimeoutMs)
-	case ".onnx":
+	case "onnx", "tensorrt":
 		return loadONNX(reg, name, path, provider)
+	case "torch":
+		return loadTorch(reg, name, path, provider)
 	default:
-		return fmt.Errorf("unsupported model extension %q (want .gguf or .onnx)", ext)
+		// For .gguf files with a non-auto backend, still use LLM.
+		if ext == ".gguf" {
+			return loadLLM(reg, metrics, name, path, gpuLayers, ctxSize, threads, maxSeqs, tensorSplit, pipelineStages, gcInterval, maxBatchSize, batchTimeoutMs)
+		}
+		return fmt.Errorf("unsupported backend %q for extension %q", effectiveBackend, ext)
 	}
 }
 
@@ -310,6 +368,16 @@ func validateMode(mode string) error {
 	}
 }
 
+// validateBackend returns nil if backend is one of the allowed values.
+func validateBackend(backend string) error {
+	switch backend {
+	case "auto", "onnx", "tensorrt", "torch", "adaptive":
+		return nil
+	default:
+		return fmt.Errorf("invalid backend %q: must be auto, onnx, tensorrt, torch, or adaptive", backend)
+	}
+}
+
 // loadDetection creates a YOLOv8 detection model from an ONNX model path.
 func loadDetection(modelPath, provider string) (*detectionAdapter, error) {
 	sess, err := onnx.NewSession(provider, 0)
@@ -321,4 +389,194 @@ func loadDetection(modelPath, provider string) (*detectionAdapter, error) {
 		return nil, fmt.Errorf("loadDetection: load model: %w", err)
 	}
 	return &detectionAdapter{sess: sess}, nil
+}
+
+// torchAdapter is a placeholder for torch models that lack a recognized
+// pipeline (no YOLO filename pattern). It registers the model in /v1/models
+// without real inference capability.
+type torchAdapter struct {
+	path string
+}
+
+func (a *torchAdapter) Close() {}
+
+func loadTorch(reg *server.Registry, name, path, provider string) error {
+	// Verify file exists before registering.
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("model file not found: %w", err)
+	}
+
+	// If filename contains "yolo", treat as detection model.
+	lname := strings.ToLower(filepath.Base(path))
+	if strings.Contains(lname, "yolo") {
+		log.Printf("loading %s as detection model (YOLOv8, torch)", filepath.Base(path))
+		adapter, err := loadTorchDetection(path, provider)
+		if err != nil {
+			return fmt.Errorf("load torch detection model: %w", err)
+		}
+		return reg.Load(name, adapter)
+	}
+
+	// Fall back to plain torch placeholder (appears in /v1/models only).
+	return reg.Load(name, &torchAdapter{path: path})
+}
+
+// loadTorchDetection creates a YOLOv8 detection model from a TorchScript model path.
+// It starts a batch loop goroutine that accumulates concurrent detection requests
+// and processes them in one CGo call to amortize the ~2ms Go-to-C overhead.
+func loadTorchDetection(modelPath, provider string) (*torchDetectionAdapter, error) {
+	sess, err := torch.NewSession(provider, 0)
+	if err != nil {
+		return nil, fmt.Errorf("loadTorchDetection: new session: %w", err)
+	}
+	if err := sess.Load(modelPath); err != nil {
+		sess.Close()
+		return nil, fmt.Errorf("loadTorchDetection: load model: %w", err)
+	}
+
+	adapter := &torchDetectionAdapter{
+		sess:     sess,
+		requests: make(chan *detectRequest, 64),
+	}
+	go adapter.batchLoop()
+	log.Printf("torch detection: batch loop started (max_batch=8, max_wait=2ms)")
+
+	return adapter, nil
+}
+
+// loadTorchSingle creates a YOLOv8 torch detection adapter WITHOUT the batch loop.
+// Used as the single-image backend in adaptive mode, or as the sole backend
+// in safe mode.
+func loadTorchSingle(modelPath, provider string) (*torchDetectionAdapter, error) {
+	sess, err := torch.NewSession(provider, 0)
+	if err != nil {
+		return nil, fmt.Errorf("loadTorchSingle: new session: %w", err)
+	}
+	if err := sess.Load(modelPath); err != nil {
+		sess.Close()
+		return nil, fmt.Errorf("loadTorchSingle: load model: %w", err)
+	}
+	// No batch loop — requests is nil, so Detect uses single-image path.
+	return &torchDetectionAdapter{sess: sess, requests: nil}, nil
+}
+
+// loadTorchSafeMode loads a torch YOLO model with only the single-image path
+// (no batch loop, no adaptive). This is the most conservative configuration.
+func loadTorchSafeMode(reg *server.Registry, name, path, provider string) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("model file not found: %w", err)
+	}
+	lname := strings.ToLower(filepath.Base(path))
+	if !strings.Contains(lname, "yolo") {
+		return reg.Load(name, &torchAdapter{path: path})
+	}
+
+	log.Printf("safe-mode: loading %s as single-image detection (no batch, no adaptive)", filepath.Base(path))
+	adapter, err := loadTorchSingle(path, provider)
+	if err != nil {
+		return fmt.Errorf("load torch detection (safe-mode): %w", err)
+	}
+	return reg.Load(name, adapter)
+}
+
+// loadAdaptive builds an AdaptiveDetector that wraps all available backends
+// for the given model path. It probes for sibling files (.onnx alongside .pt
+// and vice versa) to load as many backends as possible.
+func loadAdaptive(reg *server.Registry, name, modelPath, provider string, batchThreshold int, adaptiveCfg AdaptiveConfig) error {
+	if _, err := os.Stat(modelPath); err != nil {
+		return fmt.Errorf("model file not found: %w", err)
+	}
+
+	lname := strings.ToLower(filepath.Base(modelPath))
+	if !strings.Contains(lname, "yolo") {
+		return fmt.Errorf("adaptive backend only supports YOLO models, got %q", filepath.Base(modelPath))
+	}
+
+	ext := strings.ToLower(filepath.Ext(modelPath))
+	basePath := strings.TrimSuffix(modelPath, filepath.Ext(modelPath))
+	// Handle double extensions like .torchscript.pt
+	if strings.HasSuffix(strings.ToLower(basePath), ".torchscript") {
+		basePath = strings.TrimSuffix(basePath, filepath.Ext(basePath))
+	}
+
+	var opts AdaptiveOpts
+	opts.BatchThreshold = batchThreshold
+	opts.Config = adaptiveCfg
+
+	// Determine which file is the primary and probe for siblings.
+	var torchPath, onnxPath string
+
+	switch ext {
+	case ".pt", ".pth":
+		torchPath = modelPath
+		// Probe for sibling ONNX file.
+		for _, candidate := range []string{basePath + ".onnx"} {
+			if _, err := os.Stat(candidate); err == nil {
+				onnxPath = candidate
+				break
+			}
+		}
+	case ".onnx":
+		onnxPath = modelPath
+		// Probe for sibling TorchScript file.
+		for _, candidate := range []string{
+			basePath + ".torchscript.pt",
+			basePath + ".pt",
+		} {
+			if _, err := os.Stat(candidate); err == nil {
+				torchPath = candidate
+				break
+			}
+		}
+	default:
+		return fmt.Errorf("adaptive: unsupported extension %q (want .pt, .pth, or .onnx)", ext)
+	}
+
+	// Load torch backends (single + batch) if available.
+	if torchPath != "" {
+		single, err := loadTorchSingle(torchPath, provider)
+		if err != nil {
+			log.Printf("adaptive: torch single-image failed: %v (continuing)", err)
+		} else {
+			opts.TorchSingle = single
+			log.Printf("adaptive: loaded torch single-image from %s", filepath.Base(torchPath))
+		}
+
+		batch, err := loadTorchDetection(torchPath, provider)
+		if err != nil {
+			log.Printf("adaptive: torch batch failed: %v (continuing)", err)
+		} else {
+			opts.TorchBatch = batch
+			log.Printf("adaptive: loaded torch batch from %s", filepath.Base(torchPath))
+		}
+	}
+
+	// Load ONNX backends if available.
+	if onnxPath != "" {
+		// Try TensorRT first.
+		trt, err := loadDetection(onnxPath, "tensorrt")
+		if err != nil {
+			log.Printf("adaptive: ONNX TensorRT failed: %v (trying CUDA)", err)
+		} else {
+			opts.OnnxTRT = trt
+			log.Printf("adaptive: loaded ONNX TensorRT from %s", filepath.Base(onnxPath))
+		}
+
+		// Also try CUDA EP.
+		cuda, err := loadDetection(onnxPath, "cuda")
+		if err != nil {
+			log.Printf("adaptive: ONNX CUDA failed: %v (continuing)", err)
+		} else {
+			opts.OnnxCUDA = cuda
+			log.Printf("adaptive: loaded ONNX CUDA from %s", filepath.Base(onnxPath))
+		}
+	}
+
+	// Verify at least one backend loaded.
+	if opts.TorchSingle == nil && opts.TorchBatch == nil && opts.OnnxTRT == nil && opts.OnnxCUDA == nil {
+		return fmt.Errorf("adaptive: no backends could be loaded for %s", modelPath)
+	}
+
+	ad := NewAdaptiveDetector(opts)
+	return reg.Load(name, ad)
 }

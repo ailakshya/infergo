@@ -2,11 +2,37 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <condition_variable>
 #include <stdexcept>
 #include <string>
 #include <cstdio>
 
 namespace infergo {
+
+// ─── GPU inference semaphore ─────────────────────────────────────────────────
+// Limits concurrent ONNX Run() calls to avoid GPU OOM when multiple models
+// are loaded. Only N inference calls proceed simultaneously; the rest queue.
+// This keeps idle sessions' BFC arenas small (no workspace allocated).
+static constexpr int kMaxConcurrentGpuRuns = 3;
+static std::mutex g_gpu_mu;
+static std::condition_variable g_gpu_cv;
+static int g_gpu_active = 0;
+
+struct GpuSlot {
+    GpuSlot() {
+        std::unique_lock<std::mutex> lk(g_gpu_mu);
+        g_gpu_cv.wait(lk, [] { return g_gpu_active < kMaxConcurrentGpuRuns; });
+        ++g_gpu_active;
+    }
+    ~GpuSlot() {
+        std::lock_guard<std::mutex> lk(g_gpu_mu);
+        --g_gpu_active;
+        g_gpu_cv.notify_one();
+    }
+    GpuSlot(const GpuSlot&) = delete;
+    GpuSlot& operator=(const GpuSlot&) = delete;
+};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -50,6 +76,27 @@ static ONNXTensorElementDataType infer_dtype_to_ort(int dtype) {
 
 // ─── Constructor / Destructor ─────────────────────────────────────────────────
 
+// ─── Global shared OrtEnv ────────────────────────────────────────────────────
+// All sessions share one OrtEnv to reduce CUDA context duplication.
+// Note: ORT 1.24 does not support shared CUDA allocators via
+// CreateAndRegisterAllocatorV2 — each session gets its own BFC arena.
+static OrtEnv* g_shared_env = nullptr;
+static const OrtApi* g_api = nullptr;
+
+static OrtEnv* get_shared_env(const OrtApi* api) {
+    if (g_shared_env == nullptr) {
+        g_api = api;
+        OrtStatus* st = api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "infergo", &g_shared_env);
+        if (st != nullptr) {
+            const char* msg = api->GetErrorMessage(st);
+            std::string err(msg ? msg : "unknown");
+            api->ReleaseStatus(st);
+            throw std::runtime_error("OnnxSession: CreateEnv failed: " + err);
+        }
+    }
+    return g_shared_env;
+}
+
 OnnxSession::OnnxSession(const std::string& provider, int device_id)
     : provider_(provider), device_id_(device_id)
 {
@@ -58,12 +105,17 @@ OnnxSession::OnnxSession(const std::string& provider, int device_id)
         throw std::runtime_error("OnnxSession: failed to get ORT API");
     }
 
-    throw_on_error(api_->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "infergo", &env_));
+    env_ = get_shared_env(api_);  // shared, NOT owned — do not release in destructor
+    owns_env_ = false;
     throw_on_error(api_->CreateSessionOptions(&options_));
 
     // Performance defaults
     throw_on_error(api_->SetSessionGraphOptimizationLevel(options_, ORT_ENABLE_ALL));
-    throw_on_error(api_->SetIntraOpNumThreads(options_, 0)); // 0 = use all cores
+    throw_on_error(api_->SetIntraOpNumThreads(options_, 4));
+    throw_on_error(api_->SetSessionExecutionMode(options_, ORT_SEQUENTIAL));
+    throw_on_error(api_->EnableMemPattern(options_));
+    throw_on_error(api_->EnableCpuMemArena(options_));
+
 
     // ── Execution provider selection ──────────────────────────────────────────
     // Each provider is attempted and falls back to CPU on failure (RULE: never
@@ -72,6 +124,18 @@ OnnxSession::OnnxSession(const std::string& provider, int device_id)
     if (provider == "cuda") {
         OrtCUDAProviderOptions cuda_opts{};
         cuda_opts.device_id = device_id;
+        // Limit per-session GPU memory to avoid OOM when multiple models are loaded.
+        // 0 = unlimited (default). We set a 2GB limit so 4+ models can coexist on
+        // a 16GB GPU. The BFC arena will allocate within this budget and fall back
+        // to CPU for any overflow, rather than crashing.
+        cuda_opts.gpu_mem_limit = 512ULL * 1024 * 1024; // 512 MB per session (TRT needs far less than CUDA EP)
+        // Use kSameAsRequested (1) instead of kNextPowerOfTwo (0) to avoid
+        // the arena pre-allocating double the requested memory.
+        cuda_opts.arena_extend_strategy = 1;
+        // Allow CUDA to use all available CUDA streams for better overlap.
+        cuda_opts.do_copy_in_default_stream = 0;
+        // Enable cuDNN conv algorithm search for faster convolutions (key for YOLO).
+        cuda_opts.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchExhaustive;
         OrtStatus* st = api_->SessionOptionsAppendExecutionProvider_CUDA(options_, &cuda_opts);
         if (st != nullptr) {
             const char* msg = api_->GetErrorMessage(st);
@@ -129,7 +193,9 @@ OnnxSession::OnnxSession(const std::string& provider, int device_id)
 OnnxSession::~OnnxSession() {
     if (session_)  { api_->ReleaseSession(session_);        session_  = nullptr; }
     if (options_)  { api_->ReleaseSessionOptions(options_); options_  = nullptr; }
-    if (env_)      { api_->ReleaseEnv(env_);                env_      = nullptr; }
+    // env_ is shared globally — only release if we own it (never in current design).
+    if (owns_env_ && env_) { api_->ReleaseEnv(env_); }
+    env_ = nullptr;
 }
 
 OnnxSession::OnnxSession(OnnxSession&& other) noexcept
@@ -140,6 +206,7 @@ OnnxSession::OnnxSession(OnnxSession&& other) noexcept
     , allocator_(other.allocator_)
     , provider_(std::move(other.provider_))
     , device_id_(other.device_id_)
+    , owns_env_(other.owns_env_)
     , input_names_(std::move(other.input_names_))
     , output_names_(std::move(other.output_names_))
 {
@@ -148,6 +215,7 @@ OnnxSession::OnnxSession(OnnxSession&& other) noexcept
     other.options_  = nullptr;
     other.session_  = nullptr;
     other.allocator_= nullptr;
+    other.owns_env_ = false;
 }
 
 OnnxSession& OnnxSession::operator=(OnnxSession&& other) noexcept {
@@ -163,6 +231,7 @@ OnnxSession& OnnxSession::operator=(OnnxSession&& other) noexcept {
         allocator_    = other.allocator_;
         provider_     = std::move(other.provider_);
         device_id_    = other.device_id_;
+        owns_env_     = other.owns_env_;
         input_names_  = std::move(other.input_names_);
         output_names_ = std::move(other.output_names_);
 
@@ -171,6 +240,7 @@ OnnxSession& OnnxSession::operator=(OnnxSession&& other) noexcept {
         other.options_  = nullptr;
         other.session_  = nullptr;
         other.allocator_= nullptr;
+        other.owns_env_ = false;
     }
     return *this;
 }
@@ -213,90 +283,80 @@ void OnnxSession::load_model(const std::string& model_path) {
 
 // ─── run ─────────────────────────────────────────────────────────────────────
 
+// Thread-local scratch buffers to avoid per-call heap allocations.
+// Each calling thread gets its own set — no locking needed.
+static thread_local OrtMemoryInfo* tl_cpu_mem = nullptr;
+static thread_local std::vector<OrtValue*> tl_ort_inputs;
+static thread_local std::vector<OrtValue*> tl_ort_outputs;
+static thread_local std::vector<const char*> tl_in_names;
+static thread_local std::vector<const char*> tl_out_names;
+static thread_local std::vector<int64_t> tl_shape;
+
 std::vector<Tensor*> OnnxSession::run(const std::vector<Tensor*>& inputs) {
     if (session_ == nullptr) {
         throw std::runtime_error("OnnxSession::run: no model loaded");
     }
-    if (inputs.size() != input_names_.size()) {
+    const size_t n_in = input_names_.size();
+    const size_t n_out = output_names_.size();
+    if (inputs.size() != n_in) {
         throw std::runtime_error(
-            "OnnxSession::run: expected " + std::to_string(input_names_.size()) +
+            "OnnxSession::run: expected " + std::to_string(n_in) +
             " inputs, got " + std::to_string(inputs.size()));
     }
 
-    OrtMemoryInfo* cpu_mem_info = nullptr;
-    throw_on_error(api_->CreateCpuMemoryInfo(
-        OrtArenaAllocator, OrtMemTypeDefault, &cpu_mem_info));
+    // Reuse thread-local CPU memory info (never freed — lives until thread exits).
+    if (tl_cpu_mem == nullptr) {
+        throw_on_error(api_->CreateCpuMemoryInfo(
+            OrtArenaAllocator, OrtMemTypeDefault, &tl_cpu_mem));
+    }
 
-    // Build OrtValue* for each input
-    std::vector<OrtValue*> ort_inputs(inputs.size(), nullptr);
-    for (size_t i = 0; i < inputs.size(); ++i) {
+    // Resize thread-local scratch buffers (no alloc after first call).
+    tl_ort_inputs.resize(n_in);
+    tl_ort_outputs.assign(n_out, nullptr);
+    tl_in_names.resize(n_in);
+    tl_out_names.resize(n_out);
+
+    for (size_t i = 0; i < n_in; ++i) tl_in_names[i] = input_names_[i].c_str();
+    for (size_t i = 0; i < n_out; ++i) tl_out_names[i] = output_names_[i].c_str();
+
+    // Wrap input tensors as OrtValues (zero-copy — wraps existing CPU data).
+    for (size_t i = 0; i < n_in; ++i) {
         const Tensor* t = inputs[i];
-        if (t == nullptr) {
-            api_->ReleaseMemoryInfo(cpu_mem_info);
-            throw std::runtime_error("OnnxSession::run: input[" +
-                                     std::to_string(i) + "] is null");
-        }
-        if (t->on_device) {
-            api_->ReleaseMemoryInfo(cpu_mem_info);
-            throw std::runtime_error("OnnxSession::run: input[" +
-                                     std::to_string(i) + "] is on GPU — call tensor_to_host() first");
-        }
+        tl_shape.resize(t->ndim);
+        for (int d = 0; d < t->ndim; ++d)
+            tl_shape[d] = static_cast<int64_t>(t->shape[d]);
 
-        // Build int64_t shape for ORT
-        std::vector<int64_t> ort_shape(t->ndim);
-        for (int d = 0; d < t->ndim; ++d) {
-            ort_shape[d] = static_cast<int64_t>(t->shape[d]);
-        }
-
-        OrtStatus* st = api_->CreateTensorWithDataAsOrtValue(
-            cpu_mem_info,
-            t->data,
-            t->nbytes,
-            ort_shape.data(),
-            static_cast<size_t>(t->ndim),
-            infer_dtype_to_ort(t->dtype),
-            &ort_inputs[i]
-        );
-        if (st != nullptr) {
-            for (size_t j = 0; j < i; ++j) api_->ReleaseValue(ort_inputs[j]);
-            api_->ReleaseMemoryInfo(cpu_mem_info);
-            throw_on_error(st);
-        }
+        throw_on_error(api_->CreateTensorWithDataAsOrtValue(
+            tl_cpu_mem, t->data, t->nbytes,
+            tl_shape.data(), static_cast<size_t>(t->ndim),
+            infer_dtype_to_ort(t->dtype), &tl_ort_inputs[i]));
     }
 
-    api_->ReleaseMemoryInfo(cpu_mem_info);
-
-    // Build C-string pointer arrays for ORT
-    std::vector<const char*> in_names(input_names_.size());
-    for (size_t i = 0; i < input_names_.size(); ++i) {
-        in_names[i] = input_names_[i].c_str();
-    }
-    std::vector<const char*> out_names(output_names_.size());
-    for (size_t i = 0; i < output_names_.size(); ++i) {
-        out_names[i] = output_names_[i].c_str();
-    }
-
-    std::vector<OrtValue*> ort_outputs(output_names_.size(), nullptr);
+    // ── GPU inference (semaphore-gated) ──────────────────────────────────────
+    GpuSlot gpu_slot;
 
     OrtStatus* run_st = api_->Run(
         session_, nullptr,
-        in_names.data(),  ort_inputs.data(),  ort_inputs.size(),
-        out_names.data(), ort_outputs.size(),  ort_outputs.data()
-    );
+        tl_in_names.data(), tl_ort_inputs.data(), n_in,
+        tl_out_names.data(), n_out, tl_ort_outputs.data());
 
-    for (auto* v : ort_inputs) api_->ReleaseValue(v);
+    // Release input OrtValues immediately (they just wrap our CPU data).
+    for (size_t i = 0; i < n_in; ++i) {
+        api_->ReleaseValue(tl_ort_inputs[i]);
+        tl_ort_inputs[i] = nullptr;
+    }
 
     if (run_st != nullptr) {
-        for (auto* v : ort_outputs) { if (v) api_->ReleaseValue(v); }
+        for (auto* v : tl_ort_outputs) { if (v) api_->ReleaseValue(v); }
         throw_on_error(run_st);
     }
 
-    // Convert OrtValue* outputs → Tensor*
+    // ── Convert outputs → Tensor* ────────────────────────────────────────────
     std::vector<Tensor*> results;
-    results.reserve(ort_outputs.size());
+    results.reserve(n_out);
 
-    for (size_t i = 0; i < ort_outputs.size(); ++i) {
-        OrtValue* ov = ort_outputs[i];
+    for (size_t i = 0; i < n_out; ++i) {
+        OrtValue* ov = tl_ort_outputs[i];
 
         OrtTensorTypeAndShapeInfo* info = nullptr;
         throw_on_error(api_->GetTensorTypeAndShape(ov, &info));
@@ -304,31 +364,26 @@ std::vector<Tensor*> OnnxSession::run(const std::vector<Tensor*>& inputs) {
         size_t ndim = 0;
         throw_on_error(api_->GetDimensionsCount(info, &ndim));
 
-        std::vector<int64_t> dims(ndim);
-        throw_on_error(api_->GetDimensions(info, dims.data(), ndim));
+        int64_t dims[8]; // max 8 dims — stack-allocated, no heap
+        throw_on_error(api_->GetDimensions(info, dims, ndim));
 
         ONNXTensorElementDataType ort_dtype;
         throw_on_error(api_->GetTensorElementType(info, &ort_dtype));
         api_->ReleaseTensorTypeAndShapeInfo(info);
 
-        // Convert shape
-        std::vector<int> shape(ndim);
-        for (size_t d = 0; d < ndim; ++d) {
-            shape[d] = static_cast<int>(dims[d]);
-        }
+        int shape[8];
+        for (size_t d = 0; d < ndim; ++d) shape[d] = static_cast<int>(dims[d]);
 
-        int infer_dtype = ort_dtype_to_infer(ort_dtype);
-        Tensor* out_t = tensor_alloc_cpu(shape.data(), static_cast<int>(ndim), infer_dtype);
+        Tensor* out_t = tensor_alloc_cpu(shape, static_cast<int>(ndim),
+                                          ort_dtype_to_infer(ort_dtype));
         if (out_t == nullptr) {
             api_->ReleaseValue(ov);
-            for (size_t j = i + 1; j < ort_outputs.size(); ++j) {
-                if (ort_outputs[j]) api_->ReleaseValue(ort_outputs[j]);
-            }
+            for (size_t j = i + 1; j < n_out; ++j)
+                if (tl_ort_outputs[j]) api_->ReleaseValue(tl_ort_outputs[j]);
             for (auto* r : results) tensor_free(r);
-            throw std::runtime_error("OnnxSession::run: failed to allocate output tensor");
+            throw std::runtime_error("OnnxSession::run: output tensor alloc failed");
         }
 
-        // Copy ORT output data into our tensor
         void* ort_data = nullptr;
         throw_on_error(api_->GetTensorMutableData(ov, &ort_data));
         std::memcpy(out_t->data, ort_data, out_t->nbytes);

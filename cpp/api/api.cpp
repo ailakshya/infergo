@@ -1,6 +1,10 @@
 #include "infer_api.h"
 #include "../tensor/tensor.hpp"
 #include "../onnx/onnx_session.hpp"
+#ifdef INFER_TORCH_AVAILABLE
+#include "../torch/torch_session.hpp"
+#include "../torch/gpu_preprocess.hpp"
+#endif
 #include "../tokenizer/tokenizer.hpp"
 #include "../llm/kv_cache.hpp"
 #include "../llm/kv_paged.hpp"
@@ -11,6 +15,18 @@
 #include "../preprocess/preprocess.hpp"
 #endif
 #include "../postprocess/postprocess.hpp"
+#ifdef INFER_CUDA_AVAILABLE
+#include "../cuda/vram_monitor.hpp"
+#endif
+#ifdef INFER_VIDEO_AVAILABLE
+#include "../video/decoder.hpp"
+#include "../video/encoder.hpp"
+#include "../video/frame_annotator.hpp"
+#ifdef INFER_OPENCV_AVAILABLE
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#endif
+#endif
 
 #include <cstring>
 #include <exception>
@@ -315,6 +331,384 @@ void infer_session_destroy(InferSession s) {
         // destructor must not throw
     }
 }
+
+// ─── Torch Session API ───────────────────────────────────────────────────────
+
+#ifdef INFER_TORCH_AVAILABLE
+
+InferTorchSession infer_torch_session_create(const char* provider, int device_id) {
+    try {
+        const std::string p = (provider != nullptr) ? provider : "cpu";
+        auto* s = new infergo::TorchSession(p, device_id);
+        return static_cast<InferTorchSession>(s);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_torch_session_create: unknown exception");
+        return nullptr;
+    }
+}
+
+InferError infer_torch_session_load(InferTorchSession s, const char* model_path) {
+    try {
+        if (s == nullptr) {
+            infergo::set_last_error("infer_torch_session_load: null session");
+            return INFER_ERR_NULL;
+        }
+        if (model_path == nullptr) {
+            infergo::set_last_error("infer_torch_session_load: null model_path");
+            return INFER_ERR_NULL;
+        }
+        static_cast<infergo::TorchSession*>(s)->load_model(model_path);
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_LOAD;
+    } catch (...) {
+        return INFER_ERR_UNKNOWN;
+    }
+}
+
+int infer_torch_session_num_inputs(InferTorchSession s) {
+    if (s == nullptr) return 0;
+    return static_cast<infergo::TorchSession*>(s)->num_inputs();
+}
+
+int infer_torch_session_num_outputs(InferTorchSession s) {
+    if (s == nullptr) return 0;
+    return static_cast<infergo::TorchSession*>(s)->num_outputs();
+}
+
+InferError infer_torch_session_run(
+    InferTorchSession  s,
+    InferTensor*       inputs,  int n_inputs,
+    InferTensor*       outputs, int n_outputs)
+{
+    try {
+        if (s == nullptr) {
+            infergo::set_last_error("infer_torch_session_run: null session");
+            return INFER_ERR_NULL;
+        }
+        if ((n_inputs > 0 && inputs == nullptr) || (n_outputs > 0 && outputs == nullptr)) {
+            infergo::set_last_error("infer_torch_session_run: null inputs/outputs array");
+            return INFER_ERR_NULL;
+        }
+
+        std::vector<infergo::Tensor*> in_tensors(static_cast<size_t>(n_inputs));
+        for (int i = 0; i < n_inputs; ++i) {
+            in_tensors[i] = static_cast<infergo::Tensor*>(inputs[i]);
+        }
+
+        std::vector<infergo::Tensor*> out_tensors =
+            static_cast<infergo::TorchSession*>(s)->run(in_tensors);
+
+        const int actual = static_cast<int>(out_tensors.size());
+        const int copy_n = (actual < n_outputs) ? actual : n_outputs;
+        for (int i = 0; i < copy_n; ++i) {
+            outputs[i] = static_cast<InferTensor>(out_tensors[i]);
+        }
+        // Free any extra outputs not fitting in the caller's array
+        for (int i = copy_n; i < actual; ++i) {
+            infergo::tensor_free(out_tensors[i]);
+        }
+
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_RUNTIME;
+    } catch (...) {
+        return INFER_ERR_UNKNOWN;
+    }
+}
+
+InferError infer_torch_session_run_gpu(
+    InferTorchSession  s,
+    InferTensor*       inputs,   int n_inputs,
+    InferTensor*       outputs,  int n_outputs)
+{
+    try {
+        if (s == nullptr) {
+            infergo::set_last_error("infer_torch_session_run_gpu: null session");
+            return INFER_ERR_NULL;
+        }
+        auto* sess = static_cast<infergo::TorchSession*>(s);
+
+        std::vector<infergo::Tensor*> in_vec;
+        in_vec.reserve(n_inputs);
+        for (int i = 0; i < n_inputs; ++i)
+            in_vec.push_back(static_cast<infergo::Tensor*>(inputs[i]));
+
+        auto out_vec = sess->run_gpu(in_vec);
+
+        int n = std::min(static_cast<int>(out_vec.size()), n_outputs);
+        for (int i = 0; i < n; ++i)
+            outputs[i] = static_cast<InferTensor>(out_vec[i]);
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_RUNTIME;
+    }
+}
+
+int infer_torch_detect_gpu_raw(
+    void*          handle,
+    const void*    rgb_data,
+    int            width, int height,
+    float          conf_thresh, float iou_thresh,
+    InferBox*      out_boxes, int max_boxes)
+{
+    // Fast-path validation (no try/catch overhead for these cheap checks)
+    if (!handle) { infergo::set_last_error("null session"); return -1; }
+    if (!rgb_data || width <= 0 || height <= 0) { infergo::set_last_error("invalid RGB data"); return -1; }
+    if (!out_boxes || max_boxes <= 0) { infergo::set_last_error("null output"); return -1; }
+
+    // Use zero-copy path: writes directly to out_boxes, no vector alloc,
+    // no Detection→InferBox field copy, no try/catch on the hot path.
+    char error_buf[256] = {0};
+    auto* sess = static_cast<infergo::TorchSession*>(handle);
+    int count = infergo::torch_detect_gpu_raw_into(
+        *sess, static_cast<const uint8_t*>(rgb_data), width, height,
+        conf_thresh, iou_thresh,
+        out_boxes, max_boxes,
+        error_buf, sizeof(error_buf));
+
+    if (count < 0 && error_buf[0] != '\0') {
+        infergo::set_last_error(error_buf);
+    }
+    return count;
+}
+
+int infer_torch_detect_gpu_yuv(
+    void* handle, const void* yuv_data, int width, int height, int linesize,
+    float conf_thresh, float iou_thresh, InferBox* out_boxes, int max_boxes)
+{
+    try {
+        if (!handle) { infergo::set_last_error("null session"); return -1; }
+        if (!yuv_data || width <= 0 || height <= 0) { infergo::set_last_error("invalid YUV data"); return -1; }
+        if (!out_boxes || max_boxes <= 0) { infergo::set_last_error("null output"); return -1; }
+
+        auto* sess = static_cast<infergo::TorchSession*>(handle);
+        auto dets = infergo::torch_detect_gpu_yuv(
+            *sess, static_cast<const uint8_t*>(yuv_data), width, height, linesize,
+            conf_thresh, iou_thresh);
+
+        const int count = static_cast<int>(std::min(dets.size(), static_cast<size_t>(max_boxes)));
+        // Detection and InferBox have identical layout — use memcpy
+        if (count > 0) {
+            std::memcpy(out_boxes, dets.data(),
+                        static_cast<size_t>(count) * sizeof(InferBox));
+        }
+        return count;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    }
+}
+
+void infer_torch_session_destroy(InferTorchSession s) {
+    if (s == nullptr) return;
+    try {
+        delete static_cast<infergo::TorchSession*>(s);
+    } catch (...) {
+        // destructor must not throw
+    }
+}
+
+int infer_torch_detect_gpu(
+    void*          handle,
+    const void*    jpeg_data,
+    int            nbytes,
+    float          conf_thresh,
+    float          iou_thresh,
+    InferBox*      out_boxes,
+    int            max_boxes)
+{
+    try {
+        if (handle == nullptr) {
+            infergo::set_last_error("infer_torch_detect_gpu: null session");
+            return -1;
+        }
+        if (jpeg_data == nullptr || nbytes <= 0) {
+            infergo::set_last_error("infer_torch_detect_gpu: null or empty JPEG data");
+            return -1;
+        }
+        if (out_boxes == nullptr || max_boxes <= 0) {
+            infergo::set_last_error("infer_torch_detect_gpu: null or zero-capacity output array");
+            return -1;
+        }
+
+        auto* sess = static_cast<infergo::TorchSession*>(handle);
+        auto dets = infergo::torch_detect_gpu(
+            *sess,
+            static_cast<const uint8_t*>(jpeg_data), nbytes,
+            conf_thresh, iou_thresh);
+
+        const int count = static_cast<int>(
+            std::min(dets.size(), static_cast<size_t>(max_boxes)));
+        // Detection and InferBox have identical memory layout (verified by
+        // static_assert in gpu_preprocess.cpp), so use memcpy instead of
+        // field-by-field copy (~0.5ms saved for large detection counts).
+        if (count > 0) {
+            std::memcpy(out_boxes, dets.data(),
+                        static_cast<size_t>(count) * sizeof(InferBox));
+        }
+        return count;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_torch_detect_gpu: unknown exception");
+        return -1;
+    }
+}
+
+int infer_torch_detect_gpu_batch(
+    void*          handle,
+    const void**   jpeg_data_array,
+    const int*     nbytes_array,
+    int            batch_size,
+    float          conf_thresh,
+    float          iou_thresh,
+    InferBox**     out_boxes_array,
+    int*           out_counts,
+    int            max_boxes_per_image)
+{
+    try {
+        if (handle == nullptr) {
+            infergo::set_last_error("infer_torch_detect_gpu_batch: null session");
+            return -1;
+        }
+        if (jpeg_data_array == nullptr || nbytes_array == nullptr || batch_size <= 0) {
+            infergo::set_last_error("infer_torch_detect_gpu_batch: invalid input arrays or batch_size");
+            return -1;
+        }
+        if (out_boxes_array == nullptr || out_counts == nullptr || max_boxes_per_image <= 0) {
+            infergo::set_last_error("infer_torch_detect_gpu_batch: null or zero-capacity output arrays");
+            return -1;
+        }
+
+        auto* sess = static_cast<infergo::TorchSession*>(handle);
+
+        // Build uint8_t** from void** for the C++ function.
+        std::vector<const uint8_t*> data_ptrs(batch_size);
+        for (int i = 0; i < batch_size; ++i) {
+            data_ptrs[i] = static_cast<const uint8_t*>(jpeg_data_array[i]);
+        }
+
+        auto all_dets = infergo::torch_detect_gpu_batch(
+            *sess,
+            data_ptrs.data(), nbytes_array, batch_size,
+            conf_thresh, iou_thresh);
+
+        for (int i = 0; i < batch_size; ++i) {
+            const auto& dets = all_dets[i];
+            const int count = static_cast<int>(
+                std::min(dets.size(), static_cast<size_t>(max_boxes_per_image)));
+            out_counts[i] = count;
+            // Detection and InferBox have identical layout — use memcpy
+            if (count > 0) {
+                std::memcpy(out_boxes_array[i], dets.data(),
+                            static_cast<size_t>(count) * sizeof(InferBox));
+            }
+        }
+        return 0;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_torch_detect_gpu_batch: unknown exception");
+        return -1;
+    }
+}
+
+#else // INFER_TORCH_AVAILABLE not defined — stubs
+
+InferTorchSession infer_torch_session_create(const char* /*provider*/, int /*device_id*/) {
+    infergo::set_last_error("infer_torch_session_create: libtorch not available in this build");
+    return nullptr;
+}
+
+InferError infer_torch_session_load(InferTorchSession /*s*/, const char* /*model_path*/) {
+    infergo::set_last_error("infer_torch_session_load: libtorch not available in this build");
+    return INFER_ERR_RUNTIME;
+}
+
+int infer_torch_session_num_inputs(InferTorchSession /*s*/) {
+    return 0;
+}
+
+int infer_torch_session_num_outputs(InferTorchSession /*s*/) {
+    return 0;
+}
+
+InferError infer_torch_session_run(
+    InferTorchSession /*s*/,
+    InferTensor*      /*inputs*/,  int /*n_inputs*/,
+    InferTensor*      /*outputs*/, int /*n_outputs*/)
+{
+    infergo::set_last_error("infer_torch_session_run: libtorch not available in this build");
+    return INFER_ERR_RUNTIME;
+}
+
+InferError infer_torch_session_run_gpu(
+    InferTorchSession /*s*/,
+    InferTensor*      /*inputs*/,  int /*n_inputs*/,
+    InferTensor*      /*outputs*/, int /*n_outputs*/)
+{
+    infergo::set_last_error("infer_torch_session_run_gpu: libtorch not available in this build");
+    return INFER_ERR_RUNTIME;
+}
+
+void infer_torch_session_destroy(InferTorchSession /*s*/) {
+    // no-op
+}
+
+int infer_torch_detect_gpu(
+    void*          /*handle*/,
+    const void*    /*jpeg_data*/,
+    int            /*nbytes*/,
+    float          /*conf_thresh*/,
+    float          /*iou_thresh*/,
+    InferBox*      /*out_boxes*/,
+    int            /*max_boxes*/)
+{
+    infergo::set_last_error("infer_torch_detect_gpu: libtorch not available in this build");
+    return -1;
+}
+
+int infer_torch_detect_gpu_batch(
+    void*          /*handle*/,
+    const void**   /*jpeg_data_array*/,
+    const int*     /*nbytes_array*/,
+    int            /*batch_size*/,
+    float          /*conf_thresh*/,
+    float          /*iou_thresh*/,
+    InferBox**     /*out_boxes_array*/,
+    int*           /*out_counts*/,
+    int            /*max_boxes_per_image*/)
+{
+    infergo::set_last_error("infer_torch_detect_gpu_batch: libtorch not available in this build");
+    return -1;
+}
+
+int infer_torch_detect_gpu_raw(
+    void* /*handle*/, const void* /*rgb*/, int /*w*/, int /*h*/,
+    float /*conf*/, float /*iou*/, InferBox* /*boxes*/, int /*max*/)
+{
+    infergo::set_last_error("infer_torch_detect_gpu_raw: libtorch not available");
+    return -1;
+}
+
+int infer_torch_detect_gpu_yuv(
+    void* /*handle*/, const void* /*yuv*/, int /*w*/, int /*h*/, int /*ls*/,
+    float /*conf*/, float /*iou*/, InferBox* /*boxes*/, int /*max*/)
+{
+    infergo::set_last_error("infer_torch_detect_gpu_yuv: libtorch not available");
+    return -1;
+}
+
+#endif // INFER_TORCH_AVAILABLE
 
 // ─── Tokenizer API ────────────────────────────────────────────────────────────
 
@@ -1054,4 +1448,484 @@ InferError infer_postprocess_normalize_embedding(InferTensor t) {
         infergo::set_last_error("infer_postprocess_normalize_embedding: unknown exception");
         return INFER_ERR_UNKNOWN;
     }
+}
+
+// ─── VRAM Monitoring ─────────────────────────────────────────────────────────
+
+size_t infer_cuda_vram_free(void) {
+#ifdef INFER_CUDA_AVAILABLE
+    return infergo::cuda_vram_free();
+#else
+    return 0;
+#endif
+}
+
+size_t infer_cuda_vram_total(void) {
+#ifdef INFER_CUDA_AVAILABLE
+    return infergo::cuda_vram_total();
+#else
+    return 0;
+#endif
+}
+
+int infer_cuda_vram_used_pct(void) {
+#ifdef INFER_CUDA_AVAILABLE
+    return infergo::cuda_vram_used_pct();
+#else
+    return 0;
+#endif
+}
+
+// ─── Video Decoder / Encoder ────────────────────────────────────────────────
+
+void* infer_video_decoder_open(const char* url, int hw_accel) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!url) {
+        infergo::set_last_error("infer_video_decoder_open: null url");
+        return nullptr;
+    }
+    try {
+        auto* dec = new infergo::VideoDecoder(url, hw_accel != 0);
+        if (!dec->is_open()) {
+            infergo::set_last_error("infer_video_decoder_open: failed to open video");
+            delete dec;
+            return nullptr;
+        }
+        return static_cast<void*>(dec);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_video_decoder_open: unknown exception");
+        return nullptr;
+    }
+#else
+    (void)url; (void)hw_accel;
+    infergo::set_last_error("infer_video_decoder_open: video not available in this build");
+    return nullptr;
+#endif
+}
+
+int infer_video_decoder_next_frame(void* dec, uint8_t** out_rgb,
+                                   int* w, int* h, int64_t* pts, int* frame_num) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!dec) return 0;
+    try {
+        auto* d = static_cast<infergo::VideoDecoder*>(dec);
+        infergo::FrameInfo info{};
+        uint8_t* data = nullptr;
+        if (!d->next_frame(&data, &info)) return 0;
+        if (out_rgb)   *out_rgb   = data;
+        if (w)         *w         = info.width;
+        if (h)         *h         = info.height;
+        if (pts)       *pts       = info.pts;
+        if (frame_num) *frame_num = info.frame_number;
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+#else
+    (void)dec; (void)out_rgb; (void)w; (void)h; (void)pts; (void)frame_num;
+    return 0;
+#endif
+}
+
+int infer_video_decoder_width(void* dec) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!dec) return 0;
+    return static_cast<infergo::VideoDecoder*>(dec)->width();
+#else
+    (void)dec; return 0;
+#endif
+}
+
+int infer_video_decoder_height(void* dec) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!dec) return 0;
+    return static_cast<infergo::VideoDecoder*>(dec)->height();
+#else
+    (void)dec; return 0;
+#endif
+}
+
+double infer_video_decoder_fps(void* dec) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!dec) return 0.0;
+    return static_cast<infergo::VideoDecoder*>(dec)->fps();
+#else
+    (void)dec; return 0.0;
+#endif
+}
+
+int infer_video_decoder_is_hw(void* dec) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!dec) return 0;
+    return static_cast<infergo::VideoDecoder*>(dec)->is_hw_accelerated() ? 1 : 0;
+#else
+    (void)dec; return 0;
+#endif
+}
+
+int infer_video_decoder_next_frame_resized(void* dec, int target_w, int target_h,
+                                            uint8_t** out_rgb, int* out_w, int* out_h,
+                                            int64_t* out_pts, int* out_frame_num) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!dec) return 0;
+    try {
+        auto* d = static_cast<infergo::VideoDecoder*>(dec);
+        infergo::FrameInfo info{};
+        uint8_t* data = nullptr;
+        if (!d->next_frame(&data, &info)) return 0;
+
+        // Resize using OpenCV if dimensions differ.
+        static thread_local std::vector<uint8_t> resize_buf;
+        if (target_w > 0 && target_h > 0 &&
+            (target_w != info.width || target_h != info.height)) {
+#ifdef INFER_OPENCV_AVAILABLE
+            cv::Mat src(info.height, info.width, CV_8UC3, data);
+            cv::Mat dst(target_h, target_w, CV_8UC3);
+            cv::resize(src, dst, cv::Size(target_w, target_h), 0, 0, cv::INTER_LINEAR);
+            size_t nb = static_cast<size_t>(target_w) * target_h * 3;
+            resize_buf.resize(nb);
+            memcpy(resize_buf.data(), dst.data, nb);
+            if (out_rgb)   *out_rgb = resize_buf.data();
+            if (out_w)     *out_w = target_w;
+            if (out_h)     *out_h = target_h;
+#else
+            // No OpenCV — return original size.
+            if (out_rgb) *out_rgb = data;
+            if (out_w)   *out_w = info.width;
+            if (out_h)   *out_h = info.height;
+#endif
+        } else {
+            if (out_rgb) *out_rgb = data;
+            if (out_w)   *out_w = info.width;
+            if (out_h)   *out_h = info.height;
+        }
+        if (out_pts)       *out_pts = info.pts;
+        if (out_frame_num) *out_frame_num = info.frame_number;
+        return 1;
+    } catch (...) { return 0; }
+#else
+    (void)dec;(void)target_w;(void)target_h;(void)out_rgb;(void)out_w;(void)out_h;(void)out_pts;(void)out_frame_num;
+    return 0;
+#endif
+}
+
+void infer_video_decoder_close(void* dec) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!dec) return;
+    auto* d = static_cast<infergo::VideoDecoder*>(dec);
+    d->close();
+    delete d;
+#else
+    (void)dec;
+#endif
+}
+
+void* infer_video_encoder_open(const char* path, int width, int height,
+                               int fps, const char* codec) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!path) {
+        infergo::set_last_error("infer_video_encoder_open: null path");
+        return nullptr;
+    }
+    try {
+        std::string codec_str = codec ? codec : "h264_nvenc";
+        auto* enc = new infergo::VideoEncoder(path, width, height, fps, codec_str);
+        if (!enc->is_open()) {
+            infergo::set_last_error("infer_video_encoder_open: failed to open encoder");
+            delete enc;
+            return nullptr;
+        }
+        return static_cast<void*>(enc);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    } catch (...) {
+        infergo::set_last_error("infer_video_encoder_open: unknown exception");
+        return nullptr;
+    }
+#else
+    (void)path; (void)width; (void)height; (void)fps; (void)codec;
+    infergo::set_last_error("infer_video_encoder_open: video not available in this build");
+    return nullptr;
+#endif
+}
+
+int infer_video_encoder_write(void* enc, const uint8_t* rgb, int width, int height) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!enc || !rgb) return 0;
+    (void)width; (void)height;  // dimensions set at open time
+    try {
+        return static_cast<infergo::VideoEncoder*>(enc)->write_frame(rgb) ? 1 : 0;
+    } catch (...) {
+        return 0;
+    }
+#else
+    (void)enc; (void)rgb; (void)width; (void)height;
+    return 0;
+#endif
+}
+
+int infer_video_encoder_is_hw(void* enc) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!enc) return 0;
+    return static_cast<infergo::VideoEncoder*>(enc)->is_hw_accelerated() ? 1 : 0;
+#else
+    (void)enc; return 0;
+#endif
+}
+
+void infer_video_encoder_close(void* enc) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!enc) return;
+    auto* e = static_cast<infergo::VideoEncoder*>(enc);
+    e->close();
+    delete e;
+#else
+    (void)enc;
+#endif
+}
+
+// ─── Frame Annotator ─────────────────────────────────────────────────────────
+
+InferError infer_frame_annotate_jpeg(const uint8_t* rgb, int w, int h,
+                                     const InferAnnotateBox* boxes, int n,
+                                     int quality,
+                                     uint8_t** out_jpeg, int* out_size) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!rgb || !out_jpeg || !out_size) {
+        infergo::set_last_error("infer_frame_annotate_jpeg: null pointer");
+        return INFER_ERR_NULL;
+    }
+    try {
+        // Convert InferAnnotateBox -> infergo::AnnotateBox (same layout)
+        auto* ab = reinterpret_cast<const infergo::AnnotateBox*>(boxes);
+        uint8_t* jpeg = infergo::FrameAnnotator::annotate_jpeg(rgb, w, h, ab, n, quality, out_size);
+        if (!jpeg) {
+            infergo::set_last_error("infer_frame_annotate_jpeg: JPEG encode failed (TurboJPEG unavailable or error)");
+            return INFER_ERR_RUNTIME;
+        }
+        *out_jpeg = jpeg;
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_RUNTIME;
+    } catch (...) {
+        infergo::set_last_error("infer_frame_annotate_jpeg: unknown exception");
+        return INFER_ERR_UNKNOWN;
+    }
+#else
+    (void)rgb; (void)w; (void)h; (void)boxes; (void)n;
+    (void)quality; (void)out_jpeg; (void)out_size;
+    infergo::set_last_error("infer_frame_annotate_jpeg: video not available in this build");
+    return INFER_ERR_RUNTIME;
+#endif
+}
+
+InferError infer_frame_resize_jpeg(const uint8_t* rgb, int sw, int sh,
+                                   int dw, int dh, int quality,
+                                   uint8_t** out_jpeg, int* out_size) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!rgb || !out_jpeg || !out_size) {
+        infergo::set_last_error("infer_frame_resize_jpeg: null pointer");
+        return INFER_ERR_NULL;
+    }
+    try {
+        uint8_t* jpeg = infergo::FrameAnnotator::resize_jpeg(rgb, sw, sh, dw, dh, quality, out_size);
+        if (!jpeg) {
+            infergo::set_last_error("infer_frame_resize_jpeg: JPEG encode failed");
+            return INFER_ERR_RUNTIME;
+        }
+        *out_jpeg = jpeg;
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_RUNTIME;
+    } catch (...) {
+        infergo::set_last_error("infer_frame_resize_jpeg: unknown exception");
+        return INFER_ERR_UNKNOWN;
+    }
+#else
+    (void)rgb; (void)sw; (void)sh; (void)dw; (void)dh;
+    (void)quality; (void)out_jpeg; (void)out_size;
+    infergo::set_last_error("infer_frame_resize_jpeg: video not available in this build");
+    return INFER_ERR_RUNTIME;
+#endif
+}
+
+InferError infer_frame_combine_jpeg(const uint8_t* rgb1, int w1, int h1,
+                                    const uint8_t* rgb2, int w2, int h2,
+                                    const char* status,
+                                    int tw, int th, int quality,
+                                    uint8_t** out_jpeg, int* out_size) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!rgb1 || !rgb2 || !out_jpeg || !out_size) {
+        infergo::set_last_error("infer_frame_combine_jpeg: null pointer");
+        return INFER_ERR_NULL;
+    }
+    try {
+        uint8_t* jpeg = infergo::FrameAnnotator::combine_jpeg(
+            rgb1, w1, h1, rgb2, w2, h2, status, tw, th, quality, out_size);
+        if (!jpeg) {
+            infergo::set_last_error("infer_frame_combine_jpeg: JPEG encode failed");
+            return INFER_ERR_RUNTIME;
+        }
+        *out_jpeg = jpeg;
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_RUNTIME;
+    } catch (...) {
+        infergo::set_last_error("infer_frame_combine_jpeg: unknown exception");
+        return INFER_ERR_UNKNOWN;
+    }
+#else
+    (void)rgb1; (void)w1; (void)h1; (void)rgb2; (void)w2; (void)h2;
+    (void)status; (void)tw; (void)th; (void)quality; (void)out_jpeg; (void)out_size;
+    infergo::set_last_error("infer_frame_combine_jpeg: video not available in this build");
+    return INFER_ERR_RUNTIME;
+#endif
+}
+
+InferError infer_frame_draw_line(uint8_t* rgb, int w, int h,
+                                 int x1, int y1, int x2, int y2,
+                                 uint8_t r, uint8_t g, uint8_t b, int thickness) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!rgb) {
+        infergo::set_last_error("infer_frame_draw_line: null pointer");
+        return INFER_ERR_NULL;
+    }
+    try {
+        infergo::FrameAnnotator::draw_line(rgb, w, h, x1, y1, x2, y2, r, g, b, thickness);
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_RUNTIME;
+    } catch (...) {
+        infergo::set_last_error("infer_frame_draw_line: unknown exception");
+        return INFER_ERR_UNKNOWN;
+    }
+#else
+    (void)rgb; (void)w; (void)h; (void)x1; (void)y1; (void)x2; (void)y2;
+    (void)r; (void)g; (void)b; (void)thickness;
+    infergo::set_last_error("infer_frame_draw_line: video not available in this build");
+    return INFER_ERR_RUNTIME;
+#endif
+}
+
+InferError infer_frame_draw_polygon(uint8_t* rgb, int w, int h,
+                                    const InferPoint* pts, int n,
+                                    uint8_t r, uint8_t g, uint8_t b, uint8_t alpha) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!rgb || !pts) {
+        infergo::set_last_error("infer_frame_draw_polygon: null pointer");
+        return INFER_ERR_NULL;
+    }
+    try {
+        auto* p = reinterpret_cast<const infergo::Point*>(pts);
+        infergo::FrameAnnotator::draw_polygon(rgb, w, h, p, n, r, g, b, alpha);
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_RUNTIME;
+    } catch (...) {
+        infergo::set_last_error("infer_frame_draw_polygon: unknown exception");
+        return INFER_ERR_UNKNOWN;
+    }
+#else
+    (void)rgb; (void)w; (void)h; (void)pts; (void)n;
+    (void)r; (void)g; (void)b; (void)alpha;
+    infergo::set_last_error("infer_frame_draw_polygon: video not available in this build");
+    return INFER_ERR_RUNTIME;
+#endif
+}
+
+InferError infer_frame_draw_text(uint8_t* rgb, int w, int h,
+                                 int x, int y, const char* text,
+                                 uint8_t r, uint8_t g, uint8_t b, int scale) {
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!rgb) {
+        infergo::set_last_error("infer_frame_draw_text: null pointer");
+        return INFER_ERR_NULL;
+    }
+    try {
+        infergo::FrameAnnotator::draw_text(rgb, w, h, x, y, text, r, g, b, scale);
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_RUNTIME;
+    } catch (...) {
+        infergo::set_last_error("infer_frame_draw_text: unknown exception");
+        return INFER_ERR_UNKNOWN;
+    }
+#else
+    (void)rgb; (void)w; (void)h; (void)x; (void)y; (void)text;
+    (void)r; (void)g; (void)b; (void)scale;
+    infergo::set_last_error("infer_frame_draw_text: video not available in this build");
+    return INFER_ERR_RUNTIME;
+#endif
+}
+
+void infer_frame_jpeg_free(uint8_t* buf) {
+#ifdef INFER_VIDEO_AVAILABLE
+    infergo::FrameAnnotator::jpeg_free(buf);
+#else
+    (void)buf;
+#endif
+}
+
+InferError infer_frame_annotate_full(
+    const uint8_t* rgb, int w, int h,
+    const InferAnnotateBox* boxes, int n_boxes,
+    const InferLine* lines, int n_lines,
+    const InferPolygonOverlay* polygons, int n_polygons,
+    const InferTextOverlay* texts, int n_texts,
+    const InferFilledRect* rects, int n_rects,
+    int out_w, int out_h, int quality,
+    uint8_t** out_jpeg, int* out_size)
+{
+#ifdef INFER_VIDEO_AVAILABLE
+    if (!rgb || !out_jpeg || !out_size) {
+        infergo::set_last_error("infer_frame_annotate_full: null pointer");
+        return INFER_ERR_NULL;
+    }
+    try {
+        // Convert C structs to C++ structs (binary-compatible layout).
+        auto* cpp_boxes = reinterpret_cast<const infergo::AnnotateBox*>(boxes);
+        auto* cpp_lines = reinterpret_cast<const infergo::FrameAnnotator::Line*>(lines);
+        auto* cpp_polygons = reinterpret_cast<const infergo::FrameAnnotator::PolygonOverlay*>(polygons);
+        auto* cpp_texts = reinterpret_cast<const infergo::FrameAnnotator::TextOverlay*>(texts);
+        auto* cpp_rects = reinterpret_cast<const infergo::FrameAnnotator::FilledRect*>(rects);
+
+        uint8_t* jpeg = infergo::FrameAnnotator::annotate_full(
+            rgb, w, h,
+            cpp_boxes, n_boxes,
+            cpp_lines, n_lines,
+            cpp_polygons, n_polygons,
+            cpp_texts, n_texts,
+            cpp_rects, n_rects,
+            out_w, out_h, quality, out_size);
+
+        if (!jpeg) {
+            infergo::set_last_error("infer_frame_annotate_full: encode failed");
+            return INFER_ERR_RUNTIME;
+        }
+        *out_jpeg = jpeg;
+        return INFER_OK;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return INFER_ERR_RUNTIME;
+    } catch (...) {
+        infergo::set_last_error("infer_frame_annotate_full: unknown error");
+        return INFER_ERR_UNKNOWN;
+    }
+#else
+    (void)rgb;(void)w;(void)h;(void)boxes;(void)n_boxes;(void)lines;(void)n_lines;
+    (void)polygons;(void)n_polygons;(void)texts;(void)n_texts;(void)rects;(void)n_rects;
+    (void)out_w;(void)out_h;(void)quality;(void)out_jpeg;(void)out_size;
+    infergo::set_last_error("infer_frame_annotate_full: video not available");
+    return INFER_ERR_RUNTIME;
+#endif
 }

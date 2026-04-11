@@ -22,6 +22,7 @@
 <p align="center">
   <a href="docs/getting-started.md">Getting Started</a> ·
   <a href="docs/python.md">Python</a> ·
+  <a href="docs/detection.md">Detection</a> ·
   <a href="docs/go-api-reference.md">Go API</a> ·
   <a href="docs/deployment.md">Deployment</a> ·
   <a href="benchmarks/vs_python/results_full.md">Benchmarks</a>
@@ -62,6 +63,8 @@ infergo serve --model models/llama3-8b-q4.gguf --port 9090
 - [Go library](#go-library)
 - [Architecture](#architecture)
 - [Supported models](#supported-models)
+- [Inference backends](#inference-backends)
+- [Object detection](docs/detection.md)
 - [Multi-GPU](#multi-gpu)
 - [Kubernetes](#kubernetes)
 - [Testing](#testing)
@@ -75,7 +78,10 @@ infergo serve --model models/llama3-8b-q4.gguf --port 9090
 - **Continuous batching** — scheduler batches all waiting sequences into every `BatchDecode` call; P50 stays flat under concurrent load, GPU utilization ≥ 85%
 - **PagedAttention KV cache** — 2–3× more concurrent sequences per GPU; pages freed per-sequence with no leaks
 - **Embedding models** — ONNX Runtime inference for nomic-embed-text, bge-m3, all-MiniLM via `/v1/embeddings`
-- **Object detection** — YOLOv8 bounding-box output via `/v1/detect`; letterbox + normalize preprocessing
+- **Object detection** — YOLOv8/v11 via `/v1/detect` with GPU preprocessing pipeline; 304 req/s (2x Python)
+- **Adaptive backend** — auto-switches between libtorch (low latency) and TensorRT (max throughput) based on load
+- **Binary detection endpoint** — `POST /v1/detect/binary` accepts raw JPEG, no base64/JSON overhead
+- **Batch detection** — accumulates concurrent requests into single GPU forward pass
 - **Multi-model serving** — LLM + embedding + detection on one port via repeatable `--model` flags
 - **gRPC API** — parallel to HTTP; `--grpc-port` enables on startup
 - **WebSocket streaming** — `ws://host/v1/chat/completions/ws` for browser-native token streaming
@@ -91,7 +97,8 @@ infergo serve --model models/llama3-8b-q4.gguf --port 9090
 - **Kubernetes health probes** — `/health/live` and `/health/ready` with configurable readiness threshold
 - **GC tuning** — `GOGC=50` + `--gc-interval` keeps RSS flat; drift measured at +0.3% after 1,000 requests
 - **Multi-GPU** — tensor split (`--tensor-split 0.5,0.5`) and pipeline stages (`--pipeline-stages 4`)
-- **TensorRT backend** — 1.5–2× faster ONNX detection on NVIDIA GPUs
+- **TensorRT backend** — 1.5-2x faster ONNX detection on NVIDIA GPUs
+- **Torch backend** — TorchScript inference with shared CUDA allocator, lower VRAM than TRT
 - **CoreML backend** — Apple Silicon ONNX model acceleration
 - **Graceful shutdown** — in-flight requests complete before exit; SIGTERM-safe
 - **Docker** — CPU image **0.18 GB**, CUDA image ~2.5 GB; weights via volume mount
@@ -315,6 +322,26 @@ All approaches measured at the same time on the same GPU. infergo server is the 
 | Docker image (CPU) | **0.18 GB** | ~10 GB |
 | Docker image (CUDA) | ~2.5 GB | ~12 GB |
 
+### Object detection (YOLOv11, 4 models concurrent)
+
+Measured on RTX 5070 Ti, YOLOv11 n/s/m/l, 640x480 JPEG input.
+Full results: [`benchmarks/vs_python/results_detect_adaptive.md`](benchmarks/vs_python/results_detect_adaptive.md)
+
+| Concurrency | Python PyTorch | infergo adaptive | Winner |
+|---|---|---|---|
+| c=4 (16 total) | 157 req/s | **304 req/s** | **infergo 1.9x** |
+| c=8 (32 total) | 181 req/s | **293 req/s** | **infergo 1.6x** |
+| c=16 (64 total) | 164 req/s | **295 req/s** | **infergo 1.8x** |
+
+| Model | Python P50 | infergo P50 | Speedup |
+|---|---|---|---|
+| yolo11n (2.6M) | 93ms | **35ms** | **2.7x** |
+| yolo11s (9.4M) | 77ms | **36ms** | **2.1x** |
+| yolo11m (20.1M) | 105ms | **60ms** | **1.8x** |
+| yolo11l (25.3M) | 99ms | **70ms** | **1.4x** |
+
+Zero errors at all concurrency levels. Adaptive backend auto-switches between libtorch (low load) and TensorRT (high load).
+
 ---
 
 ## API reference
@@ -330,8 +357,9 @@ infergo pull          Download a model from HuggingFace
 
 ```
 serve flags:
-  --model            Path/spec for a model; repeatable. Format: [name:]path.{gguf,onnx}
+  --model            Path/spec for a model; repeatable. Format: [name:]path.{gguf,onnx,pt}
   --provider         cpu | cuda | tensorrt | coreml          (default: cpu)
+  --backend          auto | onnx | tensorrt | torch          (default: auto)
   --port             HTTP listen port                         (default: 9090)
   --grpc-port        gRPC listen port; 0 = disabled          (default: 9091)
   --gpu-layers       Transformer layers to offload to GPU    (default: 999 = all)
@@ -350,6 +378,9 @@ serve flags:
   --tensor-split     Comma-separated GPU fractions for tensor parallelism (e.g. 0.5,0.5)
   --pipeline-stages  GPU pipeline stages (1 = single GPU)    (default: 1)
   --mode             Server role: combined | prefill | decode (default: combined)
+  --adaptive         Enable adaptive backend selection       (default: true for adaptive backend)
+  --safe-mode        Single-image libtorch only, no batch    (most conservative)
+  --batch-threshold  Queue depth to switch to batch mode     (default: 3)
 ```
 
 ### HTTP endpoints
@@ -359,7 +390,8 @@ serve flags:
 | `POST` | `/v1/chat/completions` | Chat completion — OpenAI-compatible, `"stream": true` supported |
 | `POST` | `/v1/completions` | Text completion |
 | `POST` | `/v1/embeddings` | Dense embeddings from ONNX embedding models |
-| `POST` | `/v1/detect` | Object detection — YOLOv8 bounding boxes |
+| `POST` | `/v1/detect` | Object detection — JSON with base64 image |
+| `POST` | `/v1/detect/binary` | Object detection — raw JPEG body (faster, no base64) |
 | `GET` | `/v1/models` | List all loaded models |
 | `POST` | `/v1/admin/reload` | Hot-swap a model without restart |
 | `GET` | `/health/live` | Liveness probe — 200 if process is running |
@@ -440,12 +472,15 @@ For embedding infergo in a Go service (server-side), see [`docs/go-api-reference
 ┌──────▼──────┐ ┌─────▼──────┐ ┌────▼───────────────────┐
 │ libinfer_   │ │ libinfer_  │ │ libinfer_tokenizer      │
 │ llm         │ │ onnx       │ │ (HuggingFace / Rust FFI)│
-│ llama.cpp   │ │ ONNX       │ └────────────────────────┘
-│ KV cache    │ │ Runtime    │ ┌────────────────────────┐
-│ sampler     │ │ (CPU/TRT)  │ │ libinfer_preprocess    │
-└──────┬──────┘ └─────┬──────┘ │ image · letterbox ·   │
-       │              │        │ normalize              │
-       └──────┬───────┘        └────────────────────────┘
+│ llama.cpp   │ │ ONNX RT    │ └────────────────────────┘
+│ KV cache    │ │ (CPU/TRT)  │ ┌────────────────────────┐
+│ sampler     │ └─────┬──────┘ │ libinfer_preprocess    │
+└──────┬──────┘ ┌─────▼──────┐ │ image · letterbox ·   │
+       │        │ libinfer_  │ │ normalize              │
+       │        │ torch      │ └────────────────────────┘
+       │        │ TorchScript│
+       │        └─────┬──────┘
+       └──────┬───────┘
               │
 ┌─────────────▼───────────────────────────────────────────┐
 │  Hardware: NVIDIA CUDA · TensorRT · CPU (x86/ARM) · Metal│
@@ -465,6 +500,51 @@ The C API boundary is a hard rule — no C++ types cross it. This keeps CGo corr
 | Detection | ONNX | YOLOv8n / YOLOv8s / YOLOv8m, YOLOv9, RT-DETR |
 
 Any GGUF model compatible with llama.cpp will work. ONNX models are auto-detected by the presence of `tokenizer.json` (embedding) or the model filename (detection).
+
+---
+
+## Inference backends
+
+The `--backend` flag selects the execution backend for ONNX and TorchScript models. LLM inference (GGUF) always uses llama.cpp regardless of this flag.
+
+| Backend | Format | Throughput | P50 (yolo11n) | VRAM (4 models) | Best for |
+|---|---|---|---|---|---|
+| `onnx` | `.onnx` | 127 req/s | 102ms | 8.8 GB | Compatibility |
+| `tensorrt` | `.onnx` | **295 req/s** | **38ms** | 6.9 GB | Max throughput |
+| `torch` | `.pt` | 188 req/s | 50ms | 7.4 GB | Low idle VRAM (503MB) |
+| `adaptive` | `.pt`+`.onnx` | **304 req/s** | **35ms** | 8.5 GB | Production (auto-switches) |
+
+The `adaptive` backend loads all available backends for each model and routes per-request:
+- **c=1**: libtorch single-image (lowest latency)
+- **c=2-8**: libtorch batch (amortized overhead)
+- **c>8**: TensorRT (max throughput)
+
+```bash
+# TensorRT — fastest for detection
+./infergo serve --model detector:models/yolov8n.onnx --provider cuda --backend tensorrt
+
+# Torch — TorchScript models, shared CUDA allocator
+./infergo serve --model detector:models/yolo11n.torchscript.pt --provider cuda --backend torch
+
+# Adaptive — auto-picks best backend per request (needs both .pt and .onnx)
+./infergo serve --model yolo11n:models/yolo11n.torchscript.pt --provider cuda --backend adaptive
+
+# Safe mode — single-image libtorch only, no batch/adaptive
+./infergo serve --model yolo11n:models/yolo11n.torchscript.pt --provider cuda --safe-mode
+```
+
+**Converting models to TorchScript:**
+
+```bash
+python tools/convert_to_torchscript.py --batch yolo11n,yolo11s,yolo11m,yolo11l --output-dir models/
+```
+
+Or manually:
+
+```python
+from ultralytics import YOLO
+YOLO("yolo11n.pt").export(format="torchscript", imgsz=640)
+```
 
 ---
 
@@ -529,6 +609,15 @@ go build -C go -o ../infergo ./cmd/infergo
 # CUDA build (requires CUDA Toolkit 12.x)
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DINFER_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89
+cmake --build build --target infer_api -j$(nproc)
+go build -C go -o ../infergo ./cmd/infergo
+
+# CUDA + Torch build (requires CUDA Toolkit 12.x + libtorch)
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+TORCH_CMAKE=$(python3 -c "import torch; print(torch.utils.cmake_prefix_path)")
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DINFER_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89 \
+  -DTorch_DIR="${TORCH_CMAKE}/Torch"
 cmake --build build --target infer_api -j$(nproc)
 go build -C go -o ../infergo ./cmd/infergo
 ```

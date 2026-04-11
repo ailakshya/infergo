@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -133,6 +134,95 @@ InferError infer_session_run(
 
 // Destroy session and free all resources. Safe to call with NULL.
 void infer_session_destroy(InferSession s);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TORCH (PyTorch/libtorch) INFERENCE SESSION API
+// ─────────────────────────────────────────────────────────────────────────────
+// These functions mirror the ONNX session API but use a TorchScript (.pt)
+// model backend powered by libtorch.  When libtorch is not available at build
+// time, stub implementations return INFER_ERR_RUNTIME / NULL.
+
+typedef void* InferTorchSession;
+
+// Forward declaration — InferBox is defined in the postprocess section below.
+typedef struct InferBox InferBox;
+
+// Create a TorchSession for the given execution provider.
+// provider: "cpu" | "cuda"
+// Falls back to CPU if CUDA is requested but unavailable.
+// Returns NULL on failure; call infer_last_error_string() for details.
+InferTorchSession infer_torch_session_create(const char* provider, int device_id);
+
+// Load a TorchScript model (.pt file) into the session.
+InferError infer_torch_session_load(InferTorchSession s, const char* model_path);
+
+// Get number of model inputs (valid after infer_torch_session_load).
+int infer_torch_session_num_inputs(InferTorchSession s);
+
+// Get number of model outputs (valid after infer_torch_session_load).
+int infer_torch_session_num_outputs(InferTorchSession s);
+
+// Run inference.
+// inputs:   array of n_inputs InferTensor values (CPU tensors only).
+// outputs:  array of n_outputs InferTensor pointers to write results into.
+//           Each output tensor is heap-allocated; caller must call infer_tensor_free().
+InferError infer_torch_session_run(
+    InferTorchSession  s,
+    InferTensor*       inputs,   int n_inputs,
+    InferTensor*       outputs,  int n_outputs
+);
+
+// GPU-optimized run: non-blocking H2D upload, inference on GPU, D2H output copy.
+// Same interface as infer_torch_session_run but uses non_blocking transfers.
+InferError infer_torch_session_run_gpu(
+    InferTorchSession  s,
+    InferTensor*       inputs,   int n_inputs,
+    InferTensor*       outputs,  int n_outputs
+);
+
+// GPU-accelerated detection: JPEG bytes in -> box coordinates out.
+// Everything runs on GPU after JPEG decode. Only ~921KB uploaded, ~300B downloaded.
+// Returns number of detections written to out_boxes (-1 on error).
+int infer_torch_detect_gpu(
+    InferTorchSession s,
+    const void* jpeg_data, int nbytes,
+    float conf_thresh, float iou_thresh,
+    InferBox* out_boxes, int max_boxes);
+
+// Batch GPU detection: process N JPEG images in one forward pass.
+// Amortizes CGo/C++ overhead across N images.
+// jpeg_data_array: array of N JPEG byte pointers
+// nbytes_array: array of N byte counts
+// out_boxes_array: array of N InferBox* output buffers (each pre-allocated by caller)
+// out_counts: array of N ints — receives detection count per image
+// max_boxes_per_image: capacity of each output buffer
+// Returns 0 on success, -1 on error.
+int infer_torch_detect_gpu_batch(
+    InferTorchSession s,
+    const void** jpeg_data_array, const int* nbytes_array, int batch_size,
+    float conf_thresh, float iou_thresh,
+    InferBox** out_boxes_array, int* out_counts, int max_boxes_per_image);
+
+// Detect from raw RGB pixels — no JPEG encode/decode overhead.
+// rgb_data: raw RGB uint8 pixels (width * height * 3 bytes)
+// Returns detection count, or -1 on error.
+int infer_torch_detect_gpu_raw(
+    InferTorchSession s,
+    const void* rgb_data, int width, int height,
+    float conf_thresh, float iou_thresh,
+    InferBox* out_boxes, int max_boxes);
+
+// Detect from YUV/NV12 frame — zero CPU color conversion.
+// NV12→RGB happens on GPU. Fastest path for video pipelines.
+// yuv_data: raw NV12 data (Y plane followed by UV plane, total height*1.5*linesize bytes)
+int infer_torch_detect_gpu_yuv(
+    InferTorchSession s,
+    const void* yuv_data, int width, int height, int linesize,
+    float conf_thresh, float iou_thresh,
+    InferBox* out_boxes, int max_boxes);
+
+// Destroy session and free all resources. Safe to call with NULL.
+void infer_torch_session_destroy(InferTorchSession s);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TOKENIZER API
@@ -327,7 +417,7 @@ typedef struct {
 } InferClassResult;
 
 // Bounding box (absolute pixel coordinates, top-left / bottom-right).
-typedef struct {
+typedef struct InferBox {
     float x1, y1;   // top-left corner
     float x2, y2;   // bottom-right corner
     int   class_idx;
@@ -391,6 +481,197 @@ int infer_llm_kv_pages_total(InferLLM llm);
 
 // Returns the page size in tokens (always 16 in this build).
 int infer_llm_kv_page_size(InferLLM llm);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PYTORCH / LIBTORCH SESSION API
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Create a torch session for the given execution provider.
+// provider: "cpu" | "cuda"
+// Falls back to CPU if the requested provider is unavailable.
+// Returns NULL on failure; call infer_last_error_string() for details.
+void* infer_torch_session_create(const char* provider, int device_id);
+
+// Load a TorchScript model file into the session.
+InferError infer_torch_session_load(void* handle, const char* model_path);
+
+// Get number of model inputs (valid after infer_torch_session_load).
+int infer_torch_session_num_inputs(void* handle);
+
+// Get number of model outputs (valid after infer_torch_session_load).
+int infer_torch_session_num_outputs(void* handle);
+
+// Run inference.
+// inputs:   array of n_in InferTensor (void*) values.
+// outputs:  array of n_out InferTensor (void*) pointers to write results into.
+//           Each output tensor is heap-allocated; caller must call infer_tensor_free().
+InferError infer_torch_session_run(
+    void*  handle,
+    void** inputs,   int n_in,
+    void** outputs,  int n_out
+);
+
+// Destroy torch session and free all resources. Safe to call with NULL.
+void infer_torch_session_destroy(void* handle);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VRAM MONITORING — uses cudaMemGetInfo, no subprocess overhead
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Returns free GPU memory in bytes. Returns 0 if CUDA is not available.
+size_t infer_cuda_vram_free(void);
+
+// Returns total GPU memory in bytes. Returns 0 if CUDA is not available.
+size_t infer_cuda_vram_total(void);
+
+// Returns GPU memory usage as a percentage (0-100). Returns 0 if CUDA not available.
+int infer_cuda_vram_used_pct(void);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VIDEO DECODER / ENCODER API (FFmpeg + NVDEC/NVENC)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Open a video decoder for the given URL (file path, RTSP, or V4L2 device).
+// hw_accel: 1 = try NVDEC GPU decode, fall back to CPU; 0 = CPU only.
+// Returns opaque handle, or NULL on failure.
+void* infer_video_decoder_open(const char* url, int hw_accel);
+
+// Decode the next frame as RGB24 pixels.
+// out_rgb:      set to internal buffer (width * height * 3 bytes, valid until next call).
+// w, h:         frame dimensions.
+// pts:          presentation timestamp in microseconds.
+// frame_num:    sequential frame number (0-based).
+// Returns 1 on success, 0 on EOF/error.
+int infer_video_decoder_next_frame(void* dec, uint8_t** out_rgb,
+                                   int* w, int* h, int64_t* pts, int* frame_num);
+
+// Query decoder properties.
+int infer_video_decoder_width(void* dec);
+int infer_video_decoder_height(void* dec);
+double infer_video_decoder_fps(void* dec);
+int infer_video_decoder_is_hw(void* dec);
+
+// Decode next frame, resize to target dimensions, and return RGB24 data.
+// out_rgb points to an internal buffer (overwritten on next call).
+// Returns 1 on success, 0 on EOF/error.
+int infer_video_decoder_next_frame_resized(void* dec, int target_w, int target_h,
+                                            uint8_t** out_rgb, int* out_w, int* out_h,
+                                            int64_t* out_pts, int* out_frame_num);
+
+// Close decoder and release all resources. Safe to call with NULL.
+void infer_video_decoder_close(void* dec);
+
+// Open a video encoder writing to the given file path.
+// codec: "h264_nvenc" (GPU) or "libx264" (CPU). Falls back to libx264 on failure.
+// Returns opaque handle, or NULL on failure.
+void* infer_video_encoder_open(const char* path, int width, int height,
+                               int fps, const char* codec);
+
+// Encode one RGB24 frame (width * height * 3 bytes).
+// Returns 1 on success, 0 on error.
+int infer_video_encoder_write(void* enc, const uint8_t* rgb, int width, int height);
+
+// Query whether encoder is using hardware acceleration.
+int infer_video_encoder_is_hw(void* enc);
+
+// Close encoder, flush remaining frames, and release resources. Safe to call with NULL.
+void infer_video_encoder_close(void* enc);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FRAME ANNOTATOR API (draw primitives + JPEG encode)
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef struct InferAnnotateBox {
+    float x1, y1, x2, y2;
+    int   class_id;
+    float confidence;
+    int   track_id;
+    char  label[64];
+} InferAnnotateBox;
+
+typedef struct InferPoint {
+    int x, y;
+} InferPoint;
+
+// Annotate an RGB frame with bounding boxes and labels, encode as JPEG.
+// out_jpeg: set to a malloc'd buffer on success (caller frees with infer_frame_jpeg_free).
+// out_size: set to JPEG byte count on success.
+InferError infer_frame_annotate_jpeg(const uint8_t* rgb, int w, int h,
+                                     const InferAnnotateBox* boxes, int n,
+                                     int quality,
+                                     uint8_t** out_jpeg, int* out_size);
+
+// Resize an RGB frame and encode as JPEG.
+InferError infer_frame_resize_jpeg(const uint8_t* rgb, int sw, int sh,
+                                   int dw, int dh, int quality,
+                                   uint8_t** out_jpeg, int* out_size);
+
+// Combine two RGB frames side-by-side with a status bar, encode as JPEG.
+InferError infer_frame_combine_jpeg(const uint8_t* rgb1, int w1, int h1,
+                                    const uint8_t* rgb2, int w2, int h2,
+                                    const char* status,
+                                    int tw, int th, int quality,
+                                    uint8_t** out_jpeg, int* out_size);
+
+// Draw a line on an RGB buffer.
+InferError infer_frame_draw_line(uint8_t* rgb, int w, int h,
+                                 int x1, int y1, int x2, int y2,
+                                 uint8_t r, uint8_t g, uint8_t b, int thickness);
+
+// Draw a polygon (outline + alpha fill) on an RGB buffer.
+InferError infer_frame_draw_polygon(uint8_t* rgb, int w, int h,
+                                    const InferPoint* pts, int n,
+                                    uint8_t r, uint8_t g, uint8_t b, uint8_t alpha);
+
+// Draw text on an RGB buffer using the built-in 5x8 bitmap font.
+InferError infer_frame_draw_text(uint8_t* rgb, int w, int h,
+                                 int x, int y, const char* text,
+                                 uint8_t r, uint8_t g, uint8_t b, int scale);
+
+// ── Batch annotation: ALL drawing + resize + JPEG in ONE call ───────────────
+// This is the fast path for the detection control center. One CGo call replaces
+// 20+ individual draw calls + JPEG encode.
+
+typedef struct InferLine {
+    int x1, y1, x2, y2;
+    uint8_t r, g, b;
+    int thickness;
+} InferLine;
+
+typedef struct InferTextOverlay {
+    int x, y;
+    char text[128];
+    uint8_t r, g, b;
+    int scale;
+} InferTextOverlay;
+
+typedef struct InferFilledRect {
+    int x1, y1, x2, y2;
+    uint8_t r, g, b, alpha;
+} InferFilledRect;
+
+typedef struct InferPolygonOverlay {
+    InferPoint pts[8];
+    int n_pts;
+    uint8_t r, g, b, alpha;
+} InferPolygonOverlay;
+
+// Annotate a frame with boxes + lines + polygons + text + filled rects,
+// then resize and JPEG encode — all in one C call.
+// rgb is NOT modified (a working copy is made internally).
+// out_jpeg/out_size: malloc'd JPEG buffer (caller frees with infer_frame_jpeg_free).
+InferError infer_frame_annotate_full(
+    const uint8_t* rgb, int w, int h,
+    const InferAnnotateBox* boxes, int n_boxes,
+    const InferLine* lines, int n_lines,
+    const InferPolygonOverlay* polygons, int n_polygons,
+    const InferTextOverlay* texts, int n_texts,
+    const InferFilledRect* rects, int n_rects,
+    int out_w, int out_h, int quality,
+    uint8_t** out_jpeg, int* out_size);
+
+// Free a JPEG buffer returned by infer_frame_annotate_jpeg / resize / combine.
+void infer_frame_jpeg_free(uint8_t* buf);
 
 #ifdef __cplusplus
 } // extern "C"

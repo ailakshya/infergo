@@ -260,3 +260,24 @@ lib.infer_llm_kv_pages_total.restype  = _ci
 
 lib.infer_llm_kv_page_size.argtypes = [_vp]
 lib.infer_llm_kv_page_size.restype  = _ci
+
+# ------------------------------------------------------------------
+# Torch session
+# ------------------------------------------------------------------
+lib.infer_torch_session_create.argtypes = [_cp, _ci]
+lib.infer_torch_session_create.restype  = _vp
+
+lib.infer_torch_session_load.argtypes = [_vp, _cp]
+lib.infer_torch_session_load.restype  = _ci
+
+lib.infer_torch_session_num_inputs.argtypes = [_vp]
+lib.infer_torch_session_num_inputs.restype  = _ci
+
+lib.infer_torch_session_num_outputs.argtypes = [_vp]
+lib.infer_torch_session_num_outputs.restype  = _ci
+
+lib.infer_torch_session_run.argtypes = [_vp, _pvp, _ci, _pvp, _ci]
+lib.infer_torch_session_run.restype  = _ci
+
+lib.infer_torch_session_destroy.argtypes = [_vp]
+lib.infer_torch_session_destroy.restype  = None

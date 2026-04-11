@@ -137,8 +137,32 @@ else()
     message(STATUS "OpenCV not found — skipping infer_preprocess (install via vcpkg: opencv4)")
 endif()
 
+# ─── libtorch (PyTorch C++ backend) — optional, must come before cpp/api ─────
+find_package(Torch QUIET)
+if(Torch_FOUND)
+    message(STATUS "libtorch ${Torch_VERSION} found — building infer_torch")
+    add_subdirectory(cpp/torch)
+else()
+    message(STATUS "libtorch not found — skipping infer_torch")
+endif()
+
 # Postprocessing — pure C++, no external deps; must come before cpp/api
 add_subdirectory(cpp/postprocess)
+
+# CUDA VRAM monitor — must come before cpp/api so infer_cuda_monitor target exists
+add_subdirectory(cpp/cuda)
+
+# ─── Video decode/encode (FFmpeg + NVDEC/NVENC) — must come before cpp/api ──
+# Detect FFmpeg system libraries directly (vcpkg toolchain overrides find_library)
+# FFmpeg video: requires libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+execute_process(COMMAND ls /usr/include/x86_64-linux-gnu/libswscale/swscale.h RESULT_VARIABLE _swscale_rc OUTPUT_QUIET ERROR_QUIET)
+execute_process(COMMAND ls /usr/lib/x86_64-linux-gnu/libavcodec.so RESULT_VARIABLE _ffmpeg_rc OUTPUT_QUIET ERROR_QUIET)
+if(_ffmpeg_rc EQUAL 0 AND _swscale_rc EQUAL 0)
+    message(STATUS "FFmpeg found — building infer_video (NVDEC/NVENC)")
+    add_subdirectory(cpp/video)
+else()
+    message(STATUS "FFmpeg not found — skipping infer_video (install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev)")
+endif()
 
 # cpp/api depends on infer_llm, infer_preprocess, infer_postprocess — must come last
 add_subdirectory(cpp/api)
