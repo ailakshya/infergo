@@ -152,6 +152,91 @@ Your app (Python / Go / curl / any language)
     ▼  NVIDIA CUDA / CPU / Metal
 ```
 
+### How Go handles requests vs Python
+
+```
+PYTHON — one request at a time (GIL)
+─────────────────────────────────────
+
+  Request 1 arrives → Python thread 1 starts
+    │ GIL LOCKED — no other thread can run
+    │ tokenize (Python) .............. 10ms
+    │ for each token:
+    │   acquire GIL .................. 0.5ms
+    │   call C (llama_decode) ........ 2ms   ← GPU busy
+    │   copy logits to Python ........ 1ms   ← GPU idle
+    │   sample in Python ............. 1ms   ← GPU idle
+    │   release GIL .................. 0.2ms
+    │ serialize response ............. 20ms
+    │ GIL UNLOCKED
+    ▼
+  Request 2 STARTS (was waiting the entire time)
+
+  10 concurrent users = 10th user waits 6,420ms (10 × 642ms)
+  
+  To "fix" this, Python forks 10 processes:
+    Process 1: loads model (2,720 MB VRAM)
+    Process 2: loads model (2,720 MB VRAM)
+    ...
+    Process 10: loads model (2,720 MB VRAM)
+    TOTAL: 27,200 MB VRAM — doesn't fit on any GPU
+    
+  Each process also loads:
+    Python interpreter:     120 MB RSS
+    PyTorch:                800 MB RSS
+    sentence-transformers:  200 MB RSS
+    × 10 processes = 11,200 MB CPU RAM
+
+
+GO (infergo) — thousands of concurrent requests
+─────────────────────────────────────────────────
+
+  Request 1 arrives → goroutine 1 (8 KB stack)
+    │ parse JSON (Go) ................ 0.1ms
+    │ ONE CGo call to C++ ............ 0.0ms boundary
+    │   entire generate loop in C++:
+    │     prefill .................... 5ms   ← GPU busy
+    │     for each token:
+    │       decode ................... 2ms   ← GPU busy
+    │       sample (C++, zero copy) .. 0.01ms ← still in C
+    │   return text
+    │ serialize JSON (Go) ............ 0.2ms
+    ▼ Done (116ms)
+
+  Request 2 arrives → goroutine 2 (8 KB stack)
+    │ starts IMMEDIATELY — no GIL, no lock
+    │ if GPU is busy: waits in scheduler queue
+    │ if GPU is free: starts inference
+    ▼
+
+  10 concurrent users:
+    10 goroutines = 80 KB total memory (vs 11,200 MB Python)
+    1 model copy in VRAM (vs 27,200 MB Python)
+    Continuous batching: all 10 sequences in ONE GPU call
+    P50 latency stays flat — GPU processes all users together
+
+  Why goroutines beat threads:
+    Python thread:  8 MB stack, GIL blocks all others
+    Go goroutine:   8 KB stack (1000x smaller), no GIL
+    
+    Python can't run 2 threads at once (GIL).
+    Go runs thousands of goroutines on all CPU cores.
+    
+    Python needs OS threads → expensive context switches.
+    Go schedules goroutines in userspace → near-zero overhead.
+
+  What Go does vs what C++ does:
+    Go:  HTTP server, JSON parse, routing, auth, metrics, queue
+         ~0.3ms per request. No inference compute.
+         
+    C++: tokenize, prefill, decode, sample, detokenize,
+         prompt cache, grammar sampling, speculative decode
+         ~115ms per request. ALL compute.
+         
+    Go is the receptionist. C++ is the doctor.
+    The receptionist doesn't do surgery.
+```
+
 **Why it's faster than Python:** Python's per-token overhead is 3ms (GIL lock + logits copy to Python + sampling in Python + GIL release). Over 50 tokens that's 150ms wasted. In infergo, the entire decode loop runs in C++ — the GPU never waits for an interpreter. Python uses 15% of the GPU. infergo uses 85%.
 
 **VRAM footprint (measured, RTX 5070 Ti):**
