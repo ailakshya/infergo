@@ -40,6 +40,8 @@ func main() {
 		runConvert(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
+	case "models":
+		runModels(os.Args[2:])
 	case "-h", "--help", "help":
 		printUsage()
 	default:

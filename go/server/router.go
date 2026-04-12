@@ -104,6 +104,8 @@ type ChatCompletionRequest struct {
 	Temp           float32         `json:"temperature"`
 	Stream         bool            `json:"stream"`
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+	Tools          []Tool          `json:"tools,omitempty"`
+	ToolChoice     interface{}     `json:"tool_choice,omitempty"` // "none"|"auto"|object
 }
 
 // ChatCompletionResponse mirrors the OpenAI chat completion object.
@@ -305,6 +307,7 @@ type Server struct {
 	reload            ReloadFunc // optional; nil = reload not configured
 	mode              string     // "combined" (default), "prefill", or "decode"
 	ModelRegistryPath string     // optional; path to models/registry.json for convert/validate metadata
+	guardrail         *Guardrail // optional content safety filter
 }
 
 // NewServer creates a Server backed by the given Registry and registers all routes.
@@ -326,7 +329,12 @@ func NewServer(reg *Registry) *Server {
 	s.mux.HandleFunc("POST /v1/prefill", s.handlePrefill)
 	s.mux.HandleFunc("POST /v1/decode", s.handleDecode)
 	s.mux.HandleFunc("POST /v1/search", s.handleSearch)
+	s.mux.HandleFunc("POST /v1/rerank", s.handleRerank)
+	s.mux.HandleFunc("POST /v1/detect/stream", s.handleDetectStream)
+	s.mux.HandleFunc("POST /v1/images/generations", s.handleImageGeneration)
 	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.handleTranscription)
+	s.mux.HandleFunc("GET /v1/admin/guardrails", s.handleGuardrailConfig)
+	s.mux.HandleFunc("POST /v1/admin/guardrails", s.handleGuardrailConfig)
 	return s
 }
 
