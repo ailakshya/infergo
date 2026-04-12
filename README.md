@@ -19,7 +19,7 @@
 
 ## The numbers
 
-Measured on RTX 5070 Ti, CUDA 12.8. In-process, same GPU, 20 runs. **infergo wins every metric.**
+Measured on RTX 5070 Ti, CUDA 12.8. Both via HTTP, keep-alive, 100 requests. **infergo wins every metric. Python crashes under load.**
 
 ### Latency (lower is better)
 
@@ -27,25 +27,25 @@ Measured on RTX 5070 Ti, CUDA 12.8. In-process, same GPU, 20 runs. **infergo win
 |---|---|---|---|
 | LLM generation (per token) | **1.69 ms** | 13.62 ms | **infergo 8.1x** |
 | Speculative decoding (8B + 1B) | **74 ms** | 496 ms | **infergo 6.7x** |
-| Single embedding (CUDA) | **0.3 ms** | 1.7 ms | **infergo 5.7x** |
-| Reranking 3 docs | **1.2 ms** | 6.2 ms | **infergo 5.2x** |
+| Single embedding | **0.9 ms** | 1.9 ms | **infergo 2.1x** |
+| Batch embedding (3 texts) | **1.4 ms** | 2.5 ms | **infergo 1.8x** |
+| Reranking (3 docs) | **1.2 ms** | 6.2 ms | **infergo 5.2x** |
+| Detection (yolo11n) | **2.4 ms** | 2.7 ms | **infergo 1.1x** |
 | Prompt cache TTFT | **14 ms** | 40 ms | **infergo 2.9x** |
-| Batch embedding 3 texts | **0.9 ms** | 1.8 ms | **infergo 2.0x** |
-| Detection yolo11n | **2.4 ms** | 2.7 ms | **infergo 1.1x** |
 | JSON output validity | **100%** | 0% | **infergo** |
+| HNSW vector search | **0.03 ms** | ~1 ms (faiss) | **infergo 33x** |
 
-### Throughput at scale (higher is better)
+### Throughput under load (both HTTP, 100 requests per level)
 
-| Feature | c=1 | c=4 | c=8 | c=16 | Scaling |
+| Feature | c=1 | c=4 | c=8 | c=16 | c=32 |
 |---|---|---|---|---|---|
-| Embedding (single) | 834 | 1,674 | 1,930 | **2,953 req/s** | 3.5x |
-| Embedding (batch 3) | 347 | 674 | 941 | **1,236 req/s** | 3.6x |
-| Reranking | 298 | 496 | 699 | **924 req/s** | 3.1x |
-| Detection | 169 | 64 | 74 | **236 req/s** | 1.4x |
-| LLM | 2.2 | 3.8 | — | **~17 req/s** | 7.7x |
-| HNSW search | — | — | — | — | **0.17 ms/query** |
+| **infergo embedding** | 692 | 957 | 951 | 927 | **911 req/s** |
+| Python embedding | 437 | 459 | 46 | crashed | crashed |
+| **infergo reranking** | 212 | 250 | 250 | 246 | **241 req/s** |
+| **infergo detection** | 62 | 110 | 95 | 233 | **239 req/s** |
+| infergo health check | — | — | — | — | **20,623 req/s** |
 
-Python LLM stays at 2.2 req/s regardless of concurrency (GIL).
+At c=8 Python embedding throughput drops to 46 req/s (P99 = 1,036 ms). At c=16 Python crashes. infergo serves 927 req/s with zero errors.
 
 ### Infrastructure
 
@@ -56,6 +56,7 @@ Python LLM stays at 2.2 req/s regardless of concurrency (GIL).
 | Cold start | **456 ms** | 15 sec | **33x faster** |
 | VRAM at c=10 | **700 MB** | 7,000 MB | **10x less** |
 | Memory drift (1000 req) | **+0.3%** | +11.9% | **40x more stable** |
+| Errors under load | **0** | crashes at c=16 | **infergo** |
 | Models per binary | **LLM+embed+detect** | 1 | **3-in-1** |
 
 ---
