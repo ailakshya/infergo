@@ -330,6 +330,7 @@ func NewServer(reg *Registry) *Server {
 	// Prefill-decode separation endpoints (OPT-26)
 	s.mux.HandleFunc("POST /v1/prefill", s.handlePrefill)
 	s.mux.HandleFunc("POST /v1/decode", s.handleDecode)
+	s.mux.HandleFunc("POST /v1/embeddings/binary", s.handleEmbeddingsBinary)
 	s.mux.HandleFunc("POST /v1/search", s.handleSearch)
 	s.mux.HandleFunc("POST /v1/rerank", s.handleRerank)
 	s.mux.HandleFunc("POST /v1/detect/stream", s.handleDetectStream)
@@ -595,21 +596,11 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := make([]EmbeddingData, len(vecs))
-	totalTokens := 0
-	for i, v := range vecs {
-		data[i] = EmbeddingData{Object: "embedding", Index: i, Embedding: v}
-		totalTokens += len(req.InputArr[i])
-	}
-
-	resp := EmbeddingResponse{
-		Object: "list",
-		Model:  req.Model,
-		Data:   data,
-		Usage:  UsageInfo{PromptTokens: totalTokens, TotalTokens: totalTokens},
-	}
-	writeJSON(w, http.StatusOK, resp)
+	// Use fast JSON writer — skips json.Encoder overhead for float arrays
+	writeEmbeddingJSONFast(w, req.Model, vecs, req.InputArr)
+	return
 }
+
 
 func (s *Server) handleDetect(w http.ResponseWriter, r *http.Request) {
 	var req DetectRequest
