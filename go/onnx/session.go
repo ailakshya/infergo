@@ -53,6 +53,9 @@ func NewSession(provider string, deviceID int) (*Session, error) {
 	return s, nil
 }
 
+// Handle returns the raw C session pointer for use with C pipeline functions.
+func (s *Session) Handle() unsafe.Pointer { return unsafe.Pointer(s.ptr) }
+
 // Close destroys the session and frees all C resources.
 // Safe to call multiple times.
 func (s *Session) Close() {

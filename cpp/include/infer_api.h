@@ -453,6 +453,57 @@ int infer_sampler_sample_seq(InferSampler smpl, InferSeq seq);
 void infer_sampler_free(InferSampler smpl);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// FULL C EMBEDDING PIPELINE
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Run the complete embedding pipeline in C++: tokenize → ONNX → pool → normalize.
+// One CGo call replaces: Go tokenize + tensor alloc + ONNX run + pool + L2 norm.
+//
+// session:     ONNX session (embedding model loaded).
+// tokenizer:   HuggingFace tokenizer handle.
+// text:        input text (null-terminated).
+// out_vec:     caller-allocated float array (at least max_dim floats).
+// max_dim:     capacity of out_vec.
+// Returns the embedding dimension (number of floats written), or -1 on error.
+int infer_embed_pipeline(InferSession   session,
+                          InferTokenizer tokenizer,
+                          const char*    text,
+                          float*         out_vec,
+                          int            max_dim);
+
+// Batch embedding: N texts → N vectors in one C++ call.
+// texts:       array of N null-terminated strings.
+// n_texts:     number of texts.
+// out_vecs:    caller-allocated float array (n_texts * max_dim).
+// Returns embedding dimension, or -1 on error.
+int infer_embed_batch_pipeline(InferSession   session,
+                                InferTokenizer tokenizer,
+                                const char**   texts,
+                                int            n_texts,
+                                float*         out_vecs,
+                                int            max_dim);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FULL C RERANK PIPELINE
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Rerank documents by query relevance — all in C++.
+// Embeds query + all documents, computes cosine similarity, sorts by score.
+// One CGo call replaces: N+1 embed calls + Go cosine + Go sort.
+//
+// out_scores:  caller-allocated float array (n_docs scores, descending).
+// out_indices: caller-allocated int array (n_docs indices, by score).
+// Returns number of results, or -1 on error.
+int infer_rerank_pipeline(InferSession   session,
+                           InferTokenizer tokenizer,
+                           const char*    query,
+                           const char**   documents,
+                           int            n_docs,
+                           float*         out_scores,
+                           int*           out_indices,
+                           int            max_results);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // VECTOR SEARCH (HNSW) API
 // ─────────────────────────────────────────────────────────────────────────────
 
