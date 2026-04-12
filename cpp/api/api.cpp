@@ -11,6 +11,7 @@
 #include "../llm/llm_engine.hpp"
 #include "../llm/infer_sequence.hpp"
 #include "../llm/speculative.hpp"
+#include "../llm/prompt_cache.hpp"
 #include "../../vendor/llama.cpp/include/llama.h"
 #ifdef INFER_PREPROCESS_AVAILABLE
 #include "../preprocess/preprocess.hpp"
@@ -841,12 +842,14 @@ void infer_tokenizer_destroy(InferTokenizer tok) {
 struct LLMHandle {
     infergo::LLMEngine       engine;
     infergo::KVPageAllocator pages;  // replaces KVCacheSlotManager
+    infergo::PromptCache     prompt_cache;  // LRU cache for prefill KV state
     int n_ctx = 0;
 
     LLMHandle(int n_seq_max, int ctx_size)
         : pages(infergo::KVPageAllocator::kDefaultPageSize,
                 n_seq_max,
                 ctx_size / infergo::KVPageAllocator::kDefaultPageSize)
+        , prompt_cache(16)
         , n_ctx(ctx_size)
     {}
 };
@@ -1304,28 +1307,88 @@ int infer_llm_generate(InferLLM      llm,
         llama_batch batch = llama_batch_init(
             std::max(n_prompt, 1), 0, 1);
 
-        // ── Prefill ──
-        batch.n_tokens = 0;
-        for (int i = 0; i < n_prompt; ++i) {
-            int idx = batch.n_tokens++;
-            batch.token[idx]      = prompt_tokens[i];
-            batch.pos[idx]        = i;
-            batch.n_seq_id[idx]   = 1;
-            batch.seq_id[idx][0]  = static_cast<llama_seq_id>(slot_id);
-            batch.logits[idx]     = (i == n_prompt - 1) ? 1 : 0;
+        // ── Prefill (with prompt cache) ──
+        // Strategy: cache KV for positions 0..n-2. On cache hit, deserialize
+        // then decode only the last token to get logits. This avoids position
+        // conflicts (the last position is always fresh).
+        const int cache_len = n_prompt - 1;  // cache all but last token
+        std::vector<uint8_t> cached_kv;
+        int cached_n = 0;
+        bool cache_hit = (cache_len > 0) &&
+            h->prompt_cache.Get(prompt_tokens, cache_len, cached_kv, cached_n);
+
+        if (cache_hit && cached_n == cache_len) {
+            const size_t consumed = llama_state_seq_set_data(ctx,
+                cached_kv.data(), cached_kv.size(),
+                static_cast<llama_seq_id>(slot_id));
+            if (consumed == 0) {
+                cache_hit = false;
+            } else {
+                // Clear the last cached position so we can decode it fresh for logits.
+                llama_memory_seq_rm(llama_get_memory(ctx),
+                    static_cast<llama_seq_id>(slot_id), cache_len, -1);
+            }
+        } else {
+            cache_hit = false;
         }
 
-        int rc = llama_decode(ctx, batch);
-        if (rc != 0) {
-            llama_batch_free(batch);
-            llama_sampler_free(smpl);
-            pages.FreeSlot(slot_id);
-            infergo::set_last_error("infer_llm_generate: prefill decode failed");
-            return -1;
+        if (cache_hit) {
+            // Cache hit: only decode the last prompt token (position n-1).
+            batch.n_tokens = 0;
+            int idx = batch.n_tokens++;
+            batch.token[idx]      = prompt_tokens[n_prompt - 1];
+            batch.pos[idx]        = n_prompt - 1;
+            batch.n_seq_id[idx]   = 1;
+            batch.seq_id[idx][0]  = static_cast<llama_seq_id>(slot_id);
+            batch.logits[idx]     = 1;
+
+            if (llama_decode(ctx, batch) != 0) {
+                llama_batch_free(batch);
+                llama_sampler_free(smpl);
+                pages.FreeSlot(slot_id);
+                infergo::set_last_error("infer_llm_generate: cache-hit decode failed");
+                return -1;
+            }
+        } else {
+            // Cache miss: full prefill.
+            batch.n_tokens = 0;
+            for (int i = 0; i < n_prompt; ++i) {
+                int idx = batch.n_tokens++;
+                batch.token[idx]      = prompt_tokens[i];
+                batch.pos[idx]        = i;
+                batch.n_seq_id[idx]   = 1;
+                batch.seq_id[idx][0]  = static_cast<llama_seq_id>(slot_id);
+                batch.logits[idx]     = (i == n_prompt - 1) ? 1 : 0;
+            }
+
+            int rc = llama_decode(ctx, batch);
+            if (rc != 0) {
+                llama_batch_free(batch);
+                llama_sampler_free(smpl);
+                pages.FreeSlot(slot_id);
+                infergo::set_last_error("infer_llm_generate: prefill decode failed");
+                return -1;
+            }
+
+            // Cache KV for positions 0..n-2 (all but last token).
+            if (cache_len > 0) {
+                const size_t kv_size = llama_state_seq_get_size(ctx,
+                    static_cast<llama_seq_id>(slot_id));
+                if (kv_size > 0) {
+                    std::vector<uint8_t> kv_buf(kv_size);
+                    const size_t written = llama_state_seq_get_data(ctx,
+                        kv_buf.data(), kv_buf.size(),
+                        static_cast<llama_seq_id>(slot_id));
+                    if (written > 0) {
+                        // Store keyed by first n-1 tokens (the cached prefix).
+                        h->prompt_cache.Put(prompt_tokens, cache_len,
+                            kv_buf.data(), written);
+                    }
+                }
+            }
         }
 
         // Sample first token
-        // Build token_data_array from logits at the last prefill position
         auto sample_at = [&](int batch_idx) -> int32_t {
             const float* logits = llama_get_logits_ith(ctx, batch_idx);
             if (!logits) return -1;
@@ -1347,7 +1410,9 @@ int infer_llm_generate(InferLLM      llm,
         int gen_tokens = 0;
         int n_past = n_prompt;
 
-        int32_t tok = sample_at(n_prompt - 1);
+        // After cache hit: logits at batch index 0 (single-token decode)
+        // After cache miss: logits at batch index n_prompt-1 (full prefill)
+        int32_t tok = sample_at(cache_hit ? 0 : n_prompt - 1);
         bool stopped = (tok < 0 || llama_vocab_is_eog(vocab, tok));
 
         // ── Decode loop ──
@@ -1374,8 +1439,8 @@ int infer_llm_generate(InferLLM      llm,
             batch.logits[idx]     = 1;
             n_past++;
 
-            rc = llama_decode(ctx, batch);
-            if (rc != 0) break;
+            int rc2 = llama_decode(ctx, batch);
+            if (rc2 != 0) break;
 
             tok = sample_at(0);
             stopped = (tok < 0 || llama_vocab_is_eog(vocab, tok));
