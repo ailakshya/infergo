@@ -131,32 +131,46 @@ type UsageInfo struct {
 // EmbeddingRequest mirrors the OpenAI /v1/embeddings body.
 // Input accepts either a string or an array of strings (batch mode).
 type EmbeddingRequest struct {
-	Model    string   `json:"model"`
-	Input    string   `json:"-"`       // single string (set by custom unmarshal)
-	InputArr []string `json:"-"`       // batch of strings (set by custom unmarshal)
-	RawInput json.RawMessage `json:"input"` // raw JSON for flexible parsing
+	Model    string          `json:"model"`
+	Input    string          `json:"input,omitempty"` // backward-compat: single string
+	InputArr []string        `json:"-"`               // batch (set by UnmarshalInput)
+	RawInput json.RawMessage `json:"-"`               // internal: raw JSON
 }
 
-// UnmarshalInput parses the raw input as either string or []string.
-func (r *EmbeddingRequest) UnmarshalInput() {
-	if len(r.RawInput) == 0 {
-		return
+// UnmarshalJSON handles both string and []string input formats.
+func (r *EmbeddingRequest) UnmarshalJSON(data []byte) error {
+	// Parse into a temporary struct to get model + raw input
+	type alias struct {
+		Model string          `json:"model"`
+		Input json.RawMessage `json:"input"`
+	}
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	r.Model = a.Model
+	r.RawInput = a.Input
+
+	if len(a.Input) == 0 {
+		return nil
 	}
 	// Try string first
 	var s string
-	if json.Unmarshal(r.RawInput, &s) == nil {
+	if json.Unmarshal(a.Input, &s) == nil {
 		r.Input = s
 		r.InputArr = []string{s}
-		return
+		return nil
 	}
 	// Try array of strings
 	var arr []string
-	if json.Unmarshal(r.RawInput, &arr) == nil {
+	if json.Unmarshal(a.Input, &arr) == nil {
 		r.InputArr = arr
 		if len(arr) == 1 {
 			r.Input = arr[0]
 		}
+		return nil
 	}
+	return nil
 }
 
 // EmbeddingResponse mirrors the OpenAI embeddings object.
@@ -389,6 +403,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, "response_format type 'grammar' requires a non-empty 'grammar' field")
 				return
 			}
+			if len(req.ResponseFormat.Grammar) > 65536 {
+				writeError(w, http.StatusBadRequest, "grammar exceeds maximum size (64KB)")
+				return
+			}
 			ctx = WithGrammar(ctx, req.ResponseFormat.Grammar)
 		case "text", "":
 			// No grammar — default text output.
@@ -512,7 +530,6 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	req.UnmarshalInput()
 
 	if req.Model == "" {
 		writeError(w, http.StatusBadRequest, "model field is required")
@@ -521,6 +538,12 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	if len(req.InputArr) == 0 {
 		writeError(w, http.StatusBadRequest, "input must not be empty")
 		return
+	}
+	for _, inp := range req.InputArr {
+		if inp == "" {
+			writeError(w, http.StatusBadRequest, "input strings must not be empty")
+			return
+		}
 	}
 
 	ref, err := s.registry.Get(req.Model)

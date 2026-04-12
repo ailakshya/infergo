@@ -125,13 +125,15 @@ std::vector<Detection> torch_nms_gpu(torch::Tensor yolo_output,
     torch::NoGradGuard no_grad;
 
     // yolo_output is [1, 4+num_classes, num_boxes] on GPU
-    // Works with any number of classes (80 for COCO, 3 for custom, etc.)
-    if (yolo_output.dim() != 3 || yolo_output.size(1) < 5) {
+    if (yolo_output.dim() != 3) {
         throw std::invalid_argument(
-            "torch_nms_gpu: expected [1, 4+C, N] tensor, got shape [" +
-            std::to_string(yolo_output.size(0)) + "," +
-            std::to_string(yolo_output.size(1)) + "," +
-            std::to_string(yolo_output.size(2)) + "]");
+            "torch_nms_gpu: expected 3D tensor [1, 4+C, N], got " +
+            std::to_string(yolo_output.dim()) + "D");
+    }
+    if (yolo_output.size(1) < 5) {
+        throw std::invalid_argument(
+            "torch_nms_gpu: expected [1, 4+C, N] with C≥1, got size(1)=" +
+            std::to_string(yolo_output.size(1)));
     }
 
     const int num_features = static_cast<int>(yolo_output.size(1)); // 4 + num_classes

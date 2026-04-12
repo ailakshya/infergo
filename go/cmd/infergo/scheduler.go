@@ -65,7 +65,7 @@ type schedulerModel struct {
 	gcInterval      int           // call runtime.GC() every N completed requests (0 = disabled)
 	completedReqs   int           // count of requests completed since last GC (scheduler goroutine only)
 	specDecoder     *llm.SpeculativeDecoder // optional: speculative decoding engine
-	activeList      *[]*activeSeq // pointer to scheduler's active list (for preemption)
+	activeList      *[]*activeSeq // pointer to run()'s active list — only accessed from scheduler goroutine
 }
 
 // newSchedulerModel creates and starts a schedulerModel for the given model.
