@@ -21,7 +21,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y cmake ninja-build libopenblas-dev wget curl
+          sudo apt-get install -y cmake ninja-build libopenblas-dev libgtest-dev libgmock-dev \
+            libopencv-dev libturbojpeg0-dev wget curl
 
       - name: Install ONNX Runtime
         run: |
@@ -81,7 +82,7 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
-        run: brew install cmake ninja openblas
+        run: brew install cmake ninja openblas googletest opencv jpeg-turbo
 
       - name: Install ONNX Runtime
         run: |
