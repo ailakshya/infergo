@@ -15,6 +15,7 @@ import (
 var validConvertFormats = map[string]bool{
 	"torchscript": true,
 	"onnx":        true,
+	"tensorrt":    true,
 }
 
 // runConvert implements the "infergo convert" subcommand.
@@ -48,6 +49,8 @@ func runConvert(args []string) {
 			*output = filepath.Join("models", base+".torchscript.pt")
 		case "onnx":
 			*output = filepath.Join("models", base+".onnx")
+		case "tensorrt":
+			*output = filepath.Join("models", base+".engine")
 		}
 	}
 
@@ -71,6 +74,42 @@ func runConvert(args []string) {
 			"--output", *output,
 			"--imgsz", strconv.Itoa(*imgsz),
 			"--format", "onnx")
+	case "tensorrt":
+		// TensorRT: first export to ONNX, then build TRT engine
+		trtBase := strings.TrimSuffix(filepath.Base(*input), filepath.Ext(*input))
+		onnxPath := filepath.Join("models", trtBase+".onnx")
+		if _, err := os.Stat(onnxPath); err != nil {
+			log.Printf("[convert] step 1: export to ONNX first...")
+			pre := exec.Command("python3", "tools/convert_to_torchscript.py",
+				"--source", *input, "--output", onnxPath,
+				"--imgsz", strconv.Itoa(*imgsz), "--format", "onnx")
+			pre.Stdout = os.Stdout
+			pre.Stderr = os.Stderr
+			if err := pre.Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "convert: ONNX export failed: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		log.Printf("[convert] step 2: build TensorRT engine from %s...", onnxPath)
+		cmd = exec.Command("python3", "-c", fmt.Sprintf(`
+import tensorrt as trt
+logger = trt.Logger(trt.Logger.WARNING)
+builder = trt.Builder(logger)
+network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+parser = trt.OnnxParser(network, logger)
+with open("%s", "rb") as f:
+    if not parser.parse(f.read()):
+        for i in range(parser.num_errors):
+            print(parser.get_error(i))
+        raise RuntimeError("ONNX parse failed")
+config = builder.create_builder_config()
+config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)
+config.set_flag(trt.BuilderFlag.FP16)
+engine = builder.build_serialized_network(network, config)
+with open("%s", "wb") as f:
+    f.write(engine)
+print("TensorRT engine built successfully")
+`, onnxPath, *output))
 	}
 
 	cmd.Stdout = os.Stdout

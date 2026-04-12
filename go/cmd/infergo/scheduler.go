@@ -127,13 +127,29 @@ func (s *schedulerModel) Generate(ctx context.Context, prompt string, maxTokens 
 	}
 
 	// Full C generation loop: one CGo call for the entire request.
-	// Handles grammar constraints natively. No per-token CGo overhead.
+	// Falls back to per-token scheduler if KV slots are exhausted.
 	grammar, _ := server.GrammarFromContext(ctx)
 	text, genToks, err := s.m.GenerateC(tokens, maxTokens, temp, 0.9, grammar)
-	if err != nil {
-		return "", promptToks, 0, fmt.Errorf("generate: %w", err)
+	if err == nil {
+		return text, promptToks, genToks, nil
 	}
-	return text, promptToks, genToks, nil
+
+	// Fallback: C loop failed (likely KV exhaustion under concurrency).
+	// Route through the per-token scheduler which queues requests.
+	tokenCh, err := s.enqueue(ctx, tokens, maxTokens, temp, grammar)
+	if err != nil {
+		return "", promptToks, 0, err
+	}
+	var sb strings.Builder
+	genToks = 0
+	for ev := range tokenCh {
+		if ev.Err != nil {
+			return sb.String(), promptToks, genToks, ev.Err
+		}
+		sb.WriteString(ev.Piece)
+		genToks++
+	}
+	return sb.String(), promptToks, genToks, nil
 }
 
 // Stream tokenizes the prompt, submits it to the scheduler, and returns a
