@@ -1293,8 +1293,17 @@ int infer_llm_generate(InferLLM      llm,
             smpl = llama_sampler_chain_init(sparams);
 
             if (has_grammar) {
-                llama_sampler* gsmp = llama_sampler_init_grammar(
-                    vocab, grammar, "root");
+                // Lazy grammar: only activates when model starts outputting
+                // JSON (triggers on { or [). Preamble is generated freely.
+                const char* patterns[] = {"(\\{)", "(\\[)"};
+                llama_sampler* gsmp = llama_sampler_init_grammar_lazy_patterns(
+                    vocab, grammar, "root",
+                    patterns, 2,
+                    nullptr, 0);
+                if (!gsmp) {
+                    // Fallback to strict grammar
+                    gsmp = llama_sampler_init_grammar(vocab, grammar, "root");
+                }
                 if (gsmp) llama_sampler_chain_add(smpl, gsmp);
             }
             if (temperature > 0.0f) {
