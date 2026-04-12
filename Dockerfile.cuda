@@ -1,5 +1,5 @@
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -11,16 +11,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         wget \
         curl \
+        software-properties-common \
         libopencv-dev \
         libgtest-dev \
         libgmock-dev \
         libturbojpeg0-dev \
+        libopenblas-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Go 1.23
-RUN wget -q https://go.dev/dl/go1.23.0.linux-amd64.tar.gz \
-    && tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz \
-    && rm go1.23.0.linux-amd64.tar.gz
+RUN wget -q https://go.dev/dl/go1.23.4.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go1.23.4.linux-amd64.tar.gz \
+    && rm go1.23.4.linux-amd64.tar.gz
 ENV PATH="/usr/local/go/bin:${PATH}"
 
 # Install Rust (for tokenizer-rs)
@@ -69,8 +71,9 @@ RUN mkdir -p /out/lib && \
 
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-# Use runtime image (no compiler, no headers) — much smaller than devel
-FROM nvidia/cuda:12.4.0-base-ubuntu22.04
+# Use cudnn-runtime for CNN inference (cuDNN kernels for conv2d, batch norm, etc.)
+# This adds ~400MB over base but enables libtorch/ONNX CNN models.
+FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
