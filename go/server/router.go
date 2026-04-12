@@ -312,6 +312,7 @@ func NewServer(reg *Registry) *Server {
 	s.mux.HandleFunc("POST /v1/prefill", s.handlePrefill)
 	s.mux.HandleFunc("POST /v1/decode", s.handleDecode)
 	s.mux.HandleFunc("POST /v1/search", s.handleSearch)
+	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.handleTranscription)
 	return s
 }
 

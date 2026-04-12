@@ -21,6 +21,12 @@ type TokenEvent struct {
 	Err   error  // non-nil: generation failed; channel will be closed after this
 }
 
+// Priority levels for request preemption.
+const (
+	PriorityNormal = 0 // default
+	PriorityHigh   = 1 // preempts normal-priority sequences when KV is full
+)
+
 // schedRequest is a single enqueued generation request.
 type schedRequest struct {
 	ctx       context.Context
@@ -28,6 +34,7 @@ type schedRequest struct {
 	maxTokens int           // max generation tokens
 	temp      float32       // sampling temperature
 	grammar   string        // GBNF grammar constraint (empty = none)
+	priority  int           // 0 = normal, 1 = high (preempts lower)
 	tokenCh   chan TokenEvent // scheduler writes here; closed when done
 }
 
@@ -58,6 +65,7 @@ type schedulerModel struct {
 	gcInterval      int           // call runtime.GC() every N completed requests (0 = disabled)
 	completedReqs   int           // count of requests completed since last GC (scheduler goroutine only)
 	specDecoder     *llm.SpeculativeDecoder // optional: speculative decoding engine
+	activeList      *[]*activeSeq // pointer to scheduler's active list (for preemption)
 }
 
 // newSchedulerModel creates and starts a schedulerModel for the given model.
@@ -192,6 +200,7 @@ func (s *schedulerModel) enqueue(ctx context.Context, tokens []int32, maxTokens 
 func (s *schedulerModel) run() {
 	defer s.wg.Done()
 	var active []*activeSeq
+	s.activeList = &active
 
 	for {
 		// If no active sequences, block until a request arrives or we stop.
@@ -358,9 +367,14 @@ func (s *schedulerModel) initSeq(req *schedRequest) *activeSeq {
 	// Check if enough KV pages are free (need at least 1 page = 16 tokens minimum).
 	free := s.m.KVPagesFree()
 	if free <= 0 {
-		req.tokenCh <- TokenEvent{Err: errors.New("KV cache exhausted: no pages free")}
-		close(req.tokenCh)
-		return nil
+		// High-priority requests can preempt normal-priority sequences.
+		if req.priority >= PriorityHigh && s.preemptLowest() {
+			// Freed a slot — continue
+		} else {
+			req.tokenCh <- TokenEvent{Err: errors.New("KV cache exhausted: no pages free")}
+			close(req.tokenCh)
+			return nil
+		}
 	}
 
 	seq, err := s.m.NewSequence(req.tokens)
@@ -393,6 +407,29 @@ func (s *schedulerModel) decActiveSeq() {
 	if s.activeSeqGauge != nil {
 		s.activeSeqGauge.Dec()
 	}
+}
+
+// preemptLowest evicts the oldest normal-priority sequence to make room
+// for a high-priority request. Returns true if a sequence was evicted.
+// Must only be called from the scheduler goroutine.
+func (s *schedulerModel) preemptLowest() bool {
+	if s.activeList == nil {
+		return false
+	}
+	active := *s.activeList
+	// Find the oldest normal-priority sequence
+	for i := len(active) - 1; i >= 0; i-- {
+		if active[i].req.priority < PriorityHigh {
+			a := active[i]
+			a.req.tokenCh <- TokenEvent{Err: errors.New("preempted by higher-priority request")}
+			close(a.req.tokenCh)
+			s.closeActiveSeq(a)
+			// Remove from active list
+			*s.activeList = append(active[:i], active[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // closeActiveSeq closes the sequence, its grammar sampler (if any), and

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -74,7 +75,7 @@ func runServe(args []string) {
 	maxActive    := fs.Int("max-active", 0, "max concurrent request handlers (0 = same as --max-queue)")
 	otlpEndpoint := fs.String("otlp-endpoint", "", "OTLP HTTP endpoint for tracing (e.g. localhost:4318; empty = disabled)")
 	grpcPort     := fs.Int("grpc-port", 9091, "gRPC listen port (0 = disabled)")
-	tensorSplitStr  := fs.String("tensor-split", "", "comma-separated GPU fractions for tensor parallelism (e.g. 0.5,0.5); empty = single GPU")
+	tensorSplitStr  := fs.String("tensor-split", "", "comma-separated GPU fractions for tensor parallelism (e.g. 0.5,0.5); 'auto' = detect GPUs and split evenly; empty = single GPU")
 	pipelineStages  := fs.Int("pipeline-stages", 1, "number of pipeline stages for layer-split multi-GPU inference (1 = single GPU, N>1 = N GPUs with LLAMA_SPLIT_MODE_LAYER)")
 	mode         := fs.String("mode", "combined", "server role: combined|prefill|decode")
 	gcInterval   := fs.Int("gc-interval", 100, "call runtime.GC() every N completed requests (0 = disabled)")
@@ -325,11 +326,15 @@ func loadLLM(reg *server.Registry, metrics *server.Metrics, name, path string, g
 }
 
 // parseTensorSplit parses a comma-separated string of floats into []float32.
+// "auto" detects available GPUs and splits evenly.
 // Returns nil, nil for an empty string (single-GPU mode).
 func parseTensorSplit(s string) ([]float32, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil, nil
+	}
+	if s == "auto" {
+		return autoDetectGPUs()
 	}
 	parts := strings.Split(s, ",")
 	out := make([]float32, 0, len(parts))
@@ -342,6 +347,29 @@ func parseTensorSplit(s string) ([]float32, error) {
 		out = append(out, float32(v))
 	}
 	return out, nil
+}
+
+// autoDetectGPUs queries CUDA device count and returns even fractions.
+// Falls back to single GPU if detection fails.
+func autoDetectGPUs() ([]float32, error) {
+	// Use nvidia-smi to count GPUs (works without CGo CUDA bindings)
+	out, err := exec.Command("nvidia-smi", "--query-gpu=index", "--format=csv,noheader").Output()
+	if err != nil {
+		log.Printf("[infergo] auto-shard: nvidia-smi failed, using single GPU")
+		return nil, nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	n := len(lines)
+	if n <= 1 {
+		return nil, nil // single GPU, no split needed
+	}
+	frac := 1.0 / float64(n)
+	split := make([]float32, n)
+	for i := range split {
+		split[i] = float32(frac)
+	}
+	log.Printf("[infergo] auto-shard: detected %d GPUs, split = %v", n, split)
+	return split, nil
 }
 
 // onnxAdapter is a placeholder for ONNX models that lack a recognized
