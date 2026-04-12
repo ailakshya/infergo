@@ -54,12 +54,12 @@ Measured on RTX 5070 Ti, CUDA 12.8. All numbers are real, reproducible, and publ
 | LLM generation (per token) | **1.69 ms** | 13.62 ms | **8.1x** |
 | Speculative decoding (8B+1B draft) | **74 ms** | 496 ms | **6.7x** |
 | RAG pipeline (embed + search + generate) | **116 ms** | 642 ms | **5.5x** |
+| Structured JSON output | **125 ms** | impossible | **100% valid** |
 | Single embedding | **0.9 ms** | 1.9 ms | **2.1x** |
 | Batch embedding (3 texts) | **1.4 ms** | 2.5 ms | **1.8x** |
 | Reranking (3 docs) | **1.2 ms** | 6.2 ms | **5.2x** |
 | Object detection (yolo11n) | **2.4 ms** | 2.7 ms | **1.1x** |
 | HNSW vector search (k=10) | **0.03 ms** | ~1 ms | **33x** |
-| JSON output validity | **100%** | 0% | guaranteed |
 
 ### Throughput under concurrent load
 
@@ -83,7 +83,7 @@ Full end-to-end: embed query, search documents, generate answer. Qwen 2.5 Coder 
 | Python GPU | 642 ms | 4,907 ms | 2,720 MB | 15% |
 | **infergo CPU** | **162 ms** | 1,043 ms | — | 0% |
 | **infergo GPU** | **116 ms** | 1,037 ms | 5,350 MB | 85% |
-| infergo GPU + JSON | 597 ms | 1,037 ms | 5,350 MB | 85% |
+| **infergo GPU + JSON** | **125 ms** | 1,037 ms | 5,350 MB | 85% |
 
 ### Cloud cost (per 1M RAG requests)
 
