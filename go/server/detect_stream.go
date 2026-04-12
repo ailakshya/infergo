@@ -59,25 +59,35 @@ func (s *Server) handleDetectStream(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	frameNum := 0
 
-	// Send detection events until client disconnects
-	ticker := time.NewTicker(time.Second / time.Duration(max(req.FPS, 1)))
+	// Send first event immediately, then at FPS rate
+	fps := max(req.FPS, 1)
+	ticker := time.NewTicker(time.Second / time.Duration(fps))
 	defer ticker.Stop()
+
+	sendFrame := func() error {
+		event := DetectStreamEvent{
+			FrameNum:  frameNum,
+			Timestamp: float64(time.Now().UnixMilli()),
+			Objects:   []DetectedObject{},
+		}
+		b, _ := json.Marshal(event)
+		frameNum++
+		return sse.sendEvent(string(b))
+	}
+
+	// Send first frame immediately
+	if err := sendFrame(); err != nil {
+		return
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			event := DetectStreamEvent{
-				FrameNum:  frameNum,
-				Timestamp: float64(time.Now().UnixMilli()),
-				Objects:   nil, // populated by actual detection when video source is connected
-			}
-			b, _ := json.Marshal(event)
-			if err := sse.sendEvent(string(b)); err != nil {
+			if err := sendFrame(); err != nil {
 				return
 			}
-			frameNum++
 		}
 	}
 }

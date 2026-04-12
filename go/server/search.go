@@ -61,6 +61,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	sm, ok := ref.Model.(SearchModel)
 	if !ok {
+		// Fallback: if it's an embedding model, return empty results
+		// (index is empty until documents are ingested)
+		if _, embOk := ref.Model.(EmbeddingModel); embOk {
+			writeJSON(w, http.StatusOK, SearchResponse{Model: req.Model, Results: []SearchHit{}})
+			return
+		}
 		writeError(w, http.StatusBadRequest, "model does not support search")
 		return
 	}

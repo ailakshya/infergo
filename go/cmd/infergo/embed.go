@@ -10,6 +10,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ailakshya/infergo/llm"
 	"github.com/ailakshya/infergo/onnx"
 	"github.com/ailakshya/infergo/server"
 	"github.com/ailakshya/infergo/tensor"
@@ -23,9 +24,15 @@ import (
 //  2. Run ONNX session → last_hidden_state [1, seqLen, hiddenDim]
 //  3. Masked mean pool → [hiddenDim]
 //  4. L2 normalize → unit-norm embedding vector
+// Compile-time interface checks
+var _ server.EmbeddingModel = (*embeddingAdapter)(nil)
+var _ server.SearchModel    = (*embeddingAdapter)(nil)
+
 type embeddingAdapter struct {
-	sess *onnx.Session
-	tok  *tokenizer.Tokenizer
+	sess  *onnx.Session
+	tok   *tokenizer.Tokenizer
+	index *llm.VectorIndex // HNSW index for search (lazy-init)
+	nextID int64
 }
 
 // Close releases the ONNX session and tokenizer.
@@ -140,9 +147,52 @@ func (a *embeddingAdapter) Embed(_ context.Context, input string) ([]float32, er
 }
 
 // EmbedBatch implements server.BatchEmbeddingModel.
-// Routes to the internal embedBatch which runs a batched ONNX inference.
 func (a *embeddingAdapter) EmbedBatch(_ context.Context, inputs []string) ([][]float32, error) {
 	return a.embedBatch(inputs)
+}
+
+// Search implements server.SearchModel — embed query + search HNSW index.
+func (a *embeddingAdapter) Search(ctx context.Context, query string, k int) ([]server.SearchHit, error) {
+	if a.index == nil {
+		// Lazy-init: create index on first search (dim from first embedding)
+		vec, err := a.Embed(ctx, "init")
+		if err != nil {
+			return nil, err
+		}
+		a.index, _ = llm.NewVectorIndex(len(vec), 16, 200)
+	}
+	if a.index.Size() == 0 {
+		return []server.SearchHit{}, nil
+	}
+
+	vec, err := a.Embed(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if k <= 0 {
+		k = 10
+	}
+	results, err := a.index.Search(vec, k, 50)
+	if err != nil {
+		return nil, err
+	}
+
+	hits := make([]server.SearchHit, len(results))
+	for i, r := range results {
+		hits[i] = server.SearchHit{
+			ID:    r.ID,
+			Score: 1.0 - r.Distance, // cosine distance → similarity
+		}
+	}
+	return hits, nil
+}
+
+// IndexSize implements server.SearchModel.
+func (a *embeddingAdapter) IndexSize() int {
+	if a.index == nil {
+		return 0
+	}
+	return a.index.Size()
 }
 
 // embedBatch runs a batched ONNX inference on N texts in one call.
