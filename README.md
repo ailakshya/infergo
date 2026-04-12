@@ -19,22 +19,44 @@
 
 ## The numbers
 
-Measured on RTX 5070 Ti, CUDA 12.8. All in-process, same GPU, 20 runs.
+Measured on RTX 5070 Ti, CUDA 12.8. In-process, same GPU, 20 runs. **infergo wins every metric.**
+
+### Latency (lower is better)
+
+| Task | infergo | Python | Winner |
+|---|---|---|---|
+| LLM generation (per token) | **1.69 ms** | 13.62 ms | **infergo 8.1x** |
+| Speculative decoding (8B + 1B) | **74 ms** | 496 ms | **infergo 6.7x** |
+| Single embedding (CUDA) | **0.3 ms** | 1.7 ms | **infergo 5.7x** |
+| Reranking 3 docs | **1.2 ms** | 6.2 ms | **infergo 5.2x** |
+| Prompt cache TTFT | **14 ms** | 40 ms | **infergo 2.9x** |
+| Batch embedding 3 texts | **0.9 ms** | 1.8 ms | **infergo 2.0x** |
+| Detection yolo11n | **2.4 ms** | 2.7 ms | **infergo 1.1x** |
+| JSON output validity | **100%** | 0% | **infergo** |
+
+### Throughput at scale (higher is better)
+
+| Feature | c=1 | c=4 | c=8 | c=16 | Scaling |
+|---|---|---|---|---|---|
+| Embedding (single) | 834 | 1,674 | 1,930 | **2,953 req/s** | 3.5x |
+| Embedding (batch 3) | 347 | 674 | 941 | **1,236 req/s** | 3.6x |
+| Reranking | 298 | 496 | 699 | **924 req/s** | 3.1x |
+| Detection | 169 | 64 | 74 | **236 req/s** | 1.4x |
+| LLM | 2.2 | 3.8 | — | **~17 req/s** | 7.7x |
+| HNSW search | — | — | — | — | **0.17 ms/query** |
+
+Python LLM stays at 2.2 req/s regardless of concurrency (GIL).
+
+### Infrastructure
 
 | | infergo | Python | |
 |---|---|---|---|
-| **LLM** (Llama 3 8B, per token) | **1.69 ms** | 13.62 ms | **8.1x faster** |
-| **Embedding** (3 texts, CUDA) | **0.9 ms** | 1.8 ms | **2.0x faster** |
-| **Detection** (yolo11n, CUDA) | **2.4 ms** | 2.7 ms | **1.1x faster** |
-| **Speculative** (8B + 1B draft) | **74 ms** | 496 ms | **6.7x faster** |
-| LLM throughput c=4 | **3.8 req/s** | 2.2 req/s | **1.7x** |
-| LLM throughput c=16 | **~17 req/s** | ~2.2 req/s | **7.7x** |
-| Embedding throughput c=16 | **1,248 req/s** | — | |
-| Docker image (CPU) | **0.18 GB** | 10 GB | **55x smaller** |
+| Docker image (CPU) | **0.18 GB** | 10 GB | **56x smaller** |
 | Docker image (CUDA) | **1.52 GB** | 12 GB | **8x smaller** |
-| VRAM at 10 users | **700 MB** | 7,000 MB | **10x less** |
-| Cold start | **456 ms** | 15,000 ms | **33x faster** |
-| JSON output validity | **100%** | 0% | grammar-enforced |
+| Cold start | **456 ms** | 15 sec | **33x faster** |
+| VRAM at c=10 | **700 MB** | 7,000 MB | **10x less** |
+| Memory drift (1000 req) | **+0.3%** | +11.9% | **40x more stable** |
+| Models per binary | **LLM+embed+detect** | 1 | **3-in-1** |
 
 ---
 
@@ -126,14 +148,18 @@ for chunk in client.chat.completions.create(
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/chat/completions` | Chat (streaming, structured output) |
-| `POST` | `/v1/embeddings` | Embeddings (single or batch) |
-| `POST` | `/v1/search` | Vector search (HNSW) |
-| `POST` | `/v1/detect` | Detection (JSON + base64) |
-| `POST` | `/v1/detect/binary` | Detection (raw JPEG, faster) |
+| `POST` | `/v1/chat/completions` | Chat (streaming, structured output, function calling) |
+| `POST` | `/v1/embeddings` | Embeddings (single string or batch `["a","b"]`) |
+| `POST` | `/v1/search` | Vector similarity search (HNSW index) |
+| `POST` | `/v1/rerank` | Rerank documents by query relevance |
+| `POST` | `/v1/detect` | Object detection (JSON + base64) |
+| `POST` | `/v1/detect/binary` | Object detection (raw JPEG body, faster) |
+| `POST` | `/v1/detect/stream` | Streaming detection (SSE for video) |
+| `POST` | `/v1/images/generations` | Image generation (Stable Diffusion) |
 | `POST` | `/v1/audio/transcriptions` | Speech-to-text (Whisper) |
 | `GET` | `/v1/models` | List loaded models |
 | `POST` | `/v1/admin/reload` | Hot-swap model weights |
+| `POST` | `/v1/admin/guardrails` | Configure content safety filters |
 | `GET` | `/health/live` | Liveness probe |
 | `GET` | `/health/ready` | Readiness probe |
 | `GET` | `/metrics` | Prometheus metrics |
@@ -157,17 +183,19 @@ for chunk in client.chat.completions.create(
 
 ## Features
 
-**Inference:** LLM (GGUF via llama.cpp) + Embedding (ONNX Runtime) + Detection (TorchScript / ONNX / TensorRT) + Vector search (HNSW)
+**Inference:** LLM (GGUF via llama.cpp) + Embedding (ONNX Runtime) + Detection (TorchScript / ONNX / TensorRT) + Vector search (HNSW) + Reranking + Streaming detection
 
-**Performance:** Full C generation loop, nvJPEG GPU decode, speculative decoding, prompt caching, continuous batching, Flash Attention 2, grammar sampling
+**Performance:** Full C generation loop, nvJPEG GPU decode, speculative decoding, prompt caching, continuous batching, Flash Attention 2, grammar sampling, zero-copy logits
 
-**Production:** Multi-model serving, hot reload, API key auth, rate limiting, request queue, Prometheus metrics, OpenTelemetry tracing, KEDA autoscaling, Kubernetes health probes
+**AI features:** Structured output (JSON/GBNF), function calling (tool use), speculative decoding, batch embeddings, vector search, reranking, guardrails (content safety)
 
-**Deployment:** 0.18 GB Docker image, Helm chart, multi-GPU (tensor split, pipeline stages, prefill/decode separation), 456 ms cold start
+**Production:** Multi-model serving, hot reload, LoRA adapters, API key auth, rate limiting, request queue, guardrails, Prometheus metrics, OpenTelemetry tracing, KEDA autoscaling
 
-**Video:** NVDEC decode, GPU preprocessing, ByteTrack tracking, frame annotation, TurboJPEG encoding, 63 FPS dual 1440p cameras
+**Deployment:** 0.18 GB CPU / 1.52 GB CUDA Docker image, Helm chart, multi-GPU (tensor split, pipeline stages, auto-shard), 456 ms cold start, `infergo models list/delete`
 
-**SDK:** Go client on pkg.go.dev, gRPC + HTTP + WebSocket, `infergo pull` for HuggingFace downloads
+**Video:** NVDEC decode, GPU preprocessing, ByteTrack tracking, frame annotation, TurboJPEG encoding, streaming detection (SSE), 63 FPS dual 1440p cameras
+
+**SDK:** Go client on pkg.go.dev, gRPC + HTTP + WebSocket, `infergo pull/convert/models` CLI
 
 ---
 
