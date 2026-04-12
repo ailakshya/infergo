@@ -181,6 +181,10 @@ func runServe(args []string) {
 		v1Handler = server.AuthMiddleware(*apiKey)(v1Handler)
 	}
 	mux.Handle("/v1/", v1Handler)
+	mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(server.WebUIHTML))
+	})
 	health.RegisterRoutes(mux)
 	mux.Handle("/metrics", metrics.Handler())
 

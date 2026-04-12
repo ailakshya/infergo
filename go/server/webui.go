@@ -7,10 +7,11 @@ import (
 // handleWebUI serves a built-in chat interface.
 func (s *Server) handleWebUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(webUIHTML))
+	w.Write([]byte(WebUIHTML))
 }
 
-const webUIHTML = `<!DOCTYPE html>
+// WebUIHTML is the built-in chat interface HTML (exported for use by serve.go).
+const WebUIHTML = `<!DOCTYPE html>
 <html><head><title>infergo</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
