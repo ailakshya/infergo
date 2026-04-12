@@ -1243,6 +1243,168 @@ int infer_llm_kv_deserialize(InferLLM llm, int seq_id,
     }
 }
 
+// ─── Full C Generation Loop ──────────────────────────────────────────────────
+
+int infer_llm_generate(InferLLM      llm,
+                        const int*   prompt_tokens,
+                        int          n_prompt,
+                        int          max_tokens,
+                        float        temperature,
+                        float        top_p,
+                        const char*  grammar,
+                        InferTokenCallback callback,
+                        void*        user_data,
+                        char*        out_text,
+                        int          max_text_len,
+                        int*         out_gen_tokens) {
+    try {
+        if (llm == nullptr || prompt_tokens == nullptr || n_prompt <= 0) {
+            infergo::set_last_error("infer_llm_generate: invalid argument");
+            return -1;
+        }
+        if (max_tokens <= 0) max_tokens = 256;
+
+        auto* h = static_cast<LLMHandle*>(llm);
+        llama_context* ctx = h->engine.Context();
+        const llama_vocab* vocab = llama_model_get_vocab(
+            llama_get_model(ctx));
+        const int vocab_size = h->engine.VocabSize();
+
+        // Allocate a KV slot for this generation
+        auto& pages = h->pages;
+        int slot_id = pages.AllocSlot(n_prompt);
+        if (slot_id < 0) {
+            infergo::set_last_error("infer_llm_generate: no KV slots available");
+            return -1;
+        }
+
+        // Build optional grammar sampler
+        llama_sampler* smpl = nullptr;
+        bool has_grammar = (grammar != nullptr && grammar[0] != '\0');
+        {
+            auto sparams = llama_sampler_chain_default_params();
+            sparams.no_perf = true;
+            smpl = llama_sampler_chain_init(sparams);
+
+            if (has_grammar) {
+                llama_sampler* gsmp = llama_sampler_init_grammar(
+                    vocab, grammar, "root");
+                if (gsmp) llama_sampler_chain_add(smpl, gsmp);
+            }
+            if (temperature > 0.0f) {
+                llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
+            }
+            if (top_p > 0.0f && top_p < 1.0f) {
+                llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
+            }
+            llama_sampler_chain_add(smpl, llama_sampler_init_dist(0));
+        }
+
+        // Pre-allocate batch
+        llama_batch batch = llama_batch_init(
+            std::max(n_prompt, 1), 0, 1);
+
+        // ── Prefill ──
+        batch.n_tokens = 0;
+        for (int i = 0; i < n_prompt; ++i) {
+            int idx = batch.n_tokens++;
+            batch.token[idx]      = prompt_tokens[i];
+            batch.pos[idx]        = i;
+            batch.n_seq_id[idx]   = 1;
+            batch.seq_id[idx][0]  = static_cast<llama_seq_id>(slot_id);
+            batch.logits[idx]     = (i == n_prompt - 1) ? 1 : 0;
+        }
+
+        int rc = llama_decode(ctx, batch);
+        if (rc != 0) {
+            llama_batch_free(batch);
+            llama_sampler_free(smpl);
+            pages.FreeSlot(slot_id);
+            infergo::set_last_error("infer_llm_generate: prefill decode failed");
+            return -1;
+        }
+
+        // Sample first token
+        // Build token_data_array from logits at the last prefill position
+        auto sample_at = [&](int batch_idx) -> int32_t {
+            const float* logits = llama_get_logits_ith(ctx, batch_idx);
+            if (!logits) return -1;
+
+            std::vector<llama_token_data> candidates(static_cast<size_t>(vocab_size));
+            for (int i = 0; i < vocab_size; ++i) {
+                candidates[i] = {static_cast<llama_token>(i), logits[i], 0.0f};
+            }
+            llama_token_data_array cur_p = {
+                candidates.data(), static_cast<size_t>(vocab_size), -1, false};
+            llama_sampler_apply(smpl, &cur_p);
+            if (cur_p.selected < 0) return -1;
+            llama_token tok = cur_p.data[cur_p.selected].id;
+            llama_sampler_accept(smpl, tok);
+            return static_cast<int32_t>(tok);
+        };
+
+        std::string result;
+        int gen_tokens = 0;
+        int n_past = n_prompt;
+
+        int32_t tok = sample_at(n_prompt - 1);
+        bool stopped = (tok < 0 || llama_vocab_is_eog(vocab, tok));
+
+        // ── Decode loop ──
+        while (!stopped && gen_tokens < max_tokens) {
+            // Output token
+            char buf[256];
+            int n = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, false);
+            if (n > 0) {
+                buf[n] = '\0';
+                result.append(buf, static_cast<size_t>(n));
+                if (callback && !callback(static_cast<int>(tok), buf, user_data)) {
+                    break;
+                }
+            }
+            gen_tokens++;
+
+            // Decode next
+            batch.n_tokens = 0;
+            int idx = batch.n_tokens++;
+            batch.token[idx]      = tok;
+            batch.pos[idx]        = n_past;
+            batch.n_seq_id[idx]   = 1;
+            batch.seq_id[idx][0]  = static_cast<llama_seq_id>(slot_id);
+            batch.logits[idx]     = 1;
+            n_past++;
+
+            rc = llama_decode(ctx, batch);
+            if (rc != 0) break;
+
+            tok = sample_at(0);
+            stopped = (tok < 0 || llama_vocab_is_eog(vocab, tok));
+        }
+
+        // Cleanup
+        llama_memory_seq_rm(llama_get_memory(ctx),
+            static_cast<llama_seq_id>(slot_id), -1, -1);
+        llama_batch_free(batch);
+        llama_sampler_free(smpl);
+        pages.FreeSlot(slot_id);
+
+        // Write output
+        if (out_text && max_text_len > 0) {
+            int n = std::min(static_cast<int>(result.size()), max_text_len - 1);
+            std::memcpy(out_text, result.data(), static_cast<size_t>(n));
+            out_text[n] = '\0';
+        }
+        if (out_gen_tokens) *out_gen_tokens = gen_tokens;
+        return 0;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_llm_generate: unknown exception");
+        return -1;
+    }
+}
+
 // ─── Grammar-Constrained Sampler API ─────────────────────────────────────────
 
 // Internal handle: owns a llama_sampler chain with grammar + sampling stages.
@@ -1436,7 +1598,7 @@ InferSpeculative infer_speculative_create(InferLLM     target,
         auto* sh = new SpecHandle();
         if (!sh->decoder.Init(
                 llama_get_model(h->engine.Context()),
-                h->engine.Context(),
+                static_cast<int>(llama_n_ctx(h->engine.Context())),
                 draft_path,
                 n_gpu_layers,
                 n_draft > 0 ? n_draft : 5)) {
