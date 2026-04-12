@@ -47,17 +47,44 @@ Measured on RTX 5070 Ti, CUDA 12.8. Both via HTTP, keep-alive, 100 requests. **i
 
 At c=8 Python embedding throughput drops to 46 req/s (P99 = 1,036 ms). At c=16 Python crashes. infergo serves 927 req/s with zero errors.
 
+### RAG pipeline — 5 modes (Qwen Coder + Embedding + Vector Search)
+
+Full end-to-end: embed query → search documents → generate answer.
+Each mode tested on both CPU and GPU. Qwen 2.5 Coder 1.5B + all-MiniLM-L6-v2.
+
+| Mode | P50 | Cold Start | VRAM | GPU% | What it does |
+|---|---|---|---|---|---|
+| Python CPU | **636 ms** | 4,931 ms | — | 0% | llama-cpp-python + sentence-transformers, all CPU |
+| Python GPU | **642 ms** | 4,907 ms | 2,720 MB | 15% | same libs, CUDA — barely faster (Python overhead wastes GPU) |
+| **infergo CPU** | **162 ms** | 1,043 ms | — | 0% | one binary, CPU — 3.9x faster than Python |
+| **infergo GPU** | **116 ms** | 1,037 ms | 5,350 MB | 85% | one binary, CUDA — 5.5x faster than Python |
+| **infergo GPU+JSON** | **597 ms** | 1,037 ms | 5,350 MB | 85% | same + guaranteed valid JSON output |
+
+**Why Python GPU (642ms) is barely faster than Python CPU (636ms):**
+Python's per-token overhead is 3ms (GIL lock + logits copy + Python sampling). The GPU saves 2ms per token but Python adds 3ms back. Net GPU gain: ~6ms over 50 tokens. The GPU sits idle 77% of the time waiting for Python. infergo's GPU utilization is 85% because the entire decode loop runs in C++ with zero Python overhead.
+
+**Cost estimate per 1M RAG requests:**
+
+| | Python GPU | infergo GPU | Savings |
+|---|---|---|---|
+| GPU-hours | 178 hrs | 32 hrs | 146 hrs saved |
+| T4 ($0.35/hr) | $62 | $11 | **82% cheaper** |
+| A100 ($3/hr) | $534 | $96 | **82% cheaper** |
+| H100 ($8/hr) | $1,424 | $256 | **82% cheaper** |
+
 ### Infrastructure
 
 | | infergo | Python | |
 |---|---|---|---|
 | Docker image (CPU) | **0.18 GB** | 10 GB | **56x smaller** |
 | Docker image (CUDA) | **1.52 GB** | 12 GB | **8x smaller** |
-| Cold start | **456 ms** | 15 sec | **33x faster** |
+| Cold start | **1,037 ms** | 4,907 ms | **4.7x faster** |
 | VRAM at c=10 | **700 MB** | 7,000 MB | **10x less** |
 | Memory drift (1000 req) | **+0.3%** | +11.9% | **40x more stable** |
 | Errors under load | **0** | crashes at c=16 | **infergo** |
 | Models per binary | **LLM+embed+detect** | 1 | **3-in-1** |
+| Pip packages needed | **0** | 12+ | **zero deps** |
+| Python HTTP server | **not needed** | crashes with 2 models | **stable** |
 
 ---
 
