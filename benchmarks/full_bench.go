@@ -59,10 +59,12 @@ func main() {
 	})
 	printComparison("With JSON grammar", jsonTimes, "Without grammar", noGrammarTimes)
 
-	// Verify JSON validity
+	// Verify JSON validity (using a JSON-appropriate prompt)
+	jsonPrompt := "<|system|>\nYou are helpful.</s>\n<|user|>\nReturn JSON with name and age.</s>\n<|assistant|>\n"
+	jsonTokens, _ := m.Tokenize(jsonPrompt, false, 256)
 	validCount := 0
 	for i := 0; i < 5; i++ {
-		text, _, _ := m.GenerateC(tokens, 64, 0.8, 0.9, server.JSONGrammar)
+		text, _, _ := m.GenerateC(jsonTokens, 64, 0.8, 0.9, server.JSONGrammar)
 		if json.Valid([]byte(text)) {
 			validCount++
 		}

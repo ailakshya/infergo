@@ -79,6 +79,11 @@ std::string SpeculativeDecoder::Generate(
     const llama_vocab* vocab = llama_model_get_vocab(target_model_);
     const int n_prompt = static_cast<int>(prompt_tokens.size());
 
+    // Clear KV caches from any previous generation.
+    // llama_kv_self_clear removes ALL KV data from the context.
+    llama_memory_clear(llama_get_memory(target_ctx_), true);
+    llama_memory_clear(llama_get_memory(draft_ctx_), true);
+
     llama_batch bt = llama_batch_init(512, 0, 1), bd = llama_batch_init(512, 0, 1);
 
     // Prefill both models
