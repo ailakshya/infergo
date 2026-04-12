@@ -30,7 +30,8 @@ Measured on RTX 5070 Ti, CUDA 12.8. All in-process, same GPU, 20 runs.
 | LLM throughput c=4 | **3.8 req/s** | 2.2 req/s | **1.7x** |
 | LLM throughput c=16 | **~17 req/s** | ~2.2 req/s | **7.7x** |
 | Embedding throughput c=16 | **1,248 req/s** | — | |
-| Container image | **0.18 GB** | 10 GB | **55x smaller** |
+| Docker image (CPU) | **0.18 GB** | 10 GB | **55x smaller** |
+| Docker image (CUDA) | **1.52 GB** | 12 GB | **8x smaller** |
 | VRAM at 10 users | **700 MB** | 7,000 MB | **10x less** |
 | Cold start | **456 ms** | 15,000 ms | **33x faster** |
 | JSON output validity | **100%** | 0% | grammar-enforced |
@@ -199,16 +200,22 @@ Clients (OpenAI SDK / curl / gRPC / WebSocket)
 ## Docker
 
 ```bash
-# CPU (0.18 GB)
+# CPU (0.18 GB image)
 docker run --rm -p 9090:9090 -v ./models:/models:ro \
   ghcr.io/ailakshya/infergo:cpu \
   serve --model /models/llama3-8b-q4.gguf
 
-# CUDA (~2.5 GB, requires nvidia-container-toolkit)
+# CUDA (1.52 GB image — requires nvidia-container-toolkit)
 docker run --rm --gpus all -p 9090:9090 -v ./models:/models:ro \
   ghcr.io/ailakshya/infergo:cuda \
   serve --model /models/llama3-8b-q4.gguf --provider cuda
 ```
+
+| Image | Size | Includes |
+|---|---|---|
+| `infergo:cpu` | **0.18 GB** | infergo + llama.cpp + ONNX Runtime |
+| `infergo:cuda` | **1.52 GB** | above + CUDA runtime + nvJPEG + TorchScript |
+| Python equivalent | **10-12 GB** | Python + PyTorch + transformers + CUDA |
 
 ---
 
