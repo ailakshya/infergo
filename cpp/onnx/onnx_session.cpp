@@ -128,13 +128,9 @@ OnnxSession::OnnxSession(const std::string& provider, int device_id)
         // 0 = unlimited (default). We set a 2GB limit so 4+ models can coexist on
         // a 16GB GPU. The BFC arena will allocate within this budget and fall back
         // to CPU for any overflow, rather than crashing.
-        cuda_opts.gpu_mem_limit = 512ULL * 1024 * 1024; // 512 MB per session (TRT needs far less than CUDA EP)
-        // Use kSameAsRequested (1) instead of kNextPowerOfTwo (0) to avoid
-        // the arena pre-allocating double the requested memory.
-        cuda_opts.arena_extend_strategy = 1;
-        // Allow CUDA to use all available CUDA streams for better overlap.
-        cuda_opts.do_copy_in_default_stream = 0;
-        // Enable cuDNN conv algorithm search for faster convolutions (key for YOLO).
+        cuda_opts.gpu_mem_limit = 512ULL * 1024 * 1024; // 512 MB per session
+        cuda_opts.arena_extend_strategy = 1;           // kSameAsRequested — no double-alloc
+        cuda_opts.do_copy_in_default_stream = 0;       // enable stream overlap
         cuda_opts.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchExhaustive;
         OrtStatus* st = api_->SessionOptionsAppendExecutionProvider_CUDA(options_, &cuda_opts);
         if (st != nullptr) {

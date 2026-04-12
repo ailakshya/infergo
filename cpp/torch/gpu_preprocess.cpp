@@ -44,11 +44,12 @@ torch::Tensor torch_upload_image(const uint8_t* rgb_data, int H, int W,
             "torch_upload_image: invalid input (null data or non-positive dimensions)");
     }
 
+    // Use pinned memory for faster H2D transfer (DMA-capable, ~2x faster than pageable).
+    // from_blob wraps the source, pin_memory() copies to pinned host buffer,
+    // then .to(device, non_blocking) does async DMA transfer.
     auto opts = torch::TensorOptions().dtype(torch::kUInt8);
-    // from_blob wraps the raw pointer without owning it; clone() to own the data.
-    auto t = torch::from_blob(const_cast<uint8_t*>(rgb_data),
-                              {H, W, 3}, opts).clone();
-    return t.to(device, /*non_blocking=*/true);
+    auto t = torch::from_blob(const_cast<uint8_t*>(rgb_data), {H, W, 3}, opts);
+    return t.pin_memory().to(device, /*non_blocking=*/true);
 }
 
 // ─── torch_letterbox_gpu ────────────────────────────────────────────────────
