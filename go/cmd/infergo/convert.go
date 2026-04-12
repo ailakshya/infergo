@@ -26,6 +26,7 @@ func runConvert(args []string) {
 	format := fs.String("format", "torchscript", "output format: onnx|torchscript")
 	output := fs.String("output", "", "output path (auto-generated if empty)")
 	imgsz := fs.Int("imgsz", 640, "input image size")
+	quantize := fs.String("quantize", "", "quantization: int8|uint8 (ONNX only, dynamic quantization)")
 	fs.Parse(args)
 
 	if *input == "" {
@@ -88,6 +89,30 @@ func runConvert(args []string) {
 	}
 
 	log.Printf("[convert] success: %s (%.1f MB)", *output, float64(info.Size())/(1024*1024))
+
+	// Optional: quantize the ONNX model.
+	if *quantize != "" && *format == "onnx" {
+		quantOut := strings.TrimSuffix(*output, ".onnx") + "-" + *quantize + ".onnx"
+		log.Printf("[convert] quantizing to %s (%s)...", quantOut, *quantize)
+		qcmd := exec.Command("python3", "-c", fmt.Sprintf(`
+from onnxruntime.quantization import quantize_dynamic, QuantType
+qt = QuantType.QInt8 if "%s" == "int8" else QuantType.QUInt8
+quantize_dynamic("%s", "%s", weight_type=qt)
+print("quantization complete")
+`, *quantize, *output, quantOut))
+		qcmd.Stdout = os.Stdout
+		qcmd.Stderr = os.Stderr
+		if err := qcmd.Run(); err != nil {
+			log.Printf("[convert] WARNING: quantization failed: %v", err)
+		} else {
+			qinfo, _ := os.Stat(quantOut)
+			if qinfo != nil {
+				ratio := float64(info.Size()) / float64(qinfo.Size())
+				log.Printf("[convert] quantized: %s (%.1f MB, %.1fx smaller)",
+					quantOut, float64(qinfo.Size())/(1024*1024), ratio)
+			}
+		}
+	}
 
 	// Update model registry.
 	updateRegistry(*output, *input, *format, *imgsz)
