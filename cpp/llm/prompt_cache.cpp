@@ -31,10 +31,14 @@ bool PromptCache::Get(const int32_t* tokens, int n_tokens,
         return false;
     }
 
-    // Move to front (most recently used)
     auto& entry = *it->second;
     if (entry.n_tokens != n_tokens) {
-        return false;  // hash collision
+        return false;  // hash collision: different length
+    }
+    // Verify actual tokens match (not just hash)
+    if (std::memcmp(entry.tokens.data(), tokens,
+                     static_cast<size_t>(n_tokens) * sizeof(int32_t)) != 0) {
+        return false;  // hash collision: different tokens
     }
 
     out_kv = entry.kv_data;
@@ -53,14 +57,20 @@ void PromptCache::Put(const int32_t* tokens, int n_tokens,
 
     uint64_t h = HashTokens(tokens, n_tokens);
 
-    // Update existing entry
+    // Update existing entry (verify tokens match to handle collisions)
     auto it = index_.find(h);
     if (it != index_.end()) {
         auto& entry = *it->second;
-        entry.kv_data.assign(kv_data, kv_data + kv_size);
-        entry.n_tokens = n_tokens;
-        entries_.splice(entries_.begin(), entries_, it->second);
-        return;
+        if (entry.n_tokens == n_tokens &&
+            std::memcmp(entry.tokens.data(), tokens,
+                         static_cast<size_t>(n_tokens) * sizeof(int32_t)) == 0) {
+            entry.kv_data.assign(kv_data, kv_data + kv_size);
+            entries_.splice(entries_.begin(), entries_, it->second);
+            return;
+        }
+        // Hash collision with different tokens — evict old, insert new below
+        index_.erase(it);
+        entries_.erase(it->second);
     }
 
     // Evict LRU if full
@@ -70,8 +80,13 @@ void PromptCache::Put(const int32_t* tokens, int n_tokens,
         entries_.pop_back();
     }
 
-    // Insert new entry at front
-    entries_.push_front(Entry{h, n_tokens, {kv_data, kv_data + kv_size}});
+    // Insert new entry at front (store tokens for collision verification)
+    Entry e;
+    e.hash = h;
+    e.n_tokens = n_tokens;
+    e.tokens.assign(tokens, tokens + n_tokens);
+    e.kv_data.assign(kv_data, kv_data + kv_size);
+    entries_.push_front(std::move(e));
     index_[h] = entries_.begin();
 }
 

@@ -35,6 +35,7 @@ private:
     struct Entry {
         uint64_t              hash;
         int                   n_tokens;
+        std::vector<int32_t>  tokens;   // stored for collision verification
         std::vector<uint8_t>  kv_data;
     };
 

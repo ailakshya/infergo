@@ -21,7 +21,7 @@ float HNSWIndex::CosineDistance(const float* a, const float* b) const {
         nb  += b[i] * b[i];
     }
     float denom = std::sqrt(na) * std::sqrt(nb);
-    if (denom < 1e-12f) return 1.0f;
+    if (denom < 1e-7f) return 1.0f;  // safe epsilon for near-zero vectors
     return 1.0f - dot / denom;
 }
 
@@ -36,7 +36,9 @@ int HNSWIndex::RandomLevel() {
 
 void HNSWIndex::SearchLayer(const float* query, int entry, int ef, int layer,
                              std::vector<std::pair<float, int>>& result) const {
-    // Min-heap: closest nodes first
+    result.clear();
+    if (entry < 0 || static_cast<size_t>(entry) >= nodes_.size()) return;
+
     using Pair = std::pair<float, int>;
     auto cmp_max = [](const Pair& a, const Pair& b) { return a.first < b.first; };
     auto cmp_min = [](const Pair& a, const Pair& b) { return a.first > b.first; };

@@ -321,7 +321,16 @@ std::vector<Tensor*> OnnxSession::run(const std::vector<Tensor*>& inputs) {
 
     // Wrap input tensors as OrtValues (zero-copy — wraps existing CPU data).
     for (size_t i = 0; i < n_in; ++i) {
+        if (inputs[i] == nullptr) {
+            throw std::runtime_error(
+                "OnnxSession::run: input[" + std::to_string(i) + "] is null");
+        }
         const Tensor* t = inputs[i];
+        if (t->on_device) {
+            throw std::runtime_error(
+                "OnnxSession::run: input[" + std::to_string(i) +
+                "] is on GPU device — CPU tensors required");
+        }
         tl_shape.resize(t->ndim);
         for (int d = 0; d < t->ndim; ++d)
             tl_shape[d] = static_cast<int64_t>(t->shape[d]);

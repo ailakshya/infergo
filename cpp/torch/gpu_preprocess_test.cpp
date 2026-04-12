@@ -298,9 +298,16 @@ TEST(GPUPreprocessTest, TestNMSGPURescale) {
 }
 
 TEST(GPUPreprocessTest, TestNMSGPUBadShape) {
-    auto bad = torch::zeros({1, 10, 100});  // Not [1,84,*]
+    // 2D tensor (not 3D) — must throw
+    auto bad = torch::zeros({10, 100});
     EXPECT_THROW(
         infergo::torch_nms_gpu(bad, 0.5f, 0.45f, 1.0f, 0.0f, 0.0f, 640, 640),
+        std::invalid_argument);
+
+    // 3D but too few features (< 5 = 4 coords + 1 class min) — must throw
+    auto bad2 = torch::zeros({1, 3, 100});
+    EXPECT_THROW(
+        infergo::torch_nms_gpu(bad2, 0.5f, 0.45f, 1.0f, 0.0f, 0.0f, 640, 640),
         std::invalid_argument);
 }
 
