@@ -3,7 +3,7 @@
 
 # ─── libinfer_llm ─────────────────────────────────────────────────────────────
 
-add_library(infer_llm STATIC kv_cache.cpp kv_paged.cpp llm_engine.cpp sampler.cpp infer_sequence.cpp speculative.cpp)
+add_library(infer_llm STATIC kv_cache.cpp kv_paged.cpp llm_engine.cpp sampler.cpp infer_sequence.cpp speculative.cpp prompt_cache.cpp)
 
 target_include_directories(infer_llm
     PUBLIC  ${CMAKE_SOURCE_DIR}/cpp/include
