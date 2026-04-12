@@ -108,34 +108,24 @@ func (s *schedulerModel) Generate(ctx context.Context, prompt string, maxTokens 
 	}
 	promptToks := len(tokens)
 
-	// Speculative decoding fast path: entire generate loop runs in C++.
-	// Bypasses the per-token scheduler — one CGo call for the full generation.
+	// Speculative decoding fast path.
 	_, hasGrammar := server.GrammarFromContext(ctx)
 	if s.specDecoder != nil && !hasGrammar {
 		text, stats, err := s.specDecoder.Generate(tokens, maxTokens, temp)
 		if err != nil {
 			return "", promptToks, 0, fmt.Errorf("speculative: %w", err)
 		}
-		_ = stats // TODO: expose stats via metrics
 		return text, promptToks, stats.Predicted, nil
 	}
 
+	// Full C generation loop: one CGo call for the entire request.
+	// Handles grammar constraints natively. No per-token CGo overhead.
 	grammar, _ := server.GrammarFromContext(ctx)
-	tokenCh, err := s.enqueue(ctx, tokens, maxTokens, temp, grammar)
+	text, genToks, err := s.m.GenerateC(tokens, maxTokens, temp, 0.9, grammar)
 	if err != nil {
-		return "", promptToks, 0, err
+		return "", promptToks, 0, fmt.Errorf("generate: %w", err)
 	}
-
-	var sb strings.Builder
-	genToks := 0
-	for ev := range tokenCh {
-		if ev.Err != nil {
-			return sb.String(), promptToks, genToks, ev.Err
-		}
-		sb.WriteString(ev.Piece)
-		genToks++
-	}
-	return sb.String(), promptToks, genToks, nil
+	return text, promptToks, genToks, nil
 }
 
 // Stream tokenizes the prompt, submits it to the scheduler, and returns a

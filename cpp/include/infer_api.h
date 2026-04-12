@@ -376,6 +376,41 @@ InferError infer_llm_batch_decode(InferLLM llm, InferSeq* seqs, int n_seqs);
 InferError infer_seq_get_logits(InferSeq seq, float* out_logits, int vocab_size);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// FULL C GENERATION LOOP
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Token callback for streaming during generation.
+// Return 1 to continue, 0 to stop.
+typedef int (*InferTokenCallback)(int token, const char* piece, void* user_data);
+
+// Run the full generation loop in C++ — one CGo call for the entire request.
+// Prefill + decode + sample all happen natively. No per-token CGo overhead.
+//
+// prompt_tokens: pre-tokenized prompt (including BOS).
+// max_tokens:    max generation length.
+// temperature:   sampling temperature (0 = greedy).
+// top_p:         nucleus sampling (1.0 = disabled).
+// grammar:       GBNF grammar string (NULL = no constraint).
+// callback:      called for each token (NULL = collect silently).
+// user_data:     passed through to callback.
+// out_text:      buffer for generated text (null-terminated).
+// max_text_len:  capacity of out_text.
+// out_gen_tokens: number of tokens generated.
+// Returns 0 on success, -1 on error.
+int infer_llm_generate(InferLLM      llm,
+                        const int*   prompt_tokens,
+                        int          n_prompt,
+                        int          max_tokens,
+                        float        temperature,
+                        float        top_p,
+                        const char*  grammar,
+                        InferTokenCallback callback,
+                        void*        user_data,
+                        char*        out_text,
+                        int          max_text_len,
+                        int*         out_gen_tokens);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GRAMMAR-CONSTRAINED SAMPLER API
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -422,13 +457,6 @@ void infer_sampler_free(InferSampler smpl);
 // ─────────────────────────────────────────────────────────────────────────────
 
 typedef void* InferSpeculative;
-
-// Token callback for streaming during speculative generation.
-// token: the accepted token ID.
-// piece: null-terminated string piece for this token.
-// user_data: opaque pointer passed through from infer_speculative_generate.
-// Return 1 to continue, 0 to stop generation.
-typedef int (*InferTokenCallback)(int token, const char* piece, void* user_data);
 
 // Create a speculative decoder with a draft model.
 // The draft model must share the same vocabulary as the target LLM.
