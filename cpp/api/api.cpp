@@ -1282,7 +1282,9 @@ int infer_llm_generate(InferLLM      llm,
             return -1;
         }
 
-        // Build optional grammar sampler
+        // Build sampler chain.
+        // Grammar MUST come before top-k/top-p — it needs to see all candidates
+        // to find tokens that produce valid JSON. Pre-filtering removes valid tokens.
         llama_sampler* smpl = nullptr;
         bool has_grammar = (grammar != nullptr && grammar[0] != '\0');
         {
@@ -1509,12 +1511,14 @@ InferSampler infer_sampler_create(InferLLM     llm,
         const char* root = (grammar_root != nullptr && grammar_root[0] != '\0')
                            ? grammar_root : "root";
 
-        // Build sampler chain: grammar → temperature → top-k → top-p → dist
+        // Build sampler chain: grammar → top-k → temp → top-p → dist
+        // Grammar must be first — needs all candidates to find valid tokens.
         auto sparams = llama_sampler_chain_default_params();
         sparams.no_perf = true;
         llama_sampler* chain = llama_sampler_chain_init(sparams);
 
-        // Grammar constraint (must be first — filters illegal tokens before sampling)
+        // Grammar constraint — must see all vocab tokens
+        // top_k applied after grammar (if specified)
         llama_sampler* grammar = llama_sampler_init_grammar(vocab, grammar_str, root);
         if (grammar == nullptr) {
             llama_sampler_free(chain);
@@ -1522,8 +1526,6 @@ InferSampler infer_sampler_create(InferLLM     llm,
             return nullptr;
         }
         llama_sampler_chain_add(chain, grammar);
-
-        // Sampling stages
         if (top_k > 0) {
             llama_sampler_chain_add(chain, llama_sampler_init_top_k(top_k));
         }
