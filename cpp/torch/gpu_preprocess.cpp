@@ -456,6 +456,8 @@ std::vector<Detection> torch_detect_gpu(
     const uint8_t* jpeg_data, int nbytes,
     float conf_thresh, float iou_thresh)
 {
+    torch::NoGradGuard no_grad;  // disable autograd for entire pipeline
+
     if (jpeg_data == nullptr || nbytes <= 0) {
         throw std::invalid_argument(
             "torch_detect_gpu: invalid JPEG data (null or empty)");
@@ -510,8 +512,7 @@ std::vector<Detection> torch_detect_gpu(
     // 4. Normalize on GPU -> [1,3,640,640] float32
     auto input = torch_normalize_gpu(lb);
 
-    // 5. Inference on GPU
-    torch::NoGradGuard no_grad;
+    // 5. Inference on GPU (NoGradGuard set at function entry)
     auto output = sess.model().forward({input}).toTensor();
 
     // 6. NMS on GPU, only download ~300 bytes of box coords

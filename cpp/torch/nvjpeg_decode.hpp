@@ -25,6 +25,9 @@ private:
     nvjpegHandle_t handle_ = nullptr;
     nvjpegJpegState_t state_ = nullptr;
     cudaStream_t stream_ = nullptr;
+    unsigned char* persistent_buf_ = nullptr;  // reusable GPU buffer
+    size_t persistent_buf_size_ = 0;
+    int warmup_w_ = 0, warmup_h_ = 0;
 };
 
 } // namespace infergo
