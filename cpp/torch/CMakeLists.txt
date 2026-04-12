@@ -4,10 +4,15 @@
 
 find_package(OpenCV QUIET COMPONENTS core imgcodecs imgproc)
 
-add_library(infer_torch STATIC
-    torch_session.cpp
-    gpu_preprocess.cpp
-)
+set(TORCH_SOURCES torch_session.cpp gpu_preprocess.cpp)
+
+# nvJPEG GPU JPEG decode — eliminates ~1ms CPU decode overhead
+if(INFER_CUDA_AVAILABLE AND EXISTS "/usr/local/cuda/include/nvjpeg.h")
+    list(APPEND TORCH_SOURCES nvjpeg_decode.cpp)
+    message(STATUS "nvJPEG found — GPU JPEG decode enabled")
+endif()
+
+add_library(infer_torch STATIC ${TORCH_SOURCES})
 
 target_include_directories(infer_torch
     PUBLIC  ${TORCH_INCLUDE_DIRS}
@@ -20,6 +25,12 @@ target_link_libraries(infer_torch
     PUBLIC  ${TORCH_LIBRARIES}
     PRIVATE infer_tensor
 )
+
+# Link nvJPEG for GPU JPEG decode
+if(INFER_CUDA_AVAILABLE AND EXISTS "/usr/local/cuda/include/nvjpeg.h")
+    target_include_directories(infer_torch PRIVATE /usr/local/cuda/include)
+    target_link_libraries(infer_torch PRIVATE nvjpeg)
+endif()
 
 # Link OpenCV for JPEG decode in gpu_preprocess.cpp.
 # PUBLIC because infer_torch is a static library: its consumers (infer_api)

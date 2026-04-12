@@ -6,11 +6,25 @@
 
 #include <torch/torch.h>
 
+#ifdef INFER_CUDA_AVAILABLE
+#include "nvjpeg_decode.hpp"
+#endif
+
 #ifdef INFER_OPENCV_AVAILABLE
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #endif
+
+namespace {
+#ifdef INFER_CUDA_AVAILABLE
+    // Global nvJPEG decoder instance — initialized on first use
+    infergo::NvJpegDecoder& get_nvjpeg() {
+        static infergo::NvJpegDecoder instance;
+        return instance;
+    }
+#endif
+}
 
 #include <algorithm>
 #include <cmath>
@@ -446,22 +460,36 @@ std::vector<Detection> torch_detect_gpu(
             "torch_detect_gpu: invalid JPEG data (null or empty)");
     }
 
-    // 1. Decode JPEG on CPU via OpenCV (only CPU-bound step)
-    cv::Mat raw = cv::imdecode(
-        cv::Mat(1, nbytes, CV_8UC1, const_cast<uint8_t*>(jpeg_data)),
-        cv::IMREAD_COLOR);
-    if (raw.empty()) {
-        throw std::runtime_error("torch_detect_gpu: failed to decode image");
-    }
-    cv::Mat img;
-    cv::cvtColor(raw, img, cv::COLOR_BGR2RGB);
-
-    const int orig_h = img.rows;
-    const int orig_w = img.cols;
-
-    // 2. Upload raw uint8 pixels to GPU (~921KB for 640x480)
     constexpr int target_size = 640;
-    auto gpu_img = torch_upload_image(img.data, orig_h, orig_w, sess.device());
+    int orig_h = 0, orig_w = 0;
+    torch::Tensor gpu_img;
+
+#ifdef INFER_CUDA_AVAILABLE
+    // Try nvJPEG GPU decode first (~1ms faster than CPU OpenCV decode)
+    auto& nvjpeg = get_nvjpeg();
+    if (nvjpeg.IsAvailable()) {
+        gpu_img = nvjpeg.Decode(jpeg_data, nbytes, sess.device());
+    }
+#endif
+
+    if (gpu_img.defined() && gpu_img.numel() > 0) {
+        // nvJPEG succeeded — image is already on GPU as [H,W,3] uint8
+        orig_h = static_cast<int>(gpu_img.size(0));
+        orig_w = static_cast<int>(gpu_img.size(1));
+    } else {
+        // Fallback: CPU decode via OpenCV
+        cv::Mat raw = cv::imdecode(
+            cv::Mat(1, nbytes, CV_8UC1, const_cast<uint8_t*>(jpeg_data)),
+            cv::IMREAD_COLOR);
+        if (raw.empty()) {
+            throw std::runtime_error("torch_detect_gpu: failed to decode image");
+        }
+        cv::Mat img;
+        cv::cvtColor(raw, img, cv::COLOR_BGR2RGB);
+        orig_h = img.rows;
+        orig_w = img.cols;
+        gpu_img = torch_upload_image(img.data, orig_h, orig_w, sess.device());
+    }
 
     // 3. Letterbox on GPU (skip if already target size — saves ~0.3ms)
     torch::Tensor lb;
