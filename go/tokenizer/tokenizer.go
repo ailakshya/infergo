@@ -31,6 +31,9 @@ type Tokenizer struct {
 	ptr C.InferTokenizer
 }
 
+// Handle returns the raw C tokenizer pointer for use with C pipeline functions.
+func (t *Tokenizer) Handle() unsafe.Pointer { return unsafe.Pointer(t.ptr) }
+
 // lastError returns the thread-local C error string as a Go error.
 func lastError() error {
 	msg := C.infer_last_error_string()
