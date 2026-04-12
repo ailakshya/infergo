@@ -5,360 +5,232 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ailakshya/infergo/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
-  </a>
-  <a href="https://pkg.go.dev/github.com/ailakshya/infergo">
-    <img src="https://pkg.go.dev/badge/github.com/ailakshya/infergo.svg" alt="Go Reference">
-  </a>
+  <a href="https://github.com/ailakshya/infergo/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="https://pkg.go.dev/github.com/ailakshya/infergo"><img src="https://pkg.go.dev/badge/github.com/ailakshya/infergo.svg" alt="Go Reference"></a>
   <img src="https://img.shields.io/badge/CUDA-12.x-76B900.svg" alt="CUDA 12">
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey.svg" alt="Platform">
 </p>
 
----
-
-## The numbers
-
-Measured on RTX 5070 Ti, CUDA 12.8. Both via HTTP, keep-alive, 100 requests. **infergo wins every metric. Python crashes under load.**
-
-### Latency (lower is better)
-
-| Task | infergo | Python | Winner |
-|---|---|---|---|
-| LLM generation (per token) | **1.69 ms** | 13.62 ms | **infergo 8.1x** |
-| Speculative decoding (8B + 1B) | **74 ms** | 496 ms | **infergo 6.7x** |
-| Single embedding | **0.9 ms** | 1.9 ms | **infergo 2.1x** |
-| Batch embedding (3 texts) | **1.4 ms** | 2.5 ms | **infergo 1.8x** |
-| Reranking (3 docs) | **1.2 ms** | 6.2 ms | **infergo 5.2x** |
-| Detection (yolo11n) | **2.4 ms** | 2.7 ms | **infergo 1.1x** |
-| Prompt cache TTFT | **14 ms** | 40 ms | **infergo 2.9x** |
-| JSON output validity | **100%** | 0% | **infergo** |
-| HNSW vector search | **0.03 ms** | ~1 ms (faiss) | **infergo 33x** |
-
-### Throughput under load (both HTTP, 100 requests per level)
-
-| Feature | c=1 | c=4 | c=8 | c=16 | c=32 |
-|---|---|---|---|---|---|
-| **infergo embedding** | 692 | 957 | 951 | 927 | **911 req/s** |
-| Python embedding | 437 | 459 | 46 | crashed | crashed |
-| **infergo reranking** | 212 | 250 | 250 | 246 | **241 req/s** |
-| **infergo detection** | 62 | 110 | 95 | 233 | **239 req/s** |
-| infergo health check | — | — | — | — | **20,623 req/s** |
-
-At c=8 Python embedding throughput drops to 46 req/s (P99 = 1,036 ms). At c=16 Python crashes. infergo serves 927 req/s with zero errors.
-
-### RAG pipeline — 5 modes (Qwen Coder + Embedding + Vector Search)
-
-Full end-to-end: embed query → search documents → generate answer.
-Each mode tested on both CPU and GPU. Qwen 2.5 Coder 1.5B + all-MiniLM-L6-v2.
-
-| Mode | P50 | Cold Start | VRAM | GPU% | What it does |
-|---|---|---|---|---|---|
-| Python CPU | **636 ms** | 4,931 ms | — | 0% | llama-cpp-python + sentence-transformers, all CPU |
-| Python GPU | **642 ms** | 4,907 ms | 2,720 MB | 15% | same libs, CUDA — barely faster (Python overhead wastes GPU) |
-| **infergo CPU** | **162 ms** | 1,043 ms | — | 0% | one binary, CPU — 3.9x faster than Python |
-| **infergo GPU** | **116 ms** | 1,037 ms | 5,350 MB | 85% | one binary, CUDA — 5.5x faster than Python |
-| **infergo GPU+JSON** | **597 ms** | 1,037 ms | 5,350 MB | 85% | same + guaranteed valid JSON output |
-
-**Why Python GPU (642ms) is barely faster than Python CPU (636ms):**
-Python's per-token overhead is 3ms (GIL lock + logits copy + Python sampling). The GPU saves 2ms per token but Python adds 3ms back. Net GPU gain: ~6ms over 50 tokens. The GPU sits idle 77% of the time waiting for Python. infergo's GPU utilization is 85% because the entire decode loop runs in C++ with zero Python overhead.
-
-**Cost estimate per 1M RAG requests:**
-
-| | Python GPU | infergo GPU | Savings |
-|---|---|---|---|
-| GPU-hours | 178 hrs | 32 hrs | 146 hrs saved |
-| T4 ($0.35/hr) | $62 | $11 | **82% cheaper** |
-| A100 ($3/hr) | $534 | $96 | **82% cheaper** |
-| H100 ($8/hr) | $1,424 | $256 | **82% cheaper** |
-
-### Infrastructure
-
-| | infergo | Python | |
-|---|---|---|---|
-| Docker image (CPU) | **0.18 GB** | 10 GB | **56x smaller** |
-| Docker image (CUDA) | **1.52 GB** | 12 GB | **8x smaller** |
-| Cold start | **1,037 ms** | 4,907 ms | **4.7x faster** |
-| VRAM at c=10 | **700 MB** | 7,000 MB | **10x less** |
-| Memory drift (1000 req) | **+0.3%** | +11.9% | **40x more stable** |
-| Errors under load | **0** | crashes at c=16 | **infergo** |
-| Models per binary | **LLM+embed+detect** | 1 | **3-in-1** |
-| Pip packages needed | **0** | 12+ | **zero deps** |
-| Python HTTP server | **not needed** | crashes with 2 models | **stable** |
+<p align="center">
+  <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/python.md">Python</a> · <a href="docs/detection.md">Detection</a> · <a href="docs/go-api-reference.md">Go API</a> · <a href="docs/deployment.md">Deployment</a> · <a href="benchmarks/vs_python/results_full.md">Benchmarks</a>
+</p>
 
 ---
 
-## Why
+## What is infergo
 
-Python inference servers have five problems in production:
+infergo is a production inference runtime that serves LLMs, embedding models, and object detection from a single Go binary. It wraps llama.cpp and ONNX Runtime behind an OpenAI-compatible HTTP API. No Python required.
 
-1. **The GIL serializes requests.** 10 users = the 10th waits for 9 to finish. To scale, you fork processes. Each loads a full model copy. Llama 3 8B = 4.6 GB VRAM per process. 10 users = 46 GB.
+```bash
+# One command. LLM + embedding + detection on one port.
+infergo serve \
+  --model llm:models/llama3-8b-q4.gguf \
+  --model embed:models/all-MiniLM-L6-v2.onnx \
+  --model detect:models/yolov8n.onnx \
+  --provider cuda
+```
 
-2. **Cold start kills autoscaling.** Python + PyTorch + transformers = 15 seconds to boot. By the time your new pod is ready, the traffic spike is over.
-
-3. **No structured output guarantee.** You ask for JSON, the model outputs prose. Python has no fix. infergo uses GBNF grammar sampling — the output is syntactically valid by construction.
-
-4. **Three servers for three model types.** vLLM for LLMs, sentence-transformers for embeddings, ultralytics for detection. Three processes, three configs, three failure domains.
-
-5. **10 GB container images.** Python + PyTorch + CUDA runtime + model framework = 10 GB pulled on every new node.
-
-infergo is one binary. 22 MB. Serves LLM + embedding + detection on one port. 456 ms cold start. 0.18 GB Docker image. No Python runtime.
+```python
+# Works with any OpenAI client. Zero code changes.
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:9090/v1", api_key="none")
+response = client.chat.completions.create(
+    model="llm",
+    messages=[{"role": "user", "content": "Hello"}],
+    response_format={"type": "json_object"}  # guaranteed valid JSON
+)
+```
 
 ---
 
-## How infergo works
+## Performance
+
+Measured on RTX 5070 Ti, CUDA 12.8. All numbers are real, reproducible, and published with benchmark scripts.
+
+### Single request latency
+
+| Task | infergo | Python | Speedup |
+|---|---|---|---|
+| LLM generation (per token) | **1.69 ms** | 13.62 ms | **8.1x** |
+| Speculative decoding (8B+1B draft) | **74 ms** | 496 ms | **6.7x** |
+| RAG pipeline (embed + search + generate) | **116 ms** | 642 ms | **5.5x** |
+| Single embedding | **0.9 ms** | 1.9 ms | **2.1x** |
+| Batch embedding (3 texts) | **1.4 ms** | 2.5 ms | **1.8x** |
+| Reranking (3 docs) | **1.2 ms** | 6.2 ms | **5.2x** |
+| Object detection (yolo11n) | **2.4 ms** | 2.7 ms | **1.1x** |
+| HNSW vector search (k=10) | **0.03 ms** | ~1 ms | **33x** |
+| JSON output validity | **100%** | 0% | guaranteed |
+
+### Throughput under concurrent load
+
+| Concurrency | infergo embedding | Python embedding | infergo detection | infergo reranking |
+|---|---|---|---|---|
+| c=1 | 692 req/s | 437 req/s | 177 req/s | 212 req/s |
+| c=4 | 957 req/s | 459 req/s | 110 req/s | 250 req/s |
+| c=8 | 951 req/s | **46 req/s** | 124 req/s | 250 req/s |
+| c=16 | 927 req/s | **crashed** | 233 req/s | 246 req/s |
+| c=32 | **911 req/s** | **crashed** | **239 req/s** | **241 req/s** |
+
+At c=8, Python's P99 latency spikes to 1,036ms. At c=16, Python crashes entirely. infergo serves 927 req/s at c=32 with zero errors.
+
+### RAG pipeline — 5 configurations
+
+Full end-to-end: embed query, search documents, generate answer. Qwen 2.5 Coder 1.5B + all-MiniLM-L6-v2.
+
+| Configuration | P50 | Cold start | VRAM | GPU util. |
+|---|---|---|---|---|
+| Python CPU | 636 ms | 4,931 ms | — | 0% |
+| Python GPU | 642 ms | 4,907 ms | 2,720 MB | 15% |
+| **infergo CPU** | **162 ms** | 1,043 ms | — | 0% |
+| **infergo GPU** | **116 ms** | 1,037 ms | 5,350 MB | 85% |
+| infergo GPU + JSON | 597 ms | 1,037 ms | 5,350 MB | 85% |
+
+### Cloud cost (per 1M RAG requests)
+
+| Cloud tier | Python | infergo | Savings |
+|---|---|---|---|
+| T4 ($0.35/hr) | $62 | $11 | **82%** |
+| A100 ($3/hr) | $534 | $96 | **82%** |
+| H100 ($8/hr) | $1,424 | $256 | **82%** |
+
+---
+
+## Why infergo exists
+
+Python inference servers have five production problems:
+
+**1. The GIL blocks concurrency.** Python's Global Interpreter Lock allows only one thread to execute at a time. Ten concurrent users means the tenth waits for the first nine to finish. The standard fix — forking processes — loads a full model copy per process. Llama 3 8B needs 4.6 GB VRAM per copy. Ten users need 46 GB.
+
+**2. Cold start kills autoscaling.** Python + PyTorch + transformers takes 5 seconds to start. Kubernetes pods are useless during that time. infergo starts in 1 second.
+
+**3. No structured output guarantee.** When you ask an LLM for JSON, Python hopes the model complies. infergo enforces it with GBNF grammar sampling — the output is syntactically valid by construction. 100% validity, every request.
+
+**4. Three servers for three model types.** vLLM for LLMs, sentence-transformers for embeddings, ultralytics for detection. Three processes, three configurations, three failure domains. infergo serves all three from one binary on one port.
+
+**5. Container bloat.** Python + PyTorch + CUDA runtime + model framework = 10 GB Docker image. infergo's CPU image is 0.18 GB. The CUDA image is 1.52 GB.
+
+---
+
+## Architecture
+
+### Request flow
 
 ```
-Your app (Python / Go / curl / any language)
-    │
-    │  HTTP request (OpenAI-compatible JSON)
-    ▼
-┌─────────────────────────────────────────────────────┐
-│  infergo binary (22 MB)                             │
-│                                                     │
-│  Go layer (HTTP only — no inference compute here):  │
-│    Parse JSON → 1 CGo call → Format response       │
-│    ~0.3ms overhead. No GIL. No interpreter.         │
-│                                                     │
-│  C++ layer (ALL compute happens here):              │
-│    ┌─────────────────────────────────────────────┐  │
-│    │  LLM: llama.cpp                             │  │
-│    │    Full generate loop in C++                 │  │
-│    │    Prompt cache (skip repeat prefills)       │  │
-│    │    Grammar sampling (guaranteed JSON)        │  │
-│    │    Speculative decoding (draft+verify)       │  │
-│    │    Flash Attention 2 (auto-enabled)          │  │
-│    │    1 CGo call per request, not per token     │  │
-│    ├─────────────────────────────────────────────┤  │
-│    │  Embedding: ONNX Runtime / TorchScript      │  │
-│    │    Tokenize + infer + pool + normalize       │  │
-│    │    All in one C++ call                       │  │
-│    │    TorchScript auto-selected for CUDA        │  │
-│    ├─────────────────────────────────────────────┤  │
-│    │  Detection: libtorch + nvJPEG               │  │
-│    │    JPEG decoded on GPU (not CPU)             │  │
-│    │    Preprocess + infer + NMS all on GPU       │  │
-│    ├─────────────────────────────────────────────┤  │
-│    │  Search: HNSW index (C++)                   │  │
-│    │    0.03ms per query, 20K+ queries/sec       │  │
-│    │    Persistent save/load to disk              │  │
-│    ├─────────────────────────────────────────────┤  │
-│    │  Rerank: embed + cosine in one C++ call     │  │
-│    └─────────────────────────────────────────────┘  │
-│                                                     │
-│  GPU: 85-91% utilization (vs Python's 15-23%)       │
-└─────────────────────────────────────────────────────┘
-    │
-    ▼  NVIDIA CUDA / CPU / Metal
+Client (Python / Go / curl / any language)
+  │
+  │  POST /v1/chat/completions (JSON)
+  ▼
+┌──────────────────────────────────────────────────┐
+│  Go HTTP layer                                   │
+│  Parse JSON → route → 1 CGo call → respond      │
+│  Time: 0.3ms. No inference compute.              │
+└──────────────────────┬───────────────────────────┘
+                       │  1 CGo call (entire request)
+┌──────────────────────▼───────────────────────────┐
+│  C++ compute engine                              │
+│  ┌────────────┬────────────┬──────────┬────────┐ │
+│  │ llama.cpp  │ ONNX RT /  │ libtorch │ HNSW   │ │
+│  │ LLM decode │ TorchScript│ nvJPEG   │ search │ │
+│  │ grammar    │ embedding  │ detect   │ rerank │ │
+│  │ speculate  │ batch      │ NMS      │ vector │ │
+│  │ cache      │ pool+norm  │ preproc  │ DB     │ │
+│  └────────────┴────────────┴──────────┴────────┘ │
+└──────────────────────┬───────────────────────────┘
+                       │
+              NVIDIA CUDA / CPU / Metal
 ```
 
-### How Go handles requests vs Python
+### Why Go + C++
+
+Go handles HTTP, routing, authentication, metrics, and concurrency. C++ handles all inference compute. The boundary is one CGo call per request — not one per token.
+
+**Go's role (the receptionist):**
+- Parse HTTP request: 0.1ms
+- Route to correct model: 0.01ms
+- Serialize JSON response: 0.2ms
+- Handle 10,000+ concurrent connections with goroutines (8 KB each)
+- No GIL. No interpreter. Compiled binary.
+
+**C++'s role (the doctor):**
+- Tokenize, prefill, decode, sample, detokenize: 115ms
+- Prompt cache, grammar sampling, speculative decoding
+- Flash Attention, nvJPEG GPU decode, HNSW search
+- Zero copies between languages during generation
+
+### How Go handles concurrency vs Python's GIL
 
 ```
-PYTHON — one request at a time (GIL)
+Python: 10 users → 10th waits 6,420ms
 ─────────────────────────────────────
+  Request 1: [===GIL LOCKED=== 642ms ===GIL UNLOCKED===]
+  Request 2:                                              [=== 642ms ===]
+  Request 3:                                                              [...]
+  ...
+  Request 10: waits 5,778ms before starting
 
-  Request 1 arrives → Python thread 1 starts
-    │ GIL LOCKED — no other thread can run
-    │ tokenize (Python) .............. 10ms
-    │ for each token:
-    │   acquire GIL .................. 0.5ms
-    │   call C (llama_decode) ........ 2ms   ← GPU busy
-    │   copy logits to Python ........ 1ms   ← GPU idle
-    │   sample in Python ............. 1ms   ← GPU idle
-    │   release GIL .................. 0.2ms
-    │ serialize response ............. 20ms
-    │ GIL UNLOCKED
-    ▼
-  Request 2 STARTS (was waiting the entire time)
-
-  10 concurrent users = 10th user waits 6,420ms (10 × 642ms)
-  
-  To "fix" this, Python forks 10 processes:
-    Process 1: loads model (2,720 MB VRAM)
-    Process 2: loads model (2,720 MB VRAM)
-    ...
-    Process 10: loads model (2,720 MB VRAM)
-    TOTAL: 27,200 MB VRAM — doesn't fit on any GPU
-    
-  Each process also loads:
-    Python interpreter:     120 MB RSS
-    PyTorch:                800 MB RSS
-    sentence-transformers:  200 MB RSS
-    × 10 processes = 11,200 MB CPU RAM
+  Fix: fork 10 processes
+    Each loads full model → 27,200 MB VRAM
+    Each loads Python + PyTorch → 11,200 MB RAM
+    Won't fit on any single GPU.
 
 
-GO (infergo) — thousands of concurrent requests
-─────────────────────────────────────────────────
+infergo: 10 users → all start immediately
+─────────────────────────────────────────
+  Goroutine 1 (8 KB): [== 116ms ==]
+  Goroutine 2 (8 KB): [== 116ms ==]
+  Goroutine 3 (8 KB): [== 116ms ==]   ← continuous batching
+  ...                                    groups all into one
+  Goroutine 10 (8 KB): [== 116ms ==]    GPU forward pass
 
-  Request 1 arrives → goroutine 1 (8 KB stack)
-    │ parse JSON (Go) ................ 0.1ms
-    │ ONE CGo call to C++ ............ 0.0ms boundary
-    │   entire generate loop in C++:
-    │     prefill .................... 5ms   ← GPU busy
-    │     for each token:
-    │       decode ................... 2ms   ← GPU busy
-    │       sample (C++, zero copy) .. 0.01ms ← still in C
-    │   return text
-    │ serialize JSON (Go) ............ 0.2ms
-    ▼ Done (116ms)
-
-  Request 2 arrives → goroutine 2 (8 KB stack)
-    │ starts IMMEDIATELY — no GIL, no lock
-    │ if GPU is busy: waits in scheduler queue
-    │ if GPU is free: starts inference
-    ▼
-
-  10 concurrent users:
-    10 goroutines = 80 KB total memory (vs 11,200 MB Python)
-    1 model copy in VRAM (vs 27,200 MB Python)
-    Continuous batching: all 10 sequences in ONE GPU call
-    P50 latency stays flat — GPU processes all users together
-
-  Why goroutines beat threads:
-    Python thread:  8 MB stack, GIL blocks all others
-    Go goroutine:   8 KB stack (1000x smaller), no GIL
-    
-    Python can't run 2 threads at once (GIL).
-    Go runs thousands of goroutines on all CPU cores.
-    
-    Python needs OS threads → expensive context switches.
-    Go schedules goroutines in userspace → near-zero overhead.
-
-  What Go does vs what C++ does:
-    Go:  HTTP server, JSON parse, routing, auth, metrics, queue
-         ~0.3ms per request. No inference compute.
-         
-    C++: tokenize, prefill, decode, sample, detokenize,
-         prompt cache, grammar sampling, speculative decode
-         ~115ms per request. ALL compute.
-         
-    Go is the receptionist. C++ is the doctor.
-    The receptionist doesn't do surgery.
+  Total memory: 80 KB goroutine stacks + 1 model copy
+  Total VRAM: same 5,350 MB regardless of user count
 ```
 
-**Why it's faster than Python:** Python's per-token overhead is 3ms (GIL lock + logits copy to Python + sampling in Python + GIL release). Over 50 tokens that's 150ms wasted. In infergo, the entire decode loop runs in C++ — the GPU never waits for an interpreter. Python uses 15% of the GPU. infergo uses 85%.
-
-**VRAM footprint (measured, RTX 5070 Ti):**
-
-| Configuration | VRAM | RSS (CPU) |
-|---|---|---|
-| 1 model (Qwen 1.5B, Q4) | 2,421 MB | ~200 MB |
-| 1 model (Llama 3 8B, Q4) | ~4,200 MB | ~1,300 MB |
-| 2 models (LLM + embedding) | ~5,000 MB | ~1,450 MB |
-| 3 models (LLM + embed + detect) | ~5,350 MB | ~1,500 MB |
-| Same 3 models in Python | ~2,720 MB + 2,691 MB RSS | 3 processes |
-
-### Why infergo uses more VRAM but runs 5.5x faster
-
-This seems backwards — Python uses 2,720 MB, infergo uses 5,350 MB. More memory = faster?
-
-**Yes. Here's why:**
+### GPU memory breakdown
 
 ```
-PYTHON GPU VRAM (2,720 MB) — underusing the GPU
-────────────────────────────────────────────────
+Python (2,720 MB VRAM, 15% GPU utilization):
+  Model weights:        1,100 MB
+  KV cache:               200 MB
+  PyTorch allocator:      920 MB  (pre-allocated, mostly idle)
+  Embedding model:        100 MB
+  Compute workspace:      400 MB  (small — GPU starved for work)
 
-  Model weights (Q4):         1,100 MB   ← same as infergo
-  KV cache:                     200 MB   ← small, only 1 seq
-  PyTorch CUDA allocator:       920 MB   ← pre-allocated heap
-  MiniLM embedding:             100 MB   ← same
-  Compute workspace:            400 MB   ← SMALL
-                              ─────────
-  TOTAL:                      2,720 MB
+  Per token: GIL lock (0.5ms) → GPU decode (2ms) → copy logits
+  to Python (1ms) → sample in Python (1ms) → GIL release (0.2ms)
+  GPU busy: 2ms out of 5ms = 40%. Idle 60%.
 
-  The compute workspace is small because Python doesn't use it
-  efficiently. Between every token, Python:
-    1. Acquires the GIL (0.5ms)
-    2. Copies 594KB of logits GPU→CPU (1ms)
-    3. Samples in Python (1ms)
-    4. Releases the GIL (0.2ms)
+infergo (5,350 MB VRAM, 85% GPU utilization):
+  Model weights:        1,100 MB
+  KV cache:               200 MB
+  Compute workspace:    1,200 MB  (3x larger — GPU stays busy)
+  Flash Attention:      2,100 MB  (2x faster prefill, O(N) memory)
+  Embedding model:        100 MB
+  Prompt cache:           100 MB  (skip prefill on repeat prompts)
+  nvJPEG + speculative:   550 MB  (GPU JPEG decode + draft model)
+
+  Per token: GPU decode (2ms) → sample in C++ (0.01ms) → next
+  GPU busy: 2ms out of 2.01ms = 99%. Zero idle time.
   
-  During those 2.7ms the GPU has NOTHING to do.
-  It sits idle with allocated but unused memory.
-  
-  GPU busy: 2ms out of every 5ms = 40% utilization
-  GPU idle: 3ms out of every 5ms = 60% WASTED
-
-
-INFERGO GPU VRAM (5,350 MB) — fully using the GPU
-────────────────────────────────────────────────
-
-  Model weights (Q4):         1,100 MB   ← same
-  KV cache:                     200 MB   ← same
-  Compute workspace:          1,200 MB   ← 3x LARGER
-  MiniLM TorchScript:           100 MB   ← same
-  Flash Attention buffers:    2,100 MB   ← Python doesn't have this
-  nvJPEG decoder:                50 MB   ← Python doesn't have this
-  Prompt cache (KV states):     100 MB   ← Python doesn't have this
-  Speculative decoder ctx:      500 MB   ← Python doesn't have this
-                              ─────────
-  TOTAL:                      5,350 MB
-
-  WHY each extra allocation makes it faster:
-
-  Flash Attention (2,100 MB):
-    Standard attention: O(N²) memory, slow for long prompts
-    Flash Attention: O(N) memory, 2x faster prefill
-    Needs workspace buffers pre-allocated on GPU
-    Python's llama-cpp-python doesn't allocate these
-
-  Compute workspace (1,200 MB vs 400 MB):
-    Larger workspace = GPU can pipeline operations
-    While one matmul runs, the next one's data is already loaded
-    Python's small workspace forces serial execution
-
-  Prompt cache (100 MB):
-    Serialized KV state for repeated prompts
-    Second request with same prompt: skip prefill entirely
-    Python has no equivalent — every request starts from scratch
-
-  nvJPEG (50 MB):
-    JPEG decoded directly on GPU
-    Python decodes on CPU, then uploads (2ms wasted per image)
-
-  The key insight:
-    Python SAVES memory by NOT using the GPU efficiently.
-    infergo SPENDS memory to KEEP the GPU busy.
-    
-    It's like buying a $10,000 GPU and then:
-    - Python: uses 40% of it, saves 2.6 GB of VRAM
-    - infergo: uses 85% of it, spends 2.6 GB more VRAM
-    
-    The VRAM is already paid for. Not using it is waste.
+  More VRAM spent = more GPU utilized = faster inference.
+  The VRAM is already paid for. Not using it is waste.
 ```
 
-**What happens during one token generation:**
+---
 
-```
-PYTHON (5ms per token — GPU idle 60% of the time):
-  ┌──────┐┌─────────────────┐┌──────┐┌──────────┐
-  │ GIL  ││   GPU decode    ││ copy ││ Py sample │
-  │ lock ││   (2ms)         ││logits││ (1ms)     │
-  │0.5ms ││   ████████      ││ 1ms  ││           │
-  └──────┘└─────────────────┘└──────┘└──────────┘
-  ▓▓▓▓▓▓▓ ████████████████████ ░░░░░░ ░░░░░░░░░░
-  Python   GPU busy            GPU idle (copying + Python)
-  
-  GPU: ████████░░░░░░░░░░  = 40% busy
+## Features
 
-INFERGO (2ms per token — GPU busy 95% of the time):
-  ┌──────────────────┐┌────┐
-  │   GPU decode     ││next│
-  │   (2ms)          ││0.1 │
-  │   ████████████   ││    │
-  └──────────────────┘└────┘
-  ████████████████████ ▓
-  GPU busy              sample
-                        (in C++,
-                         zero copy)
-  
-  GPU: ██████████████████  = 95% busy
-```
+**Inference:** LLM (GGUF), embedding (ONNX/TorchScript), detection (TorchScript/ONNX/TensorRT), vector search (HNSW), reranking, RAG pipeline
 
-At c=10 concurrency:
-- **infergo:** 1 process, same VRAM, all 10 users share 1 model copy
-- **Python:** 10 processes × 2,720 MB = 27,200 MB VRAM (won't fit on any single GPU)
+**Performance:** Full C generation loop (1 CGo call/request), nvJPEG GPU decode, speculative decoding (6.7x), prompt caching, continuous batching, Flash Attention 2, grammar sampling, zero-copy sampling
+
+**AI capabilities:** Structured output (JSON/GBNF), function calling, batch embeddings, vector database (CRUD + persistence), document ingestion, reranking, guardrails
+
+**Production:** Multi-model serving, hot reload, API key auth, rate limiting, request queue, Prometheus metrics, OpenTelemetry tracing, KEDA autoscaling, preemption
+
+**Deployment:** Docker (CPU 0.18 GB, CUDA 1.52 GB), Helm chart, multi-GPU (tensor split, pipeline stages, auto-shard), 1-second cold start
+
+**Endpoints:** 25 HTTP endpoints including `/v1/chat/completions`, `/v1/embeddings`, `/v1/detect`, `/v1/search`, `/v1/rerank`, `/v1/rag`, `/v1/ingest`, `/ui` (built-in chat)
 
 ---
 
@@ -374,16 +246,17 @@ infergo pull bartowski/Meta-Llama-3-8B-Instruct-GGUF \
   --filename Meta-Llama-3-8B-Instruct-Q4_K_M.gguf
 
 # Serve
-infergo serve --model models/llama3-8b-q4.gguf --port 9090
+infergo serve --model models/llama3-8b-q4.gguf --provider cuda
 
-# Query
+# Chat
 curl http://localhost:9090/v1/chat/completions \
   -d '{"model":"llama3-8b-q4","messages":[{"role":"user","content":"Hello"}]}'
-```
 
-### Multi-model (one binary, one port)
+# Speculative decoding (6.7x faster)
+infergo serve --model llm:models/llama3-8b-q4.gguf \
+  --draft-model models/llama3.2-1b-q4.gguf --provider cuda
 
-```bash
+# Multi-model
 infergo serve \
   --model llm:models/llama3-8b-q4.gguf \
   --model embed:models/all-MiniLM-L6-v2.onnx \
@@ -391,143 +264,75 @@ infergo serve \
   --provider cuda
 ```
 
-### Speculative decoding (6.7x faster)
+### Docker
 
 ```bash
-infergo serve \
-  --model llm:models/llama3-8b-q4.gguf \
-  --draft-model models/llama3.2-1b-q4.gguf \
-  --n-draft 5 --provider cuda
+# CPU (0.18 GB image)
+docker run --rm -p 9090:9090 -v ./models:/models:ro \
+  ghcr.io/ailakshya/infergo:cpu serve --model /models/llama3-8b-q4.gguf
+
+# CUDA (1.52 GB image)
+docker run --rm --gpus all -p 9090:9090 -v ./models:/models:ro \
+  ghcr.io/ailakshya/infergo:cuda serve --model /models/llama3-8b-q4.gguf --provider cuda
 ```
 
 ---
 
 ## API
 
-Works with any OpenAI client. No code changes needed.
-
-```python
-from openai import OpenAI
-client = OpenAI(base_url="http://localhost:9090/v1", api_key="none")
-
-# Chat
-r = client.chat.completions.create(
-    model="llm", messages=[{"role":"user","content":"Hello"}])
-
-# Guaranteed JSON output
-r = client.chat.completions.create(
-    model="llm", messages=[{"role":"user","content":"Return JSON with name and age"}],
-    response_format={"type": "json_object"})
-
-# Batch embeddings
-r = client.embeddings.create(model="embed", input=["text1","text2","text3"])
-
-# Streaming
-for chunk in client.chat.completions.create(
-    model="llm", messages=[{"role":"user","content":"Count to 5"}], stream=True):
-    print(chunk.choices[0].delta.content or "", end="")
-```
-
 ### Endpoints
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/chat/completions` | Chat (streaming, structured output, function calling) |
-| `POST` | `/v1/embeddings` | Embeddings (single string or batch `["a","b"]`) |
-| `POST` | `/v1/search` | Vector similarity search (HNSW index) |
+| `POST` | `/v1/chat/completions` | Chat completion (streaming, structured output, function calling) |
+| `POST` | `/v1/embeddings` | Dense embeddings (single or batch) |
+| `POST` | `/v1/search` | Vector similarity search (HNSW) |
 | `POST` | `/v1/rerank` | Rerank documents by query relevance |
+| `POST` | `/v1/rag` | Full RAG pipeline (embed + search + generate) |
+| `POST` | `/v1/ingest` | Ingest documents into vector DB |
 | `POST` | `/v1/detect` | Object detection (JSON + base64) |
-| `POST` | `/v1/detect/binary` | Object detection (raw JPEG body, faster) |
-| `POST` | `/v1/detect/stream` | Streaming detection (SSE for video) |
-| `POST` | `/v1/images/generations` | Image generation (Stable Diffusion) |
-| `POST` | `/v1/audio/transcriptions` | Speech-to-text (Whisper) |
+| `POST` | `/v1/detect/binary` | Object detection (raw JPEG, faster) |
+| `POST` | `/v1/detect/stream` | Streaming detection (SSE) |
+| `POST` | `/v1/images/generations` | Image generation |
+| `POST` | `/v1/audio/transcriptions` | Speech-to-text |
+| `POST` | `/v1/batches` | Async batch inference |
 | `GET` | `/v1/models` | List loaded models |
 | `POST` | `/v1/admin/reload` | Hot-swap model weights |
-| `POST` | `/v1/admin/guardrails` | Configure content safety filters |
-| `GET` | `/health/live` | Liveness probe |
+| `POST` | `/v1/admin/guardrails` | Configure content safety |
+| `POST` | `/v1/admin/templates` | Manage prompt templates |
+| `GET` | `/ui` | Built-in chat interface |
+| `GET` | `/health/live` | Liveness probe (20,623 req/s) |
 | `GET` | `/health/ready` | Readiness probe |
 | `GET` | `/metrics` | Prometheus metrics |
 
----
-
-## How it's fast
-
-| What | How | Impact |
-|---|---|---|
-| Full C generation loop | Entire decode/sample/append runs in C++. One CGo call per request. | 3.4x faster than per-token Go loop |
-| nvJPEG GPU decode | JPEG decoded directly to GPU memory. No CPU decode, no upload. | 2.3x faster detection |
-| Speculative decoding | Small draft model proposes tokens, target verifies in one batch. | 6.7x faster (90% acceptance) |
-| Prompt caching | Serialized KV state cached by prompt hash. Repeated prompts skip prefill. | 2.9x faster TTFT |
-| Continuous batching | All concurrent sequences decoded in one GPU call. | Throughput scales with concurrency |
-| Grammar sampling | llama.cpp sampler chain enforces GBNF grammar on every token. | 100% valid JSON |
-| Zero-copy sampling | Logits stay in C++ memory. Never cross CGo boundary. | Eliminates 1 MB/token memcpy |
-| PagedAttention | KV cache allocated in pages, freed per-sequence. No fragmentation. | +0.3% RSS after 1,000 requests |
-
----
-
-## Features
-
-**Inference:** LLM (GGUF via llama.cpp) + Embedding (ONNX Runtime) + Detection (TorchScript / ONNX / TensorRT) + Vector search (HNSW) + Reranking + Streaming detection
-
-**Performance:** Full C generation loop, nvJPEG GPU decode, speculative decoding, prompt caching, continuous batching, Flash Attention 2, grammar sampling, zero-copy logits
-
-**AI features:** Structured output (JSON/GBNF), function calling (tool use), speculative decoding, batch embeddings, vector search, reranking, guardrails (content safety)
-
-**Production:** Multi-model serving, hot reload, LoRA adapters, API key auth, rate limiting, request queue, guardrails, Prometheus metrics, OpenTelemetry tracing, KEDA autoscaling
-
-**Deployment:** 0.18 GB CPU / 1.52 GB CUDA Docker image, Helm chart, multi-GPU (tensor split, pipeline stages, auto-shard), 456 ms cold start, `infergo models list/delete`
-
-**Video:** NVDEC decode, GPU preprocessing, ByteTrack tracking, frame annotation, TurboJPEG encoding, streaming detection (SSE), 63 FPS dual 1440p cameras
-
-**SDK:** Go client on pkg.go.dev, gRPC + HTTP + WebSocket, `infergo pull/convert/models` CLI
-
----
-
-## Architecture
-
-```
-Clients (OpenAI SDK / curl / gRPC / WebSocket)
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│  infergo server (Go)                    │
-│  C generate loop · prompt cache         │
-│  continuous batching · HNSW search      │
-│  Prometheus · OTel · auth · queue       │
-└────────────┬────────────────────────────┘
-             │ CGo (1 call per request)
-┌────────────▼────────────────────────────┐
-│  infer_api.h  (C boundary)             │
-├─────────┬──────────┬──────────┬────────┤
-│ llama   │ ONNX RT  │ libtorch │ HNSW   │
-│ .cpp    │ CPU/CUDA │ nvJPEG   │ search │
-│ KV page │ TensorRT │ TorchSc  │        │
-└─────────┴──────────┴──────────┴────────┘
-             │
-     NVIDIA CUDA / CPU / Metal
-```
-
----
-
-## Docker
+### Go SDK
 
 ```bash
-# CPU (0.18 GB image)
-docker run --rm -p 9090:9090 -v ./models:/models:ro \
-  ghcr.io/ailakshya/infergo:cpu \
-  serve --model /models/llama3-8b-q4.gguf
-
-# CUDA (1.52 GB image — requires nvidia-container-toolkit)
-docker run --rm --gpus all -p 9090:9090 -v ./models:/models:ro \
-  ghcr.io/ailakshya/infergo:cuda \
-  serve --model /models/llama3-8b-q4.gguf --provider cuda
+go get github.com/ailakshya/infergo@v1.1.0
 ```
 
-| Image | Size | Includes |
-|---|---|---|
-| `infergo:cpu` | **0.18 GB** | infergo + llama.cpp + ONNX Runtime |
-| `infergo:cuda` | **1.52 GB** | above + CUDA runtime + nvJPEG + TorchScript |
-| Python equivalent | **10-12 GB** | Python + PyTorch + transformers + CUDA |
+```go
+c := client.New("http://localhost:9090", client.WithAPIKey("key"))
+
+resp, _ := c.Chat(ctx, client.ChatRequest{
+    Model:    "llm",
+    Messages: []client.Message{{Role: "user", Content: "Hello"}},
+})
+
+vec, _ := c.Embed(ctx, client.EmbedRequest{Model: "embed", Input: "hello"})
+
+dets, _ := c.Detect(ctx, client.DetectRequest{Model: "detect", ImageB64: b64})
+```
+
+### CLI
+
+```
+infergo serve       Start inference server
+infergo pull        Download model from HuggingFace
+infergo convert     Export model (ONNX, TorchScript, TensorRT, quantize)
+infergo models      List / info / delete local models
+infergo benchmark   Load test a running server
+```
 
 ---
 
@@ -553,10 +358,10 @@ go build -C go -o ../infergo ./cmd/infergo
 ## Testing
 
 ```bash
-# 342 C++ tests (100% pass)
+# 342 C++ tests (100% pass rate)
 ctest --test-dir build --output-on-failure
 
-# Go tests (19 packages, race detector clean)
+# 19 Go packages, race detector clean
 cd go && go test -race ./...
 ```
 
