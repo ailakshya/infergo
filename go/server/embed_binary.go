@@ -4,10 +4,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
-	"strings"
+	"strconv"
 )
 
 // handleEmbeddingsBinary serves embeddings as raw float32 bytes.
@@ -72,37 +71,41 @@ func (s *Server) handleEmbeddingsBinary(w http.ResponseWriter, r *http.Request) 
 // writeJSONFast writes embedding response with pre-formatted float arrays.
 // ~3x faster than json.Encoder for float32 arrays.
 func writeEmbeddingJSONFast(w http.ResponseWriter, model string, vecs [][]float32, inputs []string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	// Pre-allocate buffer to avoid multiple writes
+	totalFloats := 0
+	for _, v := range vecs { totalFloats += len(v) }
+	// ~12 bytes per float * floats + overhead
+	buf := make([]byte, 0, totalFloats*12+512)
 
-	io.WriteString(w, `{"object":"list","model":"`)
-	io.WriteString(w, model)
-	io.WriteString(w, `","data":[`)
+	buf = append(buf, `{"object":"list","model":"`...)
+	buf = append(buf, model...)
+	buf = append(buf, `","data":[`...)
 
+	scratch := make([]byte, 0, 32)
 	for i, vec := range vecs {
-		if i > 0 {
-			io.WriteString(w, ",")
-		}
-		io.WriteString(w, `{"object":"embedding","index":`)
-		fmt.Fprintf(w, "%d", i)
-		io.WriteString(w, `,"embedding":[`)
+		if i > 0 { buf = append(buf, ',') }
+		buf = append(buf, `{"object":"embedding","index":`...)
+		buf = strconv.AppendInt(buf, int64(i), 10)
+		buf = append(buf, `,"embedding":[`...)
 		for j, v := range vec {
-			if j > 0 {
-				io.WriteString(w, ",")
-			}
-			fmt.Fprintf(w, "%.6g", v)
+			if j > 0 { buf = append(buf, ',') }
+			scratch = strconv.AppendFloat(scratch[:0], float64(v), 'g', 6, 32)
+			buf = append(buf, scratch...)
 		}
-		io.WriteString(w, "]}")
+		buf = append(buf, "]}"...)
 	}
 
 	totalTokens := 0
-	for _, inp := range inputs {
-		totalTokens += len(strings.Fields(inp))
-	}
+	for _, inp := range inputs { totalTokens += len(inp) }
 
-	io.WriteString(w, `],"usage":{"prompt_tokens":`)
-	fmt.Fprintf(w, "%d", totalTokens)
-	io.WriteString(w, `,"total_tokens":`)
-	fmt.Fprintf(w, "%d", totalTokens)
-	io.WriteString(w, "}}")
+	buf = append(buf, `],"usage":{"prompt_tokens":`...)
+	buf = strconv.AppendInt(buf, int64(totalTokens), 10)
+	buf = append(buf, `,"total_tokens":`...)
+	buf = strconv.AppendInt(buf, int64(totalTokens), 10)
+	buf = append(buf, "}}"...)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(buf)))
+	w.WriteHeader(http.StatusOK)
+	w.Write(buf)
 }
