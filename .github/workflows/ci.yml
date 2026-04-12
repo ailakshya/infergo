@@ -25,7 +25,7 @@ jobs:
 
       - name: go vet
         working-directory: go
-        run: go vet ./hub/... ./grpc/... ./client/...
+        run: go vet ./hub/... ./grpc/... ./client/... ./tracker/... ./analytics/...
 
       - name: go test — hub
         working-directory: go
@@ -38,6 +38,14 @@ jobs:
       - name: go test — client
         working-directory: go
         run: go test -race -count=1 ./client/...
+
+      - name: go test — tracker
+        working-directory: go
+        run: go test -race -count=1 ./tracker/...
+
+      - name: go test — analytics
+        working-directory: go
+        run: go test -race -count=1 ./analytics/...
 
   # ── Go: server package (pure-Go subset, no CGo) ──────────────────────────────
   go-test-server:

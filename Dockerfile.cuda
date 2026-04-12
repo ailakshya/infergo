@@ -10,25 +10,43 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         ca-certificates \
         wget \
+        curl \
         libopencv-dev \
+        libgtest-dev \
+        libgmock-dev \
+        libturbojpeg0-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Go 1.23 (not in ubuntu22.04 apt)
+# Install Go 1.23
 RUN wget -q https://go.dev/dl/go1.23.0.linux-amd64.tar.gz \
     && tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz \
     && rm go1.23.0.linux-amd64.tar.gz
-
 ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Install Rust (for tokenizer-rs)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Download ONNX Runtime (GPU)
+RUN wget -q "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-gpu-1.24.4.tgz" \
+    && tar -xzf onnxruntime-linux-x64-gpu-1.24.4.tgz -C /opt \
+    && mv /opt/onnxruntime-linux-x64-gpu-1.24.4 /opt/onnxruntime \
+    && rm onnxruntime-linux-x64-gpu-1.24.4.tgz
+ENV ONNXRUNTIME_ROOT=/opt/onnxruntime
 
 WORKDIR /src
 COPY . .
 
-# Build C++ shared library with CUDA enabled
+# Build Rust tokenizer
+RUN cargo build --release --manifest-path tokenizer-rs/Cargo.toml
+
+# Build C++ with CUDA + ONNX + nvJPEG
 RUN cmake -S . -B build \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DINFER_CUDA=ON \
-        -DCMAKE_CUDA_ARCHITECTURES="75;86;89;90" \
+        -DCMAKE_CUDA_ARCHITECTURES="75;86;89;90;120" \
+        -DONNXRUNTIME_ROOT=/opt/onnxruntime \
     && cmake --build build --target infer_api -j$(nproc)
 
 # Build Go binary
@@ -40,7 +58,14 @@ RUN CGO_ENABLED=1 \
         -o /out/infergo \
         ./cmd/infergo
 
-RUN cp /src/build/cpp/api/libinfer_api.so /out/libinfer_api.so
+# Collect all shared libs
+RUN mkdir -p /out/lib && \
+    cp /src/build/cpp/api/libinfer_api.so /out/lib/ && \
+    cp /src/build/cpp/onnx/libinfer_onnx.so /out/lib/ 2>/dev/null || true && \
+    cp /src/build/cpp/tensor/libinfer_tensor.so /out/lib/ 2>/dev/null || true && \
+    cp /src/tokenizer-rs/target/release/libinfer_tokenizer.so /out/lib/ 2>/dev/null || true && \
+    cp /src/build/cpp/tokenizer/libinfer_tokenizer_cpp.so /out/lib/ 2>/dev/null || true && \
+    cp /opt/onnxruntime/lib/libonnxruntime*.so* /out/lib/ 2>/dev/null || true
 
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
@@ -55,14 +80,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libopencv-core4.5d \
         libopencv-imgproc4.5d \
         libopencv-imgcodecs4.5d \
+        libturbojpeg \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /out/infergo          /usr/local/bin/infergo
-COPY --from=builder /out/libinfer_api.so  /usr/local/lib/infergo/libinfer_api.so
+COPY --from=builder /out/infergo     /usr/local/bin/infergo
+COPY --from=builder /out/lib/*.so*   /usr/local/lib/infergo/
 
-# CUDA libs are provided by the base image — just re-run ldconfig
-RUN ldconfig
+RUN echo "/usr/local/lib/infergo" > /etc/ld.so.conf.d/infergo.conf && ldconfig
 
 VOLUME ["/models"]
 
