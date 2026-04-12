@@ -76,9 +76,15 @@ infergo serve --model models/llama3-8b-q4.gguf --port 9090
 ## Features
 
 - **LLM inference** — GGUF models (LLaMA 3, Mistral, Phi-3.5, Gemma 2) with OpenAI-compatible API
+- **Full C generation loop** — entire decode→sample→append loop runs in C++; one CGo call per request, 3.3× faster than per-token Go loop
+- **Structured output** — `response_format: {"type": "json_object"}` guarantees valid JSON via GBNF grammar sampling; custom grammars supported
+- **Prompt caching** — LRU cache of serialized KV state; repeated prompts skip prefill entirely (2.9× TTFT reduction)
+- **Speculative decoding** — draft model generates N candidates, target verifies in one batch; 2-3× speedup with compatible draft model
+- **Flash Attention 2** — auto-enabled on compatible GPUs; 2× prefill speedup, 4× less KV memory for long contexts
 - **Continuous batching** — scheduler batches all waiting sequences into every `BatchDecode` call; P50 stays flat under concurrent load, GPU utilization ≥ 85%
 - **PagedAttention KV cache** — 2–3× more concurrent sequences per GPU; pages freed per-sequence with no leaks
-- **Embedding models** — ONNX Runtime inference for nomic-embed-text, bge-m3, all-MiniLM via `/v1/embeddings`
+- **Embedding models** — ONNX Runtime inference for nomic-embed-text, bge-m3, all-MiniLM via `/v1/embeddings`; batch input supported
+- **Vector search** — built-in HNSW index with `POST /v1/search`; embed query + search in one call, no external vector DB needed
 - **Object detection** — YOLOv8/v11 via `/v1/detect` with GPU preprocessing pipeline; 304 req/s (2x Python)
 - **Adaptive backend** — auto-switches between libtorch (low latency) and TensorRT (max throughput) based on load
 - **Binary detection endpoint** — `POST /v1/detect/binary` accepts raw JPEG, no base64/JSON overhead
@@ -169,6 +175,13 @@ wget -O models/llama3-8b-q4.gguf \
   --model embed:models/all-MiniLM-L6-v2.onnx \
   --model detector:models/yolov8n.onnx \
   --provider cuda
+
+# Speculative decoding (2-3x faster LLM generation)
+./infergo serve \
+  --model llama3:models/llama3-8b-q4.gguf \
+  --draft-model models/llama3-1b-q4.gguf \
+  --n-draft 5 \
+  --provider cuda
 ```
 
 ### Query
@@ -179,15 +192,37 @@ curl http://localhost:9090/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"llama3","messages":[{"role":"user","content":"Explain KV caching."}],"max_tokens":200}'
 
+# Structured output — guaranteed valid JSON
+curl http://localhost:9090/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3","messages":[{"role":"user","content":"List 3 colors as JSON"}],
+       "response_format":{"type":"json_object"}}'
+
+# Custom grammar — constrain output to yes/no
+curl http://localhost:9090/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3","messages":[{"role":"user","content":"Is the sky blue?"}],
+       "response_format":{"type":"grammar","grammar":"root ::= (\"yes\" | \"no\")"}}'
+
 # Streaming
 curl http://localhost:9090/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"llama3","messages":[{"role":"user","content":"Count to 5"}],"stream":true}'
 
-# Embeddings
+# Embeddings (single)
 curl http://localhost:9090/v1/embeddings \
   -H "Content-Type: application/json" \
   -d '{"model":"embed","input":"hello world"}'
+
+# Batch embeddings (N texts in one call)
+curl http://localhost:9090/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"embed","input":["hello world","goodbye world","test"]}'
+
+# Vector search (embed query + search HNSW index)
+curl http://localhost:9090/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{"model":"embed","query":"how to deploy","k":5}'
 
 # Detection
 curl http://localhost:9090/v1/detect \
@@ -245,9 +280,22 @@ for chunk in client.chat.completions.create(
 ):
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 
-# Embeddings
+# Structured output — guaranteed valid JSON
+response = client.chat.completions.create(
+    model="llama3-8b-q4",
+    messages=[{"role": "user", "content": "List 3 colors as JSON"}],
+    response_format={"type": "json_object"},
+)
+import json
+data = json.loads(response.choices[0].message.content)  # always valid JSON
+
+# Embeddings (single or batch)
 vec = client.embeddings.create(model="all-MiniLM-L6-v2", input="hello world")
 print(vec.data[0].embedding[:5])
+
+# Batch embeddings (N texts in one call)
+vecs = client.embeddings.create(model="all-MiniLM-L6-v2", input=["hello", "world", "test"])
+print(f"{len(vecs.data)} embeddings returned")
 ```
 
 **With zero dependencies (stdlib only)**
@@ -292,6 +340,27 @@ See [`docs/python.md`](docs/python.md) for the full Python guide including LangC
 
 Measured on RTX 5070 Ti (16 GB VRAM, SM 12.0 Blackwell), LLaMA 3 8B Q4\_K\_M, Ubuntu 22.04, CUDA 12.8.
 Full methodology and raw numbers: [`benchmarks/vs_python/results_full.md`](benchmarks/vs_python/results_full.md)
+
+### LLM generation performance
+
+Measured on RTX 5070 Ti, TinyLlama 1.1B Q4\_K\_M, 64 tokens.
+
+| Optimization | Before | After | Improvement |
+|---|---|---|---|
+| Full C generation loop | 5.77 ms/tok (Go loop) | 1.76 ms/tok (C loop) | **3.3x faster** |
+| Prompt caching (47-tok prompt) | 40ms TTFT | 14ms TTFT | **2.9x faster** |
+| Structured output (JSON mode) | 0% valid JSON | 100% valid JSON | guaranteed correctness |
+| CGo calls per 64-token request | 256 calls | 1 call | 256x fewer |
+
+### Detection backends
+
+Measured on RTX 5070 Ti, yolo11n.onnx, 640x640 images, 20 runs.
+
+| Backend | Avg latency | RPS | vs CPU |
+|---|---|---|---|
+| TensorRT | **14.1ms** | 71 | 2.4x faster |
+| CUDA (ORT) | 17.1ms | 58 | 2.0x faster |
+| CPU (ORT) | 34.5ms | 29 | baseline |
 
 ### 5-way Python inference benchmark
 
@@ -390,19 +459,24 @@ serve flags:
   --adaptive         Enable adaptive backend selection       (default: true for adaptive backend)
   --safe-mode        Single-image libtorch only, no batch    (most conservative)
   --batch-threshold  Queue depth to switch to batch mode     (default: 3)
+  --draft-model      Path to draft GGUF for speculative decoding (must share vocab with target)
+  --n-draft          Tokens to draft per speculative step    (default: 5)
 ```
 
 ### HTTP endpoints
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/chat/completions` | Chat completion — OpenAI-compatible, `"stream": true` supported |
+| `POST` | `/v1/chat/completions` | Chat completion — OpenAI-compatible, streaming, structured output |
 | `POST` | `/v1/completions` | Text completion |
-| `POST` | `/v1/embeddings` | Dense embeddings from ONNX embedding models |
+| `POST` | `/v1/embeddings` | Dense embeddings — single string or batch `["a","b","c"]` |
+| `POST` | `/v1/search` | Vector similarity search — embed query + search HNSW index |
 | `POST` | `/v1/detect` | Object detection — JSON with base64 image |
 | `POST` | `/v1/detect/binary` | Object detection — raw JPEG body (faster, no base64) |
 | `GET` | `/v1/models` | List all loaded models |
 | `POST` | `/v1/admin/reload` | Hot-swap a model without restart |
+| `POST` | `/v1/prefill` | Prefill-only (KV cache serialization for decode node) |
+| `POST` | `/v1/decode` | Decode-only (accepts serialized KV from prefill node) |
 | `GET` | `/health/live` | Liveness probe — 200 if process is running |
 | `GET` | `/health/ready` | Readiness probe — 200 when ≥ `--min-models` loaded |
 | `GET` | `/metrics` | Prometheus metrics |
@@ -469,7 +543,8 @@ For embedding infergo in a Go service (server-side), see [`docs/go-api-reference
                             │  HTTP (OpenAI-compatible) + gRPC + WebSocket
 ┌───────────────────────────▼─────────────────────────────┐
 │  infergo server  (Go)                                   │
-│  Continuous batching scheduler · PagedAttention KV      │
+│  Full C generate loop · Prompt cache · Speculative dec  │
+│  Continuous batching · PagedAttention KV · HNSW search  │
 │  Prometheus · OTel tracing · auth · rate-limit · queue  │
 └───────────────────────────┬─────────────────────────────┘
                             │  CGo
@@ -483,7 +558,8 @@ For embedding infergo in a Go service (server-side), see [`docs/go-api-reference
 │ llm         │ │ onnx       │ │ (HuggingFace / Rust FFI)│
 │ llama.cpp   │ │ ONNX RT    │ └────────────────────────┘
 │ KV cache    │ │ (CPU/TRT)  │ ┌────────────────────────┐
-│ sampler     │ └─────┬──────┘ │ libinfer_preprocess    │
+│ sampler     │ └─────┬──────┘ │ libinfer_search (HNSW) │
+│ prompt cache│       │        │ libinfer_preprocess    │
 └──────┬──────┘ ┌─────▼──────┐ │ image · letterbox ·   │
        │        │ libinfer_  │ │ normalize              │
        │        │ torch      │ └────────────────────────┘
@@ -638,7 +714,7 @@ CUDA arch values: `80` = A100, `89` = RTX 4090, `120` = RTX 5000.
 ## Testing
 
 ```bash
-# C++ unit tests (276 cases: KV cache, sampler, sequence, API, ONNX, tokenizer)
+# C++ unit tests (340+ cases: KV cache, sampler, sequence, HNSW, API, ONNX, tokenizer)
 ctest --test-dir build --output-on-failure
 
 # Address sanitizer — zero leaks, zero errors (81 tests, CPU targets)
