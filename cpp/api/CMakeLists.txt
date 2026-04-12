@@ -9,10 +9,10 @@ if(TARGET infer_llm)
     target_include_directories(infer_api PRIVATE
         ${CMAKE_SOURCE_DIR}/vendor/llama.cpp/include
     )
-    target_link_libraries(infer_api PRIVATE infer_tensor infer_onnx infer_tokenizer infer_llm)
+    target_link_libraries(infer_api PRIVATE infer_tensor infer_onnx infer_tokenizer infer_llm infer_search)
     target_compile_definitions(infer_api PRIVATE INFER_LLM_AVAILABLE=1)
 else()
-    target_link_libraries(infer_api PRIVATE infer_tensor infer_onnx infer_tokenizer)
+    target_link_libraries(infer_api PRIVATE infer_tensor infer_onnx infer_tokenizer infer_search)
 endif()
 
 if(TARGET infer_preprocess)
