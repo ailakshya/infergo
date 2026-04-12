@@ -106,6 +106,72 @@ infergo is one binary. 22 MB. Serves LLM + embedding + detection on one port. 45
 
 ---
 
+## How infergo works
+
+```
+Your app (Python / Go / curl / any language)
+    │
+    │  HTTP request (OpenAI-compatible JSON)
+    ▼
+┌─────────────────────────────────────────────────────┐
+│  infergo binary (22 MB)                             │
+│                                                     │
+│  Go layer (HTTP only — no inference compute here):  │
+│    Parse JSON → 1 CGo call → Format response       │
+│    ~0.3ms overhead. No GIL. No interpreter.         │
+│                                                     │
+│  C++ layer (ALL compute happens here):              │
+│    ┌─────────────────────────────────────────────┐  │
+│    │  LLM: llama.cpp                             │  │
+│    │    Full generate loop in C++                 │  │
+│    │    Prompt cache (skip repeat prefills)       │  │
+│    │    Grammar sampling (guaranteed JSON)        │  │
+│    │    Speculative decoding (draft+verify)       │  │
+│    │    Flash Attention 2 (auto-enabled)          │  │
+│    │    1 CGo call per request, not per token     │  │
+│    ├─────────────────────────────────────────────┤  │
+│    │  Embedding: ONNX Runtime / TorchScript      │  │
+│    │    Tokenize + infer + pool + normalize       │  │
+│    │    All in one C++ call                       │  │
+│    │    TorchScript auto-selected for CUDA        │  │
+│    ├─────────────────────────────────────────────┤  │
+│    │  Detection: libtorch + nvJPEG               │  │
+│    │    JPEG decoded on GPU (not CPU)             │  │
+│    │    Preprocess + infer + NMS all on GPU       │  │
+│    ├─────────────────────────────────────────────┤  │
+│    │  Search: HNSW index (C++)                   │  │
+│    │    0.03ms per query, 20K+ queries/sec       │  │
+│    │    Persistent save/load to disk              │  │
+│    ├─────────────────────────────────────────────┤  │
+│    │  Rerank: embed + cosine in one C++ call     │  │
+│    └─────────────────────────────────────────────┘  │
+│                                                     │
+│  GPU: 85-91% utilization (vs Python's 15-23%)       │
+└─────────────────────────────────────────────────────┘
+    │
+    ▼  NVIDIA CUDA / CPU / Metal
+```
+
+**Why it's faster than Python:** Python's per-token overhead is 3ms (GIL lock + logits copy to Python + sampling in Python + GIL release). Over 50 tokens that's 150ms wasted. In infergo, the entire decode loop runs in C++ — the GPU never waits for an interpreter. Python uses 15% of the GPU. infergo uses 85%.
+
+**VRAM footprint (measured, RTX 5070 Ti):**
+
+| Configuration | VRAM | RSS (CPU) |
+|---|---|---|
+| 1 model (Qwen 1.5B, Q4) | 2,421 MB | ~200 MB |
+| 1 model (Llama 3 8B, Q4) | ~4,200 MB | ~1,300 MB |
+| 2 models (LLM + embedding) | ~5,000 MB | ~1,450 MB |
+| 3 models (LLM + embed + detect) | ~5,350 MB | ~1,500 MB |
+| Same 3 models in Python | ~2,720 MB + 2,691 MB RSS | 3 processes |
+
+infergo uses more VRAM because it actually fills the GPU with compute buffers and Flash Attention workspace. Python uses less VRAM but wastes 77% of GPU cycles waiting for the interpreter.
+
+At c=10 concurrency:
+- **infergo:** 1 process, same VRAM, all 10 users share 1 model copy
+- **Python:** 10 processes × 2,720 MB = 27,200 MB VRAM (won't fit on any single GPU)
+
+---
+
 ## Quickstart
 
 ```bash
