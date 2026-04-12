@@ -453,6 +453,40 @@ int infer_sampler_sample_seq(InferSampler smpl, InferSeq seq);
 void infer_sampler_free(InferSampler smpl);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// VECTOR SEARCH (HNSW) API
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef void* InferIndex;
+
+// Create an HNSW vector index.
+// dim: vector dimension (must match embedding model output).
+// M: max connections per node (16 = good default).
+// ef_construction: search width during build (200 = good default).
+InferIndex infer_index_create(int dim, int M, int ef_construction);
+
+// Insert a vector with an ID and optional metadata.
+// vec: float array of length dim.
+// metadata: null-terminated string (NULL = no metadata).
+// Returns 0 on success, -1 on error.
+int infer_index_insert(InferIndex idx, int64_t id, const float* vec, const char* metadata);
+
+// Search for k nearest neighbors.
+// query: float array of length dim.
+// ef_search: search width (higher = more accurate, slower; 50-200 typical).
+// out_ids: caller-allocated array of k int64_t.
+// out_distances: caller-allocated array of k float (cosine distance).
+// out_metadata: caller-allocated array of k char* pointers (set to internal strings, valid until next insert).
+// Returns number of results found (≤ k), or -1 on error.
+int infer_index_search(InferIndex idx, const float* query, int k, int ef_search,
+                        int64_t* out_ids, float* out_distances, int max_results);
+
+// Number of vectors in the index.
+int infer_index_size(InferIndex idx);
+
+// Free the index. Safe to call with NULL.
+void infer_index_free(InferIndex idx);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SPECULATIVE DECODING API
 // ─────────────────────────────────────────────────────────────────────────────
 

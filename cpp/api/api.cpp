@@ -9,6 +9,7 @@
 #include "../llm/kv_cache.hpp"
 #include "../llm/kv_paged.hpp"
 #include "../llm/llm_engine.hpp"
+#include "../search/hnsw.hpp"
 #include "../llm/infer_sequence.hpp"
 #include "../llm/speculative.hpp"
 #include "../llm/prompt_cache.hpp"
@@ -1641,6 +1642,53 @@ int infer_sampler_sample_seq(InferSampler smpl, InferSeq seq) {
 void infer_sampler_free(InferSampler smpl) {
     if (smpl == nullptr) return;
     try { delete static_cast<SamplerHandle*>(smpl); } catch (...) {}
+}
+
+// ─── Vector Search (HNSW) API ────────────────────────────────────────────────
+
+InferIndex infer_index_create(int dim, int M, int ef_construction) {
+    try {
+        return static_cast<InferIndex>(
+            new infergo::HNSWIndex(dim, M > 0 ? M : 16, ef_construction > 0 ? ef_construction : 200));
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+int infer_index_insert(InferIndex idx, int64_t id, const float* vec, const char* metadata) {
+    if (idx == nullptr || vec == nullptr) return -1;
+    try {
+        auto* h = static_cast<infergo::HNSWIndex*>(idx);
+        return h->Insert(id, vec, metadata ? metadata : "") ? 0 : -1;
+    } catch (...) { return -1; }
+}
+
+int infer_index_search(InferIndex idx, const float* query, int k, int ef_search,
+                        int64_t* out_ids, float* out_distances, int max_results) {
+    if (idx == nullptr || query == nullptr || out_ids == nullptr) return -1;
+    try {
+        auto* h = static_cast<infergo::HNSWIndex*>(idx);
+        std::vector<int64_t> ids;
+        std::vector<float> dists;
+        std::vector<std::string> meta;
+        h->Search(query, std::min(k, max_results), ef_search > 0 ? ef_search : 50, ids, dists, meta);
+        int n = static_cast<int>(ids.size());
+        for (int i = 0; i < n; ++i) {
+            out_ids[i] = ids[i];
+            if (out_distances) out_distances[i] = dists[i];
+        }
+        return n;
+    } catch (...) { return -1; }
+}
+
+int infer_index_size(InferIndex idx) {
+    if (idx == nullptr) return 0;
+    return static_cast<infergo::HNSWIndex*>(idx)->Size();
+}
+
+void infer_index_free(InferIndex idx) {
+    if (idx == nullptr) return;
+    try { delete static_cast<infergo::HNSWIndex*>(idx); } catch (...) {}
 }
 
 // ─── Speculative Decoding API ────────────────────────────────────────────────

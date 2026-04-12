@@ -139,6 +139,12 @@ func (a *embeddingAdapter) Embed(_ context.Context, input string) ([]float32, er
 	return pooled, nil
 }
 
+// EmbedBatch implements server.BatchEmbeddingModel.
+// Routes to the internal embedBatch which runs a batched ONNX inference.
+func (a *embeddingAdapter) EmbedBatch(_ context.Context, inputs []string) ([][]float32, error) {
+	return a.embedBatch(inputs)
+}
+
 // embedBatch runs a batched ONNX inference on N texts in one call.
 // Input tensors: [N, maxSeqLen] int64 (padded with zeros).
 // Output: N unit-norm embedding vectors.

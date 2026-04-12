@@ -60,6 +60,12 @@ type EmbeddingModel interface {
 	Embed(ctx context.Context, input string) ([]float32, error)
 }
 
+// BatchEmbeddingModel extends EmbeddingModel with batch support.
+type BatchEmbeddingModel interface {
+	EmbeddingModel
+	EmbedBatch(ctx context.Context, inputs []string) ([][]float32, error)
+}
+
 // DetectionModel is a model that can run object detection on raw image bytes.
 type DetectionModel interface {
 	Model
@@ -123,9 +129,34 @@ type UsageInfo struct {
 }
 
 // EmbeddingRequest mirrors the OpenAI /v1/embeddings body.
+// Input accepts either a string or an array of strings (batch mode).
 type EmbeddingRequest struct {
-	Model string `json:"model"`
-	Input string `json:"input"`
+	Model    string   `json:"model"`
+	Input    string   `json:"-"`       // single string (set by custom unmarshal)
+	InputArr []string `json:"-"`       // batch of strings (set by custom unmarshal)
+	RawInput json.RawMessage `json:"input"` // raw JSON for flexible parsing
+}
+
+// UnmarshalInput parses the raw input as either string or []string.
+func (r *EmbeddingRequest) UnmarshalInput() {
+	if len(r.RawInput) == 0 {
+		return
+	}
+	// Try string first
+	var s string
+	if json.Unmarshal(r.RawInput, &s) == nil {
+		r.Input = s
+		r.InputArr = []string{s}
+		return
+	}
+	// Try array of strings
+	var arr []string
+	if json.Unmarshal(r.RawInput, &arr) == nil {
+		r.InputArr = arr
+		if len(arr) == 1 {
+			r.Input = arr[0]
+		}
+	}
 }
 
 // EmbeddingResponse mirrors the OpenAI embeddings object.
@@ -280,6 +311,7 @@ func NewServer(reg *Registry) *Server {
 	// Prefill-decode separation endpoints (OPT-26)
 	s.mux.HandleFunc("POST /v1/prefill", s.handlePrefill)
 	s.mux.HandleFunc("POST /v1/decode", s.handleDecode)
+	s.mux.HandleFunc("POST /v1/search", s.handleSearch)
 	return s
 }
 
@@ -479,11 +511,13 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
+	req.UnmarshalInput()
+
 	if req.Model == "" {
 		writeError(w, http.StatusBadRequest, "model field is required")
 		return
 	}
-	if req.Input == "" {
+	if len(req.InputArr) == 0 {
 		writeError(w, http.StatusBadRequest, "input must not be empty")
 		return
 	}
@@ -501,21 +535,37 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vec, err := emb.Embed(r.Context(), req.Input)
+	// Batch path: if model supports batch and multiple inputs provided.
+	var vecs [][]float32
+	if batch, ok2 := emb.(BatchEmbeddingModel); ok2 && len(req.InputArr) > 1 {
+		vecs, err = batch.EmbedBatch(r.Context(), req.InputArr)
+	} else {
+		// Single or sequential fallback.
+		vecs = make([][]float32, len(req.InputArr))
+		for i, input := range req.InputArr {
+			vecs[i], err = emb.Embed(r.Context(), input)
+			if err != nil {
+				break
+			}
+		}
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "embedding failed: "+err.Error())
 		return
 	}
 
+	data := make([]EmbeddingData, len(vecs))
+	totalTokens := 0
+	for i, v := range vecs {
+		data[i] = EmbeddingData{Object: "embedding", Index: i, Embedding: v}
+		totalTokens += len(req.InputArr[i])
+	}
+
 	resp := EmbeddingResponse{
 		Object: "list",
 		Model:  req.Model,
-		Data: []EmbeddingData{{
-			Object:    "embedding",
-			Index:     0,
-			Embedding: vec,
-		}},
-		Usage: UsageInfo{PromptTokens: len(req.Input), TotalTokens: len(req.Input)},
+		Data:   data,
+		Usage:  UsageInfo{PromptTokens: totalTokens, TotalTokens: totalTokens},
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

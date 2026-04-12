@@ -92,6 +92,7 @@ enable_testing()
 add_subdirectory(cpp/tensor)
 add_subdirectory(cpp/onnx)
 add_subdirectory(cpp/tokenizer)
+add_subdirectory(cpp/search)
 
 # ─── llama.cpp (vendor/llama.cpp) ────────────────────────────────────────────
 # Build as static library so CGo links a single .a instead of many .so files.
