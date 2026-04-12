@@ -10,11 +10,15 @@ import (
 	"time"
 	"unsafe"
 
+	"log"
+	"strings"
+
 	"github.com/ailakshya/infergo/llm"
 	"github.com/ailakshya/infergo/onnx"
 	"github.com/ailakshya/infergo/server"
 	"github.com/ailakshya/infergo/tensor"
 	"github.com/ailakshya/infergo/tokenizer"
+	"github.com/ailakshya/infergo/torch"
 )
 
 // embeddingAdapter wraps an ONNX session + HuggingFace tokenizer to implement
@@ -464,6 +468,16 @@ func findTokenizerJSON(dir string, maxDepth int) string {
 //   - "cuda" / "tensorrt": returns *embeddingBatcher. GPU kernels benefit from
 //     batched [N, seqLen] calls — fewer launches, better tensor-core utilization.
 func loadEmbedding(modelPath, provider string) (server.EmbeddingModel, error) {
+	// Check for TorchScript model alongside ONNX (faster CUDA kernels)
+	if provider == "cuda" {
+		dir := filepath.Dir(modelPath)
+		base := strings.TrimSuffix(filepath.Base(modelPath), filepath.Ext(modelPath))
+		ptPath := filepath.Join(dir, base+"-embed.pt")
+		if _, err := os.Stat(ptPath); err == nil {
+			return loadTorchEmbedding(ptPath, dir, provider)
+		}
+	}
+
 	sess, err := onnx.NewSession(provider, 0)
 	if err != nil {
 		return nil, fmt.Errorf("loadEmbedding: new session: %w", err)
@@ -490,4 +504,31 @@ func loadEmbedding(modelPath, provider string) (server.EmbeddingModel, error) {
 		return newEmbeddingBatcher(adapter), nil
 	}
 	return adapter, nil
+}
+
+// loadTorchEmbedding loads a TorchScript embedding model — uses PyTorch's
+// faster CUDA kernels instead of ONNX Runtime.
+func loadTorchEmbedding(ptPath, modelDir, provider string) (server.EmbeddingModel, error) {
+	tsess, err := torch.NewSession(provider, 0)
+	if err != nil {
+		return nil, fmt.Errorf("loadTorchEmbedding: new session: %w", err)
+	}
+	if err := tsess.Load(ptPath); err != nil {
+		tsess.Close()
+		return nil, fmt.Errorf("loadTorchEmbedding: load: %w", err)
+	}
+
+	tokPath := findTokenizerJSON(modelDir, 2)
+	if tokPath == "" {
+		tsess.Close()
+		return nil, fmt.Errorf("loadTorchEmbedding: tokenizer.json not found")
+	}
+	tok, err := tokenizer.Load(tokPath)
+	if err != nil {
+		tsess.Close()
+		return nil, fmt.Errorf("loadTorchEmbedding: load tokenizer: %w", err)
+	}
+
+	log.Printf("[infergo] using TorchScript embedding (faster CUDA kernels): %s", filepath.Base(ptPath))
+	return &torchEmbeddingAdapter{sess: tsess, tok: tok}, nil
 }
