@@ -504,10 +504,52 @@ int infer_rerank_pipeline(InferSession   session,
                            int            max_results);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VECTOR SEARCH (HNSW) API
+// VECTOR DATABASE API (HNSW + persistence + CRUD + filtering)
 // ─────────────────────────────────────────────────────────────────────────────
 
 typedef void* InferIndex;
+typedef void* InferVectorDB;
+
+// Create a persistent vector database.
+InferVectorDB infer_vectordb_create(int dim, int M, int ef_construction);
+
+// CRUD operations
+int infer_vectordb_insert(InferVectorDB db, int64_t id, const float* vec, const char* metadata);
+int infer_vectordb_delete(InferVectorDB db, int64_t id);
+int infer_vectordb_update(InferVectorDB db, int64_t id, const float* vec, const char* metadata);
+int infer_vectordb_get(InferVectorDB db, int64_t id, float* out_vec, char* out_meta, int meta_buf_size);
+
+// Search with optional metadata filter
+int infer_vectordb_search(InferVectorDB db, const float* query, int k, int ef_search,
+                           const char* metadata_filter,
+                           int64_t* out_ids, float* out_distances, int max_results);
+
+// Persistence
+int infer_vectordb_save(InferVectorDB db, const char* path);
+int infer_vectordb_load(InferVectorDB db, const char* path);
+
+int infer_vectordb_size(InferVectorDB db);
+void infer_vectordb_free(InferVectorDB db);
+
+// ─── RAG Pipeline (embed + search + generate, one C call) ───────────────────
+
+// Full RAG in C++: embed query → search vector DB → build context → LLM generate.
+// One CGo call replaces: embed + search + prompt build + generate.
+// Returns generated text length, or -1 on error.
+int infer_rag_pipeline(InferLLM       llm,
+                        InferSession   embed_session,
+                        InferTokenizer embed_tokenizer,
+                        InferVectorDB  vector_db,
+                        const char*    query,
+                        int            k,
+                        int            max_tokens,
+                        float          temperature,
+                        char*          out_text,
+                        int            max_text_len);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEGACY VECTOR SEARCH API (simple HNSW, no persistence)
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Create an HNSW vector index.
 // dim: vector dimension (must match embedding model output).

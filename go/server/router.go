@@ -307,7 +307,9 @@ type Server struct {
 	reload            ReloadFunc // optional; nil = reload not configured
 	mode              string     // "combined" (default), "prefill", or "decode"
 	ModelRegistryPath string     // optional; path to models/registry.json for convert/validate metadata
-	guardrail         *Guardrail // optional content safety filter
+	guardrail         *Guardrail      // optional content safety filter
+	templates         *TemplateStore   // server-side prompt templates
+	cache             *SemanticCache   // response cache
 }
 
 // NewServer creates a Server backed by the given Registry and registers all routes.
@@ -335,6 +337,13 @@ func NewServer(reg *Registry) *Server {
 	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.handleTranscription)
 	s.mux.HandleFunc("GET /v1/admin/guardrails", s.handleGuardrailConfig)
 	s.mux.HandleFunc("POST /v1/admin/guardrails", s.handleGuardrailConfig)
+	s.mux.HandleFunc("POST /v1/rag", s.handleRAG)
+	s.mux.HandleFunc("POST /v1/ingest", s.handleIngest)
+	s.mux.HandleFunc("POST /v1/batches", s.handleBatchCreate)
+	s.mux.HandleFunc("GET /v1/batches", s.handleBatchStatus)
+	s.mux.HandleFunc("GET /v1/admin/templates", s.handleTemplates)
+	s.mux.HandleFunc("POST /v1/admin/templates", s.handleTemplates)
+	s.mux.HandleFunc("GET /ui", s.handleWebUI)
 	return s
 }
 
