@@ -231,32 +231,36 @@ pil = Image.fromarray(img); buf = io.BytesIO(); pil.save(buf,format="JPEG",quali
 with open("/tmp/full_bench.jpg","wb") as f: f.write(buf.getvalue())
 
 clear_gpu()
-print("  [infergo TorchScript+nvJPEG CUDA]")
-ig = start_ig(f"detect:{DET_PT}", "cuda", 9902)
 
-import urllib.request
-def det_bench(port, runs=RUNS, warmup=WARMUP):
-    with open("/tmp/full_bench.jpg","rb") as f: data=f.read()
-    for _ in range(warmup):
-        try:
-            req=urllib.request.Request(f"http://localhost:{port}/v1/detect/binary?model=detect&conf=0.25",
-                data=data,headers={"Content-Type":"application/octet-stream"})
-            urllib.request.urlopen(req,timeout=10).read()
-        except: pass
-    times=[]
-    for _ in range(runs):
-        s=time.perf_counter()
-        try:
-            req=urllib.request.Request(f"http://localhost:{port}/v1/detect/binary?model=detect&conf=0.25",
-                data=data,headers={"Content-Type":"application/octet-stream"})
-            urllib.request.urlopen(req,timeout=10).read()
-            times.append((time.perf_counter()-s)*1000)
-        except: times.append(-1)
-    return [t for t in times if t>0]
+# ── infergo in-process (Go benchmark, no HTTP) ──
+print("  [infergo TorchScript+nvJPEG in-process]")
+ig_det_code = '''package main
+import ("fmt";"time";"os";"os/exec";"github.com/ailakshya/infergo/torch")
+func main() {
+    sess,_ := torch.NewSession("cuda",0); defer sess.Close()
+    sess.Load(os.ExpandEnv("${HOME}/cgo/models/yolo11n.torchscript.pt"))
+    out,_ := exec.Command("python3","-c",
+        "import sys;from PIL import Image;import numpy as np;import io;"+
+        "img=Image.fromarray(np.random.randint(0,255,(640,640,3),dtype=np.uint8));"+
+        "b=io.BytesIO();img.save(b,format=\\"JPEG\\",quality=85);sys.stdout.buffer.write(b.getvalue())").Output()
+    if len(out)<100 { d,_ := os.ReadFile("/tmp/full_bench.jpg"); out=d }
+    for i:=0;i<20;i++ { sess.DetectGPU(out,0.25,0.45) }
+    for i:=0;i<100;i++ {
+        s:=time.Now(); sess.DetectGPU(out,0.25,0.45)
+        fmt.Println(float64(time.Since(s).Microseconds())/1000)
+    }
+}'''
+with open("/tmp/_det_bench.go","w") as f: f.write(ig_det_code)
+r = subprocess.run(["go","run","/tmp/_det_bench.go"], capture_output=True, text=True,
+                   timeout=120, cwd=os.path.expanduser("~/cgo/go"))
+ig_det = []
+for line in r.stdout.strip().split("\n"):
+    try: ig_det.append(float(line.strip()))
+    except: pass
 
-ig_det = det_bench(9902)
-stop(ig); clear_gpu()
+clear_gpu()
 
+# ── Python in-process (same conditions) ──
 print("  [Python ultralytics CUDA in-process]")
 from ultralytics import YOLO
 yolo = YOLO("yolo11n.pt")
@@ -268,7 +272,7 @@ for _ in range(RUNS):
     py_det.append((time.perf_counter()-s)*1000)
 del yolo; gc.collect()
 
-add("Detection", "yolo11n 640x640", ig_det, py_det)
+add("Detection", "yolo11n in-process", ig_det, py_det)
 
 clear_gpu()
 
