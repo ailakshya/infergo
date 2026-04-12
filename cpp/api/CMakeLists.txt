@@ -1,4 +1,4 @@
-add_library(infer_api SHARED api.cpp embed_pipeline.cpp)
+add_library(infer_api SHARED api.cpp embed_pipeline.cpp vectordb_api.cpp)
 
 target_include_directories(infer_api
     PUBLIC  ${CMAKE_SOURCE_DIR}/cpp/include
