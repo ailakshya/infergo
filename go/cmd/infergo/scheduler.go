@@ -140,7 +140,7 @@ func (s *schedulerModel) batchCollector() {
 
 		// Collect more requests within a 2ms window
 		batch := []batchItem{first}
-		deadline := time.After(5 * time.Millisecond)
+		deadline := time.After(3 * time.Millisecond)
 	collect:
 		for len(batch) < 8 { // max 8 concurrent
 			select {
@@ -154,10 +154,15 @@ func (s *schedulerModel) batchCollector() {
 			}
 		}
 
-		// Always use batch generation — avoids KV state conflicts
-		// between GenerateC and GenerateBatch paths.
-		// Single requests go through the same path for consistency.
-		s.fireBatch(batch)
+		if len(batch) == 1 {
+			// Single request — use GenerateC (prefix-cached, no batch overhead)
+			item := batch[0]
+			text, genToks, err := s.m.GenerateC(item.tokens, item.maxTokens, item.temp, 0.9, item.grammar)
+			item.result <- batchResult{text: text, genToks: genToks, err: err}
+		} else {
+			// Multiple requests — continuous batching via GenerateBatch
+			s.fireBatch(batch)
+		}
 	}
 }
 
