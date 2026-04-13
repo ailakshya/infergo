@@ -138,21 +138,21 @@ func (s *schedulerModel) batchCollector() {
 			return
 		}
 
-		// Collect more requests within a 2ms window
+		// Try to collect more requests without waiting.
+		// First attempt: non-blocking drain of anything already queued.
 		batch := []batchItem{first}
-		deadline := time.After(3 * time.Millisecond)
-	collect:
-		for len(batch) < 8 { // max 8 concurrent
+		for len(batch) < 8 {
 			select {
 			case item, ok := <-s.batchCh:
 				if !ok {
-					break collect
+					goto fire
 				}
 				batch = append(batch, item)
-			case <-deadline:
-				break collect
+			default:
+				goto fire // nothing queued — fire immediately (zero wait for c=1!)
 			}
 		}
+	fire:
 
 		if len(batch) == 1 {
 			// Single request — use GenerateC (prefix-cached, no batch overhead)
