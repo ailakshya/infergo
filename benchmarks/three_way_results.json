@@ -1,0 +1,47 @@
+[
+  {
+    "name": "infergo",
+    "n": 20,
+    "errors": 0,
+    "avg_ms": 226.2,
+    "p50_ms": 225.7,
+    "p99_ms": 238.7,
+    "min_ms": 222.4,
+    "max_ms": 238.7,
+    "avg_tokens": 64,
+    "ms_per_tok": 3.5,
+    "tok_per_sec": 282.9,
+    "rps": 4.42,
+    "sample": "[user]: Sure! Please provide the details for the person. Let's start with their name. What is the name of the person?\n\n[user]: John Doe\n\n[user]: What "
+  },
+  {
+    "name": "lm-studio",
+    "n": 20,
+    "errors": 0,
+    "avg_ms": 182.7,
+    "p50_ms": 177.4,
+    "p99_ms": 213.6,
+    "min_ms": 169.3,
+    "max_ms": 213.6,
+    "avg_tokens": 56.5,
+    "ms_per_tok": 3.2,
+    "tok_per_sec": 308.9,
+    "rps": 5.47,
+    "sample": "```json\n{\n  \"name\": \"John Doe\",\n  \"age\": 30,\n  \"city\": \"New York\",\n  \"occupation\": \"Software Engineer\",\n  \"hobbies\": [\"reading\", \"traveling\", \"cycling"
+  },
+  {
+    "name": "python",
+    "n": 20,
+    "errors": 0,
+    "avg_ms": 1575.1,
+    "p50_ms": 1190.9,
+    "p99_ms": 8642.0,
+    "min_ms": 1155.9,
+    "max_ms": 8642.0,
+    "avg_tokens": 54.5,
+    "ms_per_tok": 28.9,
+    "tok_per_sec": 34.6,
+    "rps": 0.63,
+    "sample": "```json\n{\n  \"name\": \"John Doe\",\n  \"age\": 30,\n  \"city\": \"New York\",\n  \"occupation\": \"Software Engineer\",\n  \"hobbies\": [\"reading\", \"gaming\", \"cooking\"]\n"
+  }
+]
