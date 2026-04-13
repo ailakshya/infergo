@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark: TOON vs JSON vs Plain text structured output."""
+"""Benchmark: TOON vs JSON (strict & lazy) vs Plain text structured output."""
 
 import json
 import time
@@ -8,8 +8,36 @@ import requests
 
 PORT = 9191
 URL = f"http://localhost:{PORT}/v1/chat/completions"
-N = 50  # requests per mode
-MAX_TOKENS = 64
+N = 30  # requests per mode
+MAX_TOKENS = 32
+
+# JSON GBNF grammar (same as server's built-in, used for strict mode)
+JSON_GRAMMAR = r"""root   ::= object
+value  ::= object | array | string | number | ("true" | "false" | "null") ws
+
+object ::=
+  "{" ws (
+            string ":" ws value
+    ("," ws string ":" ws value)*
+  )? "}" ws
+
+array  ::=
+  "[" ws (
+            value
+    ("," ws value)*
+  )? "]" ws
+
+string ::=
+  "\"" (
+    [^\\"\x7F\x00-\x1F] |
+    "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+  )* "\"" ws
+
+number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? (([eE] [-+]? [0-9]+))? ws
+
+ws ::= ([ \t\n] ws)?
+"""
+
 
 def bench_mode(mode_name, response_format=None, prompt="Hi", sys_prompt=None):
     """Run N requests with the given response_format and return latencies."""
@@ -32,12 +60,14 @@ def bench_mode(mode_name, response_format=None, prompt="Hi", sys_prompt=None):
             body["response_format"] = response_format
 
         t0 = time.perf_counter()
-        r = requests.post(URL, json=body, timeout=30)
+        r = requests.post(URL, json=body, timeout=60)
         t1 = time.perf_counter()
 
         if r.status_code != 200:
             print(f"  [{mode_name}] req {i}: HTTP {r.status_code}")
+            time.sleep(0.5)  # let GC reclaim KV slots
             continue
+        time.sleep(0.05)  # small delay between requests for KV cleanup
 
         data = r.json()
         latency_ms = (t1 - t0) * 1000
@@ -70,8 +100,9 @@ def bench_mode(mode_name, response_format=None, prompt="Hi", sys_prompt=None):
     }
     return result
 
+
 def main():
-    print(f"=== TOON vs JSON vs Plain — {N} requests each ===\n")
+    print(f"=== TOON vs JSON (strict & lazy) vs Plain — {N} requests each ===\n")
 
     # Warmup
     print("Warming up...")
@@ -82,51 +113,63 @@ def main():
             "max_tokens": 4,
         }, timeout=10)
 
+    prompt_structured = "Return a person object with fields: name, age, city, occupation, hobbies (list of 3)."
+    sys_json = "You are a helpful assistant that outputs valid JSON only. No markdown, no explanation."
+    sys_toon = "Output TOON format only. TOON uses key:value pairs separated by |. Nested objects use (). Arrays use []. Example: name:Alice|age:25|hobbies:[reading,coding]|addr:(city:NYC|zip:10001). No other text."
+
     # 1. Plain text (no grammar)
-    prompt_plain = "Return a person with name, age, city, occupation, hobbies (list of 3)."
-    print("\n[1/3] Plain text (no grammar constraint)...")
-    plain = bench_mode("plain", prompt=prompt_plain)
+    print("\n[1/4] Plain text (no grammar constraint)...")
+    plain = bench_mode("plain", prompt=prompt_structured)
 
-    # 2. JSON mode
-    prompt_json = "Return a JSON object with fields: name, age, city, occupation, hobbies (array of 3 strings)."
-    print("[2/3] JSON mode (JSON GBNF grammar)...")
-    json_mode = bench_mode("json", {"type": "json_object"}, prompt=prompt_json,
-                           sys_prompt="You are a helpful assistant that outputs valid JSON only.")
+    # 2. JSON lazy (built-in json_object mode — lazy grammar triggers on { or [)
+    print("[2/4] JSON lazy (triggers on {{ or [, preamble free)...")
+    json_lazy = bench_mode("json_lazy", {"type": "json_object"},
+                           prompt=prompt_structured, sys_prompt=sys_json)
 
-    # 3. TOON mode
-    prompt_toon = "Return person data with fields: name, age, city, occupation, hobbies (list of 3)."
-    print("[3/3] TOON mode (TOON GBNF grammar)...")
-    toon_mode = bench_mode("toon", {"type": "toon"}, prompt=prompt_toon,
-                           sys_prompt="Output TOON format only. TOON uses key:value pairs separated by |. Nested objects use (). Arrays use []. Example: name:Alice|age:25|hobbies:[reading,coding]|addr:(city:NYC|zip:10001)")
+    # 3. JSON strict (same grammar, strict enforcement from token 1)
+    # Uses "grammar" type which bypasses lazy detection
+    print("[3/4] JSON strict (grammar enforced from token 1)...")
+    json_strict = bench_mode("json_strict", {"type": "grammar", "grammar": JSON_GRAMMAR},
+                             prompt=prompt_structured, sys_prompt=sys_json)
+
+    # 4. TOON strict (always strict)
+    print("[4/4] TOON strict (grammar enforced from token 1)...")
+    toon = bench_mode("toon", {"type": "toon"},
+                      prompt=prompt_structured, sys_prompt=sys_toon)
 
     # Results
-    print("\n" + "=" * 80)
-    print(f"{'Mode':<12} {'Avg ms':>8} {'P50 ms':>8} {'P99 ms':>8} {'Tokens':>8} {'ms/tok':>8} {'tok/s':>8} {'RPS':>6}")
-    print("-" * 88)
-    for r in [plain, json_mode, toon_mode]:
+    modes = [plain, json_lazy, json_strict, toon]
+    print("\n" + "=" * 96)
+    print(f"{'Mode':<14} {'Avg ms':>8} {'P50 ms':>8} {'P99 ms':>8} {'Tokens':>8} {'ms/tok':>8} {'tok/s':>8} {'RPS':>6}")
+    print("-" * 96)
+    for r in modes:
         if r:
-            print(f"{r['mode']:<12} {r['avg_ms']:>8.1f} {r['p50_ms']:>8.1f} {r['p99_ms']:>8.1f} {r['avg_tokens']:>8.1f} {r['ms_per_tok']:>8.1f} {r['tok_per_sec']:>8.1f} {r['rps']:>6.2f}")
+            print(f"{r['mode']:<14} {r['avg_ms']:>8.1f} {r['p50_ms']:>8.1f} {r['p99_ms']:>8.1f} {r['avg_tokens']:>8.1f} {r['ms_per_tok']:>8.1f} {r['tok_per_sec']:>8.1f} {r['rps']:>6.2f}")
 
-    if json_mode and toon_mode:
-        speedup = json_mode["avg_ms"] / toon_mode["avg_ms"]
-        token_saving = (1 - toon_mode["avg_tokens"] / json_mode["avg_tokens"]) * 100
-        print(f"\nTOON vs JSON:")
-        print(f"  Latency:  {json_mode['avg_ms']:.0f}ms → {toon_mode['avg_ms']:.0f}ms ({speedup:.2f}x faster)")
-        print(f"  Tokens:   {json_mode['avg_tokens']:.0f} → {toon_mode['avg_tokens']:.0f} ({token_saving:.0f}% fewer)")
-        print(f"  tok/s:    {json_mode['tok_per_sec']:.0f} → {toon_mode['tok_per_sec']:.0f}")
+    # Fair comparison: JSON strict vs TOON strict (both enforced from token 1)
+    if json_strict and toon:
+        speedup = json_strict["avg_ms"] / toon["avg_ms"]
+        tok_speedup = json_strict["ms_per_tok"] / toon["ms_per_tok"]
+        token_saving = (1 - toon["avg_tokens"] / json_strict["avg_tokens"]) * 100
+        print(f"\n=== Fair comparison: JSON strict vs TOON strict ===")
+        print(f"  Latency:    {json_strict['avg_ms']:.0f}ms → {toon['avg_ms']:.0f}ms ({speedup:.2f}x)")
+        print(f"  ms/tok:     {json_strict['ms_per_tok']:.1f} → {toon['ms_per_tok']:.1f} ({tok_speedup:.2f}x faster grammar)")
+        print(f"  Tokens:     {json_strict['avg_tokens']:.0f} → {toon['avg_tokens']:.0f} ({token_saving:.0f}% fewer)")
+        print(f"  Throughput: {json_strict['tok_per_sec']:.0f} → {toon['tok_per_sec']:.0f} tok/s")
 
     # Sample outputs
     print("\n--- Sample outputs ---")
-    for r in [plain, json_mode, toon_mode]:
+    for r in modes:
         if r:
             print(f"\n[{r['mode']}]:")
             print(f"  {r['sample']}")
 
     # Save results
-    results = {"plain": plain, "json": json_mode, "toon": toon_mode}
+    results = {r["mode"]: r for r in modes if r}
     with open("benchmarks/toon_results.json", "w") as f:
         json.dump(results, f, indent=2)
     print("\nResults saved to benchmarks/toon_results.json")
+
 
 if __name__ == "__main__":
     main()
