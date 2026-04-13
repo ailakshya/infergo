@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
@@ -50,29 +51,34 @@ struct KVCache {
 
 struct LayerWeights {
     // Attention
-    void* wq;        // Q4_K [n_embd, n_embd]
-    void* wk;        // Q4_K [n_embd, n_kv_head * head_dim]
-    void* wv;        // Q4_K [n_embd, n_kv_head * head_dim]
-    void* wo;        // Q4_K [n_embd, n_embd]
-    half* bq;        // bias [n_embd] (Qwen has attention biases)
+    void* wq;        // Q4_K or F16 [n_embd, n_embd]
+    void* wk;        // Q4_K or F16
+    void* wv;        // Q6_K→F16
+    void* wo;        // Q4_K or F16
+    half* bq;        // bias [n_embd]
     half* bk;        // bias [n_kv_head * head_dim]
     half* bv;        // bias [n_kv_head * head_dim]
 
     // FFN (SwiGLU)
-    void* w_gate;    // Q4_K [n_embd, n_ff]
-    void* w_up;      // Q4_K [n_embd, n_ff]
-    void* w_down;    // Q4_K [n_ff, n_embd]
+    void* w_gate;    // Q4_K or F16
+    void* w_up;      // Q4_K or F16
+    void* w_down;    // Q6_K→F16
 
     // Norms
     half* attn_norm; // RMSNorm weights [n_embd]
     half* ffn_norm;  // RMSNorm weights [n_embd]
+
+    // Type flags: true = F16 (dequantized), false = Q4_K (quantized)
+    bool wq_f16 = false, wk_f16 = false, wv_f16 = false, wo_f16 = false;
+    bool w_gate_f16 = false, w_up_f16 = false, w_down_f16 = false;
 };
 
 struct ModelWeights {
-    half* tok_embd;      // [n_vocab, n_embd]
+    half* tok_embd;      // [n_vocab, n_embd] — always F16 (dequantized)
     LayerWeights* layers; // [n_layer]
     half* output_norm;   // RMSNorm [n_embd]
-    void* output;        // Q4_K or F32 [n_embd, n_vocab]
+    void* output;        // Q4_K, Q6_K, or F16
+    bool output_f16 = false;
     int n_layer;
 };
 
@@ -81,6 +87,9 @@ struct ModelWeights {
 // Fused RMSNorm + Q4_K dequantize + GEMV for single-token decode.
 // Combines: normalize → dequant weights → matrix-vector multiply
 // in one kernel launch (vs 3 separate launches in llama.cpp).
+// Set cuBLAS handle for F16 GEMV acceleration
+void set_cublas_handle(cublasHandle_t h);
+
 // F16 GEMV with optional RMSNorm (for dequantized weights)
 void f16_gemv(half* out, const half* input, const half* norm_w,
               const half* weight, const half* bias,
@@ -114,18 +123,12 @@ void fused_gqa_attention(
     float rope_base,
     cudaStream_t stream);
 
-// Fused SwiGLU: gate = silu(x * W_gate) * (x * W_up), out = gate * W_down
+// Fused SwiGLU with type dispatch
 void fused_swiglu_ffn(
-    half* out,           // [n_embd]
-    const half* input,   // [n_embd]
-    const half* norm_w,  // [n_embd] FFN norm weights
-    const void* w_gate,  // Q4_K [n_embd, n_ff]
-    const void* w_up,    // Q4_K [n_embd, n_ff]
-    const void* w_down,  // Q4_K [n_ff, n_embd]
-    int n_embd,
-    int n_ff,
-    float eps,
-    cudaStream_t stream);
+    half* out, const half* input, const half* norm_w,
+    const void* w_gate, const void* w_up, const void* w_down,
+    bool gate_f16, bool up_f16, bool down_f16,
+    int n_embd, int n_ff, float eps, cudaStream_t stream);
 
 // ─── Engine API ──────────────────────────────────────────────────────────────
 

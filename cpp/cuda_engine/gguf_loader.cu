@@ -402,11 +402,18 @@ bool CUDAEngine::LoadModel(const char* path, const ModelConfig& config) {
     // Output norm (F32→F16)
     gguf.UploadTensorAsF16("output_norm.weight", &weights_.output_norm);
 
-    // Output weight (Q6_K → dequant to F16)
+    // Output weight (Q6_K → F16)
     {
-        half* f16_ptr = nullptr;
-        gguf.UploadTensorAsF16("output.weight", &f16_ptr);
-        weights_.output = f16_ptr;
+        auto* ti = gguf.GetTensor("output.weight");
+        if (ti && ti->type == GGML_TYPE_Q4_K) {
+            gguf.UploadTensor("output.weight", (void**)&weights_.output);
+            weights_.output_f16 = false;
+        } else {
+            half* f16_ptr = nullptr;
+            gguf.UploadTensorAsF16("output.weight", &f16_ptr);
+            weights_.output = f16_ptr;
+            weights_.output_f16 = true;
+        }
     }
 
     // Per-layer weights
@@ -414,15 +421,27 @@ bool CUDAEngine::LoadModel(const char* path, const ModelConfig& config) {
         auto& lw = weights_.layers[i];
         char name[128];
 
-        // ALL weights → dequantize to F16 (simpler, uses more VRAM but works)
-        auto load_weight = [&](const char* suffix, void** ptr) {
+        // Q4_K → keep quantized (small memory, needs fast kernel)
+        // Q6_K/F32 → dequant to F16 (correct output)
+        auto load_weight = [&](const char* suffix, void** ptr, bool* is_f16) {
             snprintf(name, sizeof(name), "blk.%d.%s", i, suffix);
-            half* f16_ptr = nullptr;
-            if (gguf.UploadTensorAsF16(name, &f16_ptr)) {
-                *ptr = f16_ptr;
-                auto* ti = gguf.GetTensor(name);
-                if (ti) total_loaded += ti->data_size;
-                return true;
+            auto* ti = gguf.GetTensor(name);
+            if (!ti) return false;
+
+            if (ti->type == GGML_TYPE_Q4_K) {
+                if (gguf.UploadTensor(name, ptr)) {
+                    total_loaded += ti->data_size;
+                    *is_f16 = false;
+                    return true;
+                }
+            } else {
+                half* f16_ptr = nullptr;
+                if (gguf.UploadTensorAsF16(name, &f16_ptr)) {
+                    *ptr = f16_ptr;
+                    total_loaded += ti->data_size;
+                    *is_f16 = true;
+                    return true;
+                }
             }
             return false;
         };
@@ -447,14 +466,14 @@ bool CUDAEngine::LoadModel(const char* path, const ModelConfig& config) {
         load_f16("attn_k.bias", &lw.bk);
         load_f16("attn_v.bias", &lw.bv);
 
-        // Weight matrices (Q4_K raw or Q6_K→F16 dequant)
-        load_weight("attn_q.weight", &lw.wq);
-        load_weight("attn_k.weight", &lw.wk);
-        load_weight("attn_v.weight", &lw.wv);
-        load_weight("attn_output.weight", &lw.wo);
-        load_weight("ffn_gate.weight", &lw.w_gate);
-        load_weight("ffn_up.weight", &lw.w_up);
-        load_weight("ffn_down.weight", &lw.w_down);
+        // Weight matrices — Q4_K stays quantized, Q6_K → F16
+        load_weight("attn_q.weight", &lw.wq, &lw.wq_f16);
+        load_weight("attn_k.weight", &lw.wk, &lw.wk_f16);
+        load_weight("attn_v.weight", &lw.wv, &lw.wv_f16);
+        load_weight("attn_output.weight", &lw.wo, &lw.wo_f16);
+        load_weight("ffn_gate.weight", &lw.w_gate, &lw.w_gate_f16);
+        load_weight("ffn_up.weight", &lw.w_up, &lw.w_up_f16);
+        load_weight("ffn_down.weight", &lw.w_down, &lw.w_down_f16);
     }
 
     printf("[cuda_engine] Loaded %.1f MB of weights to GPU\n", total_loaded / 1e6);

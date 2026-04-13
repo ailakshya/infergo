@@ -116,6 +116,7 @@ __global__ void kernel_q4k_gemv_no_norm(
 CUDAEngine::CUDAEngine() {
     cublasCreate(&cublas_);
     cudaStreamCreate(&stream_);
+    set_cublas_handle(cublas_);
     memset(&weights_, 0, sizeof(weights_));
     memset(&kv_cache_, 0, sizeof(kv_cache_));
     buf_hidden_ = nullptr;
@@ -161,15 +162,6 @@ void CUDAEngine::ForwardToken(int token, int pos) {
     kernel_embed_lookup<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
         buf_hidden_, weights_.tok_embd, token, n);
 
-    // DEBUG: check hidden state after embedding
-    if (pos == 0) {
-        half dbg[8];
-        cudaMemcpy(dbg, buf_hidden_, 8 * sizeof(half), cudaMemcpyDeviceToHost);
-        printf("[debug] After embed token=%d: ", token);
-        for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(dbg[i]));
-        printf("\n");
-    }
-
     for (int layer = 0; layer < config_.n_layer; layer++) {
         auto& lw = weights_.layers[layer];
 
@@ -177,18 +169,22 @@ void CUDAEngine::ForwardToken(int token, int pos) {
         kernel_copy<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
             buf_residual_, buf_hidden_, n);
 
-        // 2. Fused RMSNorm + QKV projections
+        // 2. QKV projections with type dispatch
+        // Macro to call the right GEMV based on weight type
+        #define GEMV_DISPATCH(out, in, norm, w, bias, is_f16, in_d, out_d, ep) \
+            if (is_f16) \
+                f16_gemv(out, in, norm, reinterpret_cast<const half*>(w), bias, in_d, out_d, ep, stream_); \
+            else \
+                fused_rmsnorm_q4k_gemv(out, in, norm, w, bias, in_d, out_d, ep, stream_);
+
         half* q_out = buf_qkv_;
-        f16_gemv(q_out, buf_hidden_, lw.attn_norm,
-                                reinterpret_cast<const half*>(lw.wq), lw.bq, n, n, RMS_EPS, stream_);
+        GEMV_DISPATCH(q_out, buf_hidden_, lw.attn_norm, lw.wq, lw.bq, lw.wq_f16, n, n, RMS_EPS);
 
         half* k_out = buf_qkv_ + n;
-        f16_gemv(k_out, buf_hidden_, lw.attn_norm,
-                                reinterpret_cast<const half*>(lw.wk), lw.bk, n, n_kv, RMS_EPS, stream_);
+        GEMV_DISPATCH(k_out, buf_hidden_, lw.attn_norm, lw.wk, lw.bk, lw.wk_f16, n, n_kv, RMS_EPS);
 
         half* v_out = k_out + n_kv;
-        f16_gemv(v_out, buf_hidden_, lw.attn_norm,
-                                reinterpret_cast<const half*>(lw.wv), lw.bv, n, n_kv, RMS_EPS, stream_);
+        GEMV_DISPATCH(v_out, buf_hidden_, lw.attn_norm, lw.wv, lw.bv, lw.wv_f16, n, n_kv, RMS_EPS);
 
         // 3. Fused GQA Attention
         fused_gqa_attention(buf_attn_out_, q_out, k_out, v_out,
@@ -196,37 +192,8 @@ void CUDAEngine::ForwardToken(int token, int pos) {
                            config_.n_head, config_.n_kv_head, config_.head_dim,
                            config_.rope_base, stream_);
 
-        if (layer == 0 && pos == 0) {
-            cudaStreamSynchronize(stream_);
-            half dbg[8];
-
-            // Check V projection direct output (before KV cache write)
-            half* v_ptr = buf_qkv_ + n + n_kv;
-            cudaMemcpy(dbg, v_ptr, 8 * sizeof(half), cudaMemcpyDeviceToHost);
-            printf("[debug] V proj out[0:8]: ");
-            for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(dbg[i]));
-            printf("\n");
-
-            int kv_stride = config_.n_kv_head * kv_cache_.max_seq * config_.head_dim;
-            // Check V cache
-            cudaMemcpy(dbg, kv_cache_.v + 0 * kv_stride, 8 * sizeof(half), cudaMemcpyDeviceToHost);
-            printf("[debug] V cache[layer0,head0,pos0,0:8]: ");
-            for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(dbg[i]));
-            printf("\n");
-            // Check K cache after write
-            cudaMemcpy(dbg, kv_cache_.k + 0 * kv_stride, 8 * sizeof(half), cudaMemcpyDeviceToHost);
-            printf("[debug] K cache[layer0,head0,pos0,0:8]: ");
-            for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(dbg[i]));
-            printf("\n");
-
-            cudaMemcpy(dbg, buf_attn_out_, 8 * sizeof(half), cudaMemcpyDeviceToHost);
-            printf("[debug] Attn out[0:8]: ");
-            for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(dbg[i]));
-            printf("\n");
-        }
         // 4. Output projection (no norm)
-        f16_gemv(buf_hidden_, buf_attn_out_, nullptr,
-                                reinterpret_cast<const half*>(lw.wo), nullptr, n, n, 1e30f, stream_);
+        GEMV_DISPATCH(buf_hidden_, buf_attn_out_, nullptr, lw.wo, nullptr, lw.wo_f16, n, n, 1e30f);
 
         // 5. Residual add
         kernel_residual_add<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
@@ -236,10 +203,11 @@ void CUDAEngine::ForwardToken(int token, int pos) {
         kernel_copy<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
             buf_residual_, buf_hidden_, n);
 
-        // 6. Fused SwiGLU FFN
+        // 6. Fused SwiGLU FFN with type dispatch
         half* ffn_out = buf_ffn_;
         fused_swiglu_ffn(ffn_out, buf_hidden_, lw.ffn_norm,
                         lw.w_gate, lw.w_up, lw.w_down,
+                        lw.w_gate_f16, lw.w_up_f16, lw.w_down_f16,
                         n, config_.n_ff, RMS_EPS, stream_);
 
         // 7. Copy FFN output to hidden + residual
@@ -266,13 +234,17 @@ void CUDAEngine::ForwardToken(int token, int pos) {
     kernel_rmsnorm<<<1, 256, 256 * sizeof(float), stream_>>>(
         buf_hidden_, buf_hidden_, weights_.output_norm, n, RMS_EPS);
 
-    // 9. Output logits — F16 GEMV, output to buf_logits_ (reinterpreted)
-    // buf_logits_ is n_vocab * sizeof(float) = n_vocab * 4 bytes
-    // We can fit n_vocab * sizeof(half) = n_vocab * 2 bytes in the first half
+    // 9. Output logits with type dispatch
     half* logits_half = reinterpret_cast<half*>(buf_logits_);
-    f16_gemv(logits_half, buf_hidden_, nullptr,
-             reinterpret_cast<const half*>(weights_.output), nullptr,
-             n, config_.n_vocab, 1e30f, stream_);
+    if (weights_.output_f16) {
+        f16_gemv(logits_half, buf_hidden_, nullptr,
+                 reinterpret_cast<const half*>(weights_.output), nullptr,
+                 n, config_.n_vocab, 1e30f, stream_);
+    } else {
+        fused_rmsnorm_q4k_gemv(logits_half, buf_hidden_, nullptr,
+                               weights_.output, nullptr,
+                               n, config_.n_vocab, 1e30f, stream_);
+    }
 
     cudaStreamSynchronize(stream_);
 }
