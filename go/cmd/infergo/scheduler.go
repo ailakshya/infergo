@@ -140,7 +140,7 @@ func (s *schedulerModel) batchCollector() {
 
 		// Collect more requests within a 2ms window
 		batch := []batchItem{first}
-		deadline := time.After(2 * time.Millisecond)
+		deadline := time.After(5 * time.Millisecond)
 	collect:
 		for len(batch) < 8 { // max 8 concurrent
 			select {
@@ -226,12 +226,19 @@ func (s *schedulerModel) Generate(ctx context.Context, prompt string, maxTokens 
 	grammar, _ := server.GrammarFromContext(ctx)
 
 	// Submit to batch collector for continuous batching.
-	// Use GenerateC directly (stable, tested path)
-	text, genToks, err := s.m.GenerateC(tokens, maxTokens, temp, 0.9, grammar)
-	if err == nil {
-		return text, promptToks, genToks, nil
+	// Submit to batch collector for continuous batching.
+	// Single requests fire immediately. Concurrent requests within 2ms
+	// are batched into one GPU decode call for maximum throughput.
+	result := make(chan batchResult, 1)
+	s.batchCh <- batchItem{
+		tokens:    tokens,
+		maxTokens: maxTokens,
+		temp:      temp,
+		grammar:   grammar,
+		result:    result,
 	}
-	return "", promptToks, 0, fmt.Errorf("generation failed: %w", err)
+	r := <-result
+	return r.text, promptToks, r.genToks, r.err
 }
 
 // Stream tokenizes the prompt, submits it to the scheduler, and returns a
