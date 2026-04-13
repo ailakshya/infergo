@@ -1,5 +1,6 @@
 // GGUF model loader — parses GGUF v3 format and uploads Q4_K weights to GPU
 #include "engine.cuh"
+#include "q4k_fast.cuh"
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -371,6 +372,11 @@ bool CUDAEngine::LoadModel(const char* path, const ModelConfig& config) {
     cudaMalloc(&buf_attn_out_, n * sizeof(half));
     cudaMalloc(&buf_ffn_, config_.n_ff * 2 * sizeof(half));
     cudaMalloc(&buf_logits_, config_.n_vocab * sizeof(float));
+
+    // Q8_1 buffers for dp4a GEMV
+    int q8_blocks = config_.n_embd / 32;
+    cudaMalloc(&buf_q8_, q8_blocks * sizeof(BlockQ8_1));
+    cudaMalloc(&buf_rms_, sizeof(float));
 
     // Allocate KV cache
     kv_cache_.max_seq = config_.n_ctx;

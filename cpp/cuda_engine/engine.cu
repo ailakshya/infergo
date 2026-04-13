@@ -1,5 +1,6 @@
 // infergo Custom CUDA Engine — forward pass + sampling
 #include "engine.cuh"
+#include "q4k_fast.cuh"
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -117,6 +118,8 @@ CUDAEngine::CUDAEngine() {
     cublasCreate(&cublas_);
     cudaStreamCreate(&stream_);
     set_cublas_handle(cublas_);
+    buf_q8_ = nullptr;
+    buf_rms_ = nullptr;
     memset(&weights_, 0, sizeof(weights_));
     memset(&kv_cache_, 0, sizeof(kv_cache_));
     buf_hidden_ = nullptr;
@@ -134,6 +137,8 @@ CUDAEngine::~CUDAEngine() {
     cudaFree(buf_attn_out_);
     cudaFree(buf_ffn_);
     cudaFree(buf_logits_);
+    cudaFree(buf_q8_);
+    cudaFree(buf_rms_);
     cudaFree(kv_cache_.k);
     cudaFree(kv_cache_.v);
     if (weights_.layers) {
@@ -169,13 +174,14 @@ void CUDAEngine::ForwardToken(int token, int pos) {
         kernel_copy<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
             buf_residual_, buf_hidden_, n);
 
-        // 2. QKV projections with type dispatch
-        // Macro to call the right GEMV based on weight type
-        #define GEMV_DISPATCH(out, in, norm, w, bias, is_f16, in_d, out_d, ep) \
-            if (is_f16) \
-                f16_gemv(out, in, norm, reinterpret_cast<const half*>(w), bias, in_d, out_d, ep, stream_); \
+        // 2. QKV projections — use dp4a-accelerated Q4K or F16 GEMV
+        BlockQ8_1* q8 = reinterpret_cast<BlockQ8_1*>(buf_q8_);
+
+        #define GEMV_DISPATCH(out_p, in_p, norm_p, w_p, bias_p, is_f16_p, in_d, out_d, ep) \
+            if (is_f16_p) \
+                f16_gemv(out_p, in_p, norm_p, reinterpret_cast<const half*>(w_p), bias_p, in_d, out_d, ep, stream_); \
             else \
-                fused_rmsnorm_q4k_gemv(out, in, norm, w, bias, in_d, out_d, ep, stream_);
+                fast_q4k_gemv(out_p, in_p, norm_p, w_p, bias_p, in_d, out_d, ep, q8, buf_rms_, stream_);
 
         half* q_out = buf_qkv_;
         GEMV_DISPATCH(q_out, buf_hidden_, lw.attn_norm, lw.wq, lw.bq, lw.wq_f16, n, n, RMS_EPS);
@@ -192,8 +198,11 @@ void CUDAEngine::ForwardToken(int token, int pos) {
                            config_.n_head, config_.n_kv_head, config_.head_dim,
                            config_.rope_base, stream_);
 
-        // 4. Output projection (no norm)
-        GEMV_DISPATCH(buf_hidden_, buf_attn_out_, nullptr, lw.wo, nullptr, lw.wo_f16, n, n, 1e30f);
+        // 4. Output projection (no norm — pass nullptr for norm)
+        if (lw.wo_f16)
+            f16_gemv(buf_hidden_, buf_attn_out_, nullptr, reinterpret_cast<const half*>(lw.wo), nullptr, n, n, 1e30f, stream_);
+        else
+            fast_q4k_gemv(buf_hidden_, buf_attn_out_, nullptr, lw.wo, nullptr, n, n, 1e30f, q8, buf_rms_, stream_);
 
         // 5. Residual add
         kernel_residual_add<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
@@ -234,16 +243,17 @@ void CUDAEngine::ForwardToken(int token, int pos) {
     kernel_rmsnorm<<<1, 256, 256 * sizeof(float), stream_>>>(
         buf_hidden_, buf_hidden_, weights_.output_norm, n, RMS_EPS);
 
-    // 9. Output logits with type dispatch
+    // 9. Output logits
     half* logits_half = reinterpret_cast<half*>(buf_logits_);
+    BlockQ8_1* q8 = reinterpret_cast<BlockQ8_1*>(buf_q8_);
     if (weights_.output_f16) {
         f16_gemv(logits_half, buf_hidden_, nullptr,
                  reinterpret_cast<const half*>(weights_.output), nullptr,
                  n, config_.n_vocab, 1e30f, stream_);
     } else {
-        fused_rmsnorm_q4k_gemv(logits_half, buf_hidden_, nullptr,
-                               weights_.output, nullptr,
-                               n, config_.n_vocab, 1e30f, stream_);
+        fast_q4k_gemv(logits_half, buf_hidden_, nullptr,
+                      weights_.output, nullptr,
+                      n, config_.n_vocab, 1e30f, q8, buf_rms_, stream_);
     }
 
     cudaStreamSynchronize(stream_);

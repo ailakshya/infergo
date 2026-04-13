@@ -164,6 +164,10 @@ private:
     half* buf_ffn_;      // [n_ff * 2] gate + up
     float* buf_logits_;  // [n_vocab] output logits
 
+    // Q8_1 quantization buffers (for dp4a GEMV)
+    void* buf_q8_;       // [n_embd/32] BlockQ8_1 blocks
+    float* buf_rms_;     // [1] scalar for RMS inverse
+
     // Track which weights are dequantized F16 vs Q4_K
     std::vector<bool> layer_v_is_f16_;  // per layer: is wv dequantized?
     std::vector<bool> layer_down_is_f16_; // per layer: is w_down dequantized?
