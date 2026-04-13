@@ -1,0 +1,47 @@
+{
+  "plain": {
+    "mode": "plain",
+    "n": 50,
+    "avg_ms": 224.8,
+    "p50_ms": 224.9,
+    "p99_ms": 229.0,
+    "min_ms": 221.7,
+    "max_ms": 229.0,
+    "std_ms": 1.8,
+    "avg_tokens": 64,
+    "tok_per_sec": 284.7,
+    "ms_per_tok": 3.5,
+    "rps": 4.45,
+    "sample": "[JSON]```json\n{\n  \"name\": \"John Doe\",\n  \"age\": 30,\n  \"city\": \"New York\",\n  \"occupation\": \"Software Engineer\",\n  \"hobbies\": [\"reading\", \"traveling\", \"cooking\"]\n}\n```[/JSON]```json\n{\n"
+  },
+  "json": {
+    "mode": "json",
+    "n": 50,
+    "avg_ms": 923.0,
+    "p50_ms": 921.6,
+    "p99_ms": 965.6,
+    "min_ms": 884.0,
+    "max_ms": 965.6,
+    "std_ms": 20.0,
+    "avg_tokens": 54.9,
+    "tok_per_sec": 59.5,
+    "ms_per_tok": 16.8,
+    "rps": 1.08,
+    "sample": "```json\n{\n  \"name\": \"Alice\",\n  \"age\": 25,\n  \"city\": \"New York\",\n  \"occupation\": \"Software Engineer\",\n  \"hobbies\": [\"Reading\", \"Traveling\", \"Cooking\"]\n}\n"
+  },
+  "toon": {
+    "mode": "toon",
+    "n": 50,
+    "avg_ms": 844.4,
+    "p50_ms": 842.1,
+    "p99_ms": 893.5,
+    "min_ms": 813.6,
+    "max_ms": 893.5,
+    "std_ms": 15.9,
+    "avg_tokens": 49,
+    "tok_per_sec": 58.0,
+    "ms_per_tok": 17.2,
+    "rps": 1.18,
+    "sample": "ToON: {\"name\":\"Alice|age:25|city:NYC|occupation:Software Engineer|hobbies:[reading,coding,traveling]|addr:(city:NYC|zip:10001)"
+  }
+}

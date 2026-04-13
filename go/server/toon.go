@@ -34,10 +34,10 @@ import (
 const TOONGrammar = `root   ::= pair ("|" pair)*
 pair   ::= key ":" value
 key    ::= [a-zA-Z_] [a-zA-Z0-9_]*
-value  ::= object | array | string
+value  ::= object | array | atom
 object ::= "(" pair ("|" pair)* ")"
 array  ::= "[" value ("," value)* "]"
-string ::= [^|,()\[\]]+
+atom   ::= [^|,()\[\]\n]+
 `
 
 // ParseTOON converts a TOON string to a map.

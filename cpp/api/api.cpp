@@ -1294,15 +1294,22 @@ int infer_llm_generate(InferLLM      llm,
             smpl = llama_sampler_chain_init(sparams);
 
             if (has_grammar) {
-                // Lazy grammar: only activates when model starts outputting
-                // JSON (triggers on { or [). Preamble is generated freely.
-                const char* patterns[] = {"(\\{)", "(\\[)"};
-                llama_sampler* gsmp = llama_sampler_init_grammar_lazy_patterns(
-                    vocab, grammar, "root",
-                    patterns, 2,
-                    nullptr, 0);
+                llama_sampler* gsmp = nullptr;
+
+                // Detect JSON grammar: root rule starts with object → use lazy
+                // triggers so model can emit preamble before {/[.
+                // TOON and custom grammars: use strict grammar from token 1.
+                bool is_json_grammar = (std::strstr(grammar, "root") != nullptr &&
+                                        std::strstr(grammar, "\"{\"") != nullptr);
+                if (is_json_grammar) {
+                    const char* patterns[] = {"(\\{)", "(\\[)"};
+                    gsmp = llama_sampler_init_grammar_lazy_patterns(
+                        vocab, grammar, "root",
+                        patterns, 2,
+                        nullptr, 0);
+                }
                 if (!gsmp) {
-                    // Fallback to strict grammar
+                    // Strict grammar: TOON, custom grammars, or lazy init failed
                     gsmp = llama_sampler_init_grammar(vocab, grammar, "root");
                 }
                 if (gsmp) llama_sampler_chain_add(smpl, gsmp);
