@@ -1,40 +1,117 @@
-// infergo Custom CUDA Engine — experimental
-// Loads GGUF Q4_K models and runs inference with fused CUDA kernels.
-// Goal: beat llama.cpp on autoregressive decode throughput.
-
+// infergo Custom CUDA Engine — forward pass + sampling
 #include "engine.cuh"
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <vector>
-#include <string>
 #include <algorithm>
+#include <cmath>
 
 namespace infergo {
 namespace cuda {
 
-// ─── GGUF Parser (minimal, Q4_K only) ────────────────────────────────────────
+// ─── Helper kernels ──────────────────────────────────────────────────────────
 
-struct GGUFHeader {
-    uint32_t magic;
-    uint32_t version;
-    uint64_t n_tensors;
-    uint64_t n_kv;
-};
+// Residual add: out[i] += residual[i]
+__global__ void kernel_residual_add(half* out, const half* residual, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        out[i] = __float2half(__half2float(out[i]) + __half2float(residual[i]));
+    }
+}
 
-struct GGUFTensorInfo {
-    std::string name;
-    int n_dims;
-    int64_t dims[4];
-    int type;       // GGML type enum
-    uint64_t offset;
-};
+// Copy hidden state to residual buffer
+__global__ void kernel_copy(half* dst, const half* src, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = src[i];
+}
 
-static const int GGML_TYPE_F32 = 0;
-static const int GGML_TYPE_F16 = 1;
-static const int GGML_TYPE_Q4_K = 12;
+// Embedding lookup: copy row from embedding table
+__global__ void kernel_embed_lookup(half* out, const half* table, int token, int n_embd) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n_embd) {
+        out[i] = table[token * n_embd + i];
+    }
+}
 
-// ─── CUDAEngine Implementation ──────────────────────────────────────────────
+// RMSNorm standalone (for final norm before output)
+__global__ void kernel_rmsnorm(half* out, const half* input, const half* weight, int n, float eps) {
+    extern __shared__ float smem[];
+
+    float sum_sq = 0.0f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        float v = __half2float(input[i]);
+        sum_sq += v * v;
+    }
+
+    // Block reduce
+    smem[threadIdx.x] = sum_sq;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x + s];
+        __syncthreads();
+    }
+
+    float rms_inv = rsqrtf(smem[0] / (float)n + eps);
+
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        out[i] = __float2half(__half2float(input[i]) * __half2float(weight[i]) * rms_inv);
+    }
+}
+
+// Simple Q4K GEMV without fused norm (for output projection)
+__global__ void kernel_q4k_gemv_no_norm(
+    float* __restrict__ out,
+    const half* __restrict__ input,
+    const Q4KBlock* __restrict__ weight,
+    int in_dim, int out_dim)
+{
+    int row = blockIdx.x * blockDim.y + threadIdx.y;
+    int lane = threadIdx.x;
+    if (row >= out_dim) return;
+
+    int blocks_per_row = in_dim / 256;
+    const Q4KBlock* row_blocks = weight + row * blocks_per_row;
+
+    float sum = 0.0f;
+    for (int b = 0; b < blocks_per_row; b++) {
+        float d = __half2float(row_blocks[b].d);
+        float dmin = __half2float(row_blocks[b].dmin);
+
+        for (int j = lane; j < 256; j += 32) {
+            int sub = j / 32;
+            uint8_t sc, m;
+            if (sub < 4) {
+                sc = row_blocks[b].scales[sub] & 0x3F;
+                m = row_blocks[b].scales[sub + 4] & 0x3F;
+            } else {
+                sc = ((row_blocks[b].scales[sub + 4] & 0xF) | ((row_blocks[b].scales[sub - 4] >> 6) << 4));
+                m = ((row_blocks[b].scales[sub + 4] >> 4) | ((row_blocks[b].scales[sub] >> 6) << 4));
+            }
+            float scale = d * sc;
+            float min_val = dmin * m;
+
+            int byte_idx = (j / 2);
+            if (sub >= 4) byte_idx = 64 + (sub - 4) * 16 + (j % 32) / 2;
+            else byte_idx = sub * 16 + (j % 32) / 2;
+
+            uint8_t byte = row_blocks[b].qs[byte_idx];
+            int nibble = (j & 1) ? (byte >> 4) : (byte & 0xF);
+            float w = scale * nibble - min_val;
+
+            int idx = b * 256 + j;
+            if (idx < in_dim) {
+                sum += w * __half2float(input[idx]);
+            }
+        }
+    }
+
+    for (int offset = 16; offset > 0; offset >>= 1)
+        sum += __shfl_down_sync(0xFFFFFFFF, sum, offset);
+
+    if (lane == 0) out[row] = sum;
+}
+
+// ─── CUDAEngine ──────────────────────────────────────────────────────────────
 
 CUDAEngine::CUDAEngine() {
     cublasCreate(&cublas_);
@@ -50,19 +127,14 @@ CUDAEngine::CUDAEngine() {
 }
 
 CUDAEngine::~CUDAEngine() {
-    // Free workspace
     cudaFree(buf_hidden_);
     cudaFree(buf_residual_);
     cudaFree(buf_qkv_);
     cudaFree(buf_attn_out_);
     cudaFree(buf_ffn_);
     cudaFree(buf_logits_);
-
-    // Free KV cache
     cudaFree(kv_cache_.k);
     cudaFree(kv_cache_.v);
-
-    // Free weights
     if (weights_.layers) {
         for (int i = 0; i < weights_.n_layer; i++) {
             auto& l = weights_.layers[i];
@@ -76,123 +148,126 @@ CUDAEngine::~CUDAEngine() {
     cudaFree(weights_.tok_embd);
     cudaFree(weights_.output_norm);
     cudaFree(weights_.output);
-
     cublasDestroy(cublas_);
     cudaStreamDestroy(stream_);
 }
 
-bool CUDAEngine::LoadModel(const char* path, const ModelConfig& config) {
-    config_ = config;
-
-    // Allocate workspace buffers
+void CUDAEngine::ForwardToken(int token, int pos) {
     int n = config_.n_embd;
     int n_kv = config_.n_kv_head * config_.head_dim;
-    cudaMalloc(&buf_hidden_, n * sizeof(half));
-    cudaMalloc(&buf_residual_, n * sizeof(half));
-    cudaMalloc(&buf_qkv_, (n + 2 * n_kv) * sizeof(half));
-    cudaMalloc(&buf_attn_out_, n * sizeof(half));
-    cudaMalloc(&buf_ffn_, config_.n_ff * 2 * sizeof(half));
-    cudaMalloc(&buf_logits_, config_.n_vocab * sizeof(float));
+    int threads = 256;
 
-    // Allocate KV cache
-    kv_cache_.max_seq = config_.n_ctx;
-    kv_cache_.n_layer = config_.n_layer;
-    kv_cache_.n_kv_head = config_.n_kv_head;
-    kv_cache_.head_dim = config_.head_dim;
-    size_t kv_size = (size_t)config_.n_layer * config_.n_kv_head *
-                     config_.n_ctx * config_.head_dim * sizeof(half);
-    cudaMalloc(&kv_cache_.k, kv_size);
-    cudaMalloc(&kv_cache_.v, kv_size);
-    cudaMemset(kv_cache_.k, 0, kv_size);
-    cudaMemset(kv_cache_.v, 0, kv_size);
-
-    // Allocate layer weights
-    weights_.n_layer = config_.n_layer;
-    weights_.layers = new LayerWeights[config_.n_layer];
-    memset(weights_.layers, 0, sizeof(LayerWeights) * config_.n_layer);
-
-    printf("[cuda_engine] Workspace + KV cache allocated (%.1f MB)\n",
-           (float)(kv_size * 2 + n * 6 * sizeof(half) + config_.n_vocab * sizeof(float)) / 1e6);
-
-    // TODO: Parse GGUF and load tensor data to GPU
-    // For now, print what we'd need to load
-    printf("[cuda_engine] Model config: n_embd=%d n_head=%d n_kv_head=%d n_layer=%d n_ff=%d\n",
-           config_.n_embd, config_.n_head, config_.n_kv_head, config_.n_layer, config_.n_ff);
-    printf("[cuda_engine] GGUF loading: %s (TODO — placeholder)\n", path);
-
-    return true;
-}
-
-// Forward one token through the transformer
-void CUDAEngine::ForwardToken(int token, int pos) {
-    // 1. Token embedding lookup
-    // Copy embedding for this token to buf_hidden_
-    half* embd_row = weights_.tok_embd + token * config_.n_embd;
-    cudaMemcpyAsync(buf_hidden_, embd_row, config_.n_embd * sizeof(half),
-                    cudaMemcpyDeviceToDevice, stream_);
-    cudaMemcpyAsync(buf_residual_, buf_hidden_, config_.n_embd * sizeof(half),
-                    cudaMemcpyDeviceToDevice, stream_);
+    // 1. Embedding lookup
+    kernel_embed_lookup<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
+        buf_hidden_, weights_.tok_embd, token, n);
 
     for (int layer = 0; layer < config_.n_layer; layer++) {
         auto& lw = weights_.layers[layer];
 
-        // 2. Fused RMSNorm + Q/K/V projections
-        //    3 kernel launches instead of 6 (norm + 3 matmuls + 2 bias adds)
-        int n_kv = config_.n_kv_head * config_.head_dim;
+        // Save residual
+        kernel_copy<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
+            buf_residual_, buf_hidden_, n);
 
-        // Q projection: [n_embd] → [n_embd]
+        // 2. Fused RMSNorm + QKV projections
         half* q_out = buf_qkv_;
         fused_rmsnorm_q4k_gemv(q_out, buf_hidden_, lw.attn_norm,
-                                lw.wq, lw.bq,
-                                config_.n_embd, config_.n_embd, RMS_EPS, stream_);
+                                lw.wq, lw.bq, n, n, RMS_EPS, stream_);
 
-        // K projection: [n_embd] → [n_kv_head * head_dim]
-        half* k_out = buf_qkv_ + config_.n_embd;
+        half* k_out = buf_qkv_ + n;
         fused_rmsnorm_q4k_gemv(k_out, buf_hidden_, lw.attn_norm,
-                                lw.wk, lw.bk,
-                                config_.n_embd, n_kv, RMS_EPS, stream_);
+                                lw.wk, lw.bk, n, n_kv, RMS_EPS, stream_);
 
-        // V projection: [n_embd] → [n_kv_head * head_dim]
         half* v_out = k_out + n_kv;
         fused_rmsnorm_q4k_gemv(v_out, buf_hidden_, lw.attn_norm,
-                                lw.wv, lw.bv,
-                                config_.n_embd, n_kv, RMS_EPS, stream_);
+                                lw.wv, lw.bv, n, n_kv, RMS_EPS, stream_);
 
-        // 3. Fused RoPE + GQA Attention (1 kernel launch)
+        // 3. Fused GQA Attention
         fused_gqa_attention(buf_attn_out_, q_out, k_out, v_out,
                            &kv_cache_, layer, pos,
                            config_.n_head, config_.n_kv_head, config_.head_dim,
                            config_.rope_base, stream_);
 
-        // 4. Output projection: attn_out → hidden (1 fused kernel)
+        // 4. Output projection (no norm)
         fused_rmsnorm_q4k_gemv(buf_hidden_, buf_attn_out_, nullptr,
-                                lw.wo, nullptr,
-                                config_.n_embd, config_.n_embd, 1e30f, stream_);
+                                lw.wo, nullptr, n, n, 1e30f, stream_);
 
-        // 5. Residual connection
-        // buf_hidden_ += buf_residual_
-        // (TODO: fuse this into the output projection kernel)
+        // 5. Residual add
+        kernel_residual_add<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
+            buf_hidden_, buf_residual_, n);
 
-        // 6. Fused SwiGLU FFN (2 kernel launches)
-        //    Reads hidden once, computes gate+up, then down projection
-        fused_swiglu_ffn(buf_ffn_, buf_hidden_, lw.ffn_norm,
+        // Save residual for FFN
+        kernel_copy<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
+            buf_residual_, buf_hidden_, n);
+
+        // 6. Fused SwiGLU FFN
+        half* ffn_out = buf_ffn_;
+        fused_swiglu_ffn(ffn_out, buf_hidden_, lw.ffn_norm,
                         lw.w_gate, lw.w_up, lw.w_down,
-                        config_.n_embd, config_.n_ff, RMS_EPS, stream_);
+                        n, config_.n_ff, RMS_EPS, stream_);
 
-        // 7. Residual
-        // buf_hidden_ = buf_ffn_ + buf_residual_ (TODO: fuse)
+        // 7. Copy FFN output to hidden + residual
+        cudaMemcpyAsync(buf_hidden_, ffn_out, n * sizeof(half),
+                        cudaMemcpyDeviceToDevice, stream_);
+        kernel_residual_add<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
+            buf_hidden_, buf_residual_, n);
     }
 
-    // 8. Final RMSNorm + output projection → logits
-    // fused_rmsnorm_q4k_gemv(buf_logits_, buf_hidden_, weights_.output_norm,
-    //                        weights_.output, nullptr,
-    //                        config_.n_embd, config_.n_vocab, RMS_EPS, stream_);
+    // 8. Final RMSNorm
+    kernel_rmsnorm<<<1, 256, 256 * sizeof(float), stream_>>>(
+        buf_hidden_, buf_hidden_, weights_.output_norm, n, RMS_EPS);
+
+    // 9. Output logits (hidden → vocab)
+    dim3 block(32, 4);
+    dim3 grid((config_.n_vocab + 3) / 4);
+    kernel_q4k_gemv_no_norm<<<grid, block, 0, stream_>>>(
+        buf_logits_, buf_hidden_,
+        reinterpret_cast<const Q4KBlock*>(weights_.output),
+        n, config_.n_vocab);
+
+    cudaStreamSynchronize(stream_);
+}
+
+int CUDAEngine::SampleToken(float temperature) {
+    // Copy logits to CPU
+    std::vector<float> logits(config_.n_vocab);
+    cudaMemcpy(logits.data(), buf_logits_,
+               config_.n_vocab * sizeof(float), cudaMemcpyDeviceToHost);
+
+    if (temperature <= 0.0f) {
+        // Greedy: argmax
+        return static_cast<int>(
+            std::max_element(logits.begin(), logits.end()) - logits.begin());
+    }
+
+    // Temperature + softmax + top-p sampling
+    float max_l = *std::max_element(logits.begin(), logits.end());
+    float sum = 0.0f;
+    for (auto& l : logits) {
+        l = expf((l - max_l) / temperature);
+        sum += l;
+    }
+    for (auto& l : logits) l /= sum;
+
+    // Random sample
+    float r = (float)rand() / (float)RAND_MAX;
+    float cumsum = 0.0f;
+    for (int i = 0; i < (int)logits.size(); i++) {
+        cumsum += logits[i];
+        if (cumsum >= r) return i;
+    }
+    return config_.n_vocab - 1;
 }
 
 int CUDAEngine::Generate(const int* prompt_tokens, int n_prompt,
                           int max_tokens, float temperature,
                           int* out_tokens, int max_out) {
-    // Prefill: process all prompt tokens
+    // Reset KV cache
+    size_t kv_size = (size_t)config_.n_layer * config_.n_kv_head *
+                     config_.n_ctx * config_.head_dim * sizeof(half);
+    cudaMemsetAsync(kv_cache_.k, 0, kv_size, stream_);
+    cudaMemsetAsync(kv_cache_.v, 0, kv_size, stream_);
+
+    // Prefill
     for (int i = 0; i < n_prompt; i++) {
         ForwardToken(prompt_tokens[i], i);
     }
@@ -200,19 +275,16 @@ int CUDAEngine::Generate(const int* prompt_tokens, int n_prompt,
     // Autoregressive decode
     int gen = 0;
     int pos = n_prompt;
+    int eos_token = 151645;  // <|im_end|> for Qwen
+
     for (int t = 0; t < max_tokens && gen < max_out; t++) {
         int tok = SampleToken(temperature);
-        if (tok < 0 || tok == 151645) break;  // EOS = <|im_end|>
+        if (tok < 0 || tok == eos_token) break;
         out_tokens[gen++] = tok;
         ForwardToken(tok, pos++);
     }
-    return gen;
-}
 
-int CUDAEngine::SampleToken(float temperature) {
-    // TODO: Copy logits from GPU, apply temperature, sample
-    // For now, return -1 (placeholder)
-    return -1;
+    return gen;
 }
 
 } // namespace cuda
