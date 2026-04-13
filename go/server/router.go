@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -810,22 +811,21 @@ func (s *Server) loadModelRegistryMetadata() map[string]modelRegistryFile {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-// buildPrompt flattens a message list into a plain text prompt.
+// buildPrompt flattens a message list into a ChatML prompt.
+// ChatML is the standard format for Qwen, LLaMA 3, Mistral, etc.
+// <|im_start|>role\ncontent<|im_end|>\n
 func buildPrompt(messages []ChatMessage) string {
-	var out string
+	var sb strings.Builder
+	sb.Grow(256)
 	for _, m := range messages {
-		switch m.Role {
-		case "system":
-			out += "[system]: " + m.Content + "\n"
-		case "user":
-			out += "[user]: " + m.Content + "\n"
-		case "assistant":
-			out += "[assistant]: " + m.Content + "\n"
-		default:
-			out += m.Content + "\n"
-		}
+		sb.WriteString("<|im_start|>")
+		sb.WriteString(m.Role)
+		sb.WriteByte('\n')
+		sb.WriteString(m.Content)
+		sb.WriteString("<|im_end|>\n")
 	}
-	return out
+	sb.WriteString("<|im_start|>assistant\n")
+	return sb.String()
 }
 
 func decodeBase64(s string) ([]byte, error) {

@@ -847,6 +847,7 @@ struct LLMHandle {
     infergo::KVPageAllocator pages;  // replaces KVCacheSlotManager
     infergo::PromptCache     prompt_cache;  // LRU cache for prefill KV state
     std::mutex               gen_mutex;     // serializes infer_llm_generate (llama_decode is not thread-safe)
+    llama_batch              gen_batch = {};  // pre-allocated batch for generate
     int n_ctx = 0;
 
     LLMHandle(int n_seq_max, int ctx_size)
@@ -855,7 +856,13 @@ struct LLMHandle {
                 ctx_size / infergo::KVPageAllocator::kDefaultPageSize)
         , prompt_cache(16)
         , n_ctx(ctx_size)
-    {}
+    {
+        gen_batch = llama_batch_init(2048, 0, 1);
+    }
+
+    ~LLMHandle() {
+        if (gen_batch.token) llama_batch_free(gen_batch);
+    }
 };
 
 // Internal handle: owns one InferSequence + its last decoded logits.
@@ -1276,19 +1283,14 @@ int infer_llm_generate(InferLLM      llm,
         llama_context* ctx = h->engine.Context();
         const llama_vocab* vocab = llama_model_get_vocab(
             llama_get_model(ctx));
-        const int vocab_size = h->engine.VocabSize();
+        // Use slot 0 always (single-sequence mode via mutex)
+        const int slot_id = 0;
 
-        // Allocate a KV slot for this generation
-        auto& pages = h->pages;
-        int slot_id = pages.AllocSlot(n_prompt);
-        if (slot_id < 0) {
-            infergo::set_last_error("infer_llm_generate: no KV slots available");
-            return -1;
-        }
+        // Clear previous KV state for this slot
+        llama_memory_seq_rm(llama_get_memory(ctx),
+            static_cast<llama_seq_id>(slot_id), -1, -1);
 
         // Build sampler chain.
-        // Grammar MUST come before top-k/top-p — it needs to see all candidates
-        // to find tokens that produce valid JSON. Pre-filtering removes valid tokens.
         llama_sampler* smpl = nullptr;
         bool has_grammar = (grammar != nullptr && grammar[0] != '\0');
         {
@@ -1326,18 +1328,17 @@ int infer_llm_generate(InferLLM      llm,
             llama_sampler_chain_add(smpl, llama_sampler_init_dist(0));
         }
 
-        // Pre-allocate batch
-        llama_batch batch = llama_batch_init(
-            std::max(n_prompt, 1), 0, 1);
+        // Reuse pre-allocated batch
+        llama_batch& batch = h->gen_batch;
 
-        // ── Prefill (with prompt cache) ──
-        // Strategy: cache KV for positions 0..n-2. On cache hit, deserialize
-        // then decode only the last token to get logits. This avoids position
-        // conflicts (the last position is always fresh).
-        const int cache_len = n_prompt - 1;  // cache all but last token
+        // ── Prefill (with prompt cache for long prompts) ──
+        // Only use prompt cache for prompts >= 256 tokens. For short prompts,
+        // the GPU sync cost of KV serialization exceeds the prefill savings.
+        const int cache_len = n_prompt - 1;
+        const bool use_cache = (cache_len >= 256);
         std::vector<uint8_t> cached_kv;
         int cached_n = 0;
-        bool cache_hit = (cache_len > 0) &&
+        bool cache_hit = use_cache &&
             h->prompt_cache.Get(prompt_tokens, cache_len, cached_kv, cached_n);
 
         if (cache_hit && cached_n == cache_len) {
@@ -1366,9 +1367,7 @@ int infer_llm_generate(InferLLM      llm,
             batch.logits[idx]     = 1;
 
             if (llama_decode(ctx, batch) != 0) {
-                llama_batch_free(batch);
                 llama_sampler_free(smpl);
-                pages.FreeSlot(slot_id);
                 infergo::set_last_error("infer_llm_generate: cache-hit decode failed");
                 return -1;
             }
@@ -1386,15 +1385,13 @@ int infer_llm_generate(InferLLM      llm,
 
             int rc = llama_decode(ctx, batch);
             if (rc != 0) {
-                llama_batch_free(batch);
                 llama_sampler_free(smpl);
-                pages.FreeSlot(slot_id);
                 infergo::set_last_error("infer_llm_generate: prefill decode failed");
                 return -1;
             }
 
-            // Cache KV for positions 0..n-2 (all but last token).
-            if (cache_len > 0) {
+            // Cache KV for positions 0..n-2 (only for long prompts).
+            if (use_cache && cache_len > 0) {
                 const size_t kv_size = llama_state_seq_get_size(ctx,
                     static_cast<llama_seq_id>(slot_id));
                 if (kv_size > 0) {
@@ -1411,23 +1408,11 @@ int infer_llm_generate(InferLLM      llm,
             }
         }
 
-        // Pre-allocate candidates buffer once (avoid per-token heap alloc)
-        std::vector<llama_token_data> candidates(static_cast<size_t>(vocab_size));
-
+        // Use llama_sampler_sample — does candidate construction, apply,
+        // accept internally. Eliminates per-token 150K-entry vector copy.
         auto sample_at = [&](int batch_idx) -> int32_t {
-            const float* logits = llama_get_logits_ith(ctx, batch_idx);
-            if (!logits) return -1;
-
-            for (int i = 0; i < vocab_size; ++i) {
-                candidates[i] = {static_cast<llama_token>(i), logits[i], 0.0f};
-            }
-            llama_token_data_array cur_p = {
-                candidates.data(), static_cast<size_t>(vocab_size), -1, false};
-            llama_sampler_apply(smpl, &cur_p);
-            if (cur_p.selected < 0) return -1;
-            llama_token tok = cur_p.data[cur_p.selected].id;
-            llama_sampler_accept(smpl, tok);
-            return static_cast<int32_t>(tok);
+            return static_cast<int32_t>(
+                llama_sampler_sample(smpl, ctx, batch_idx));
         };
 
         std::string result;
@@ -1470,12 +1455,8 @@ int infer_llm_generate(InferLLM      llm,
             stopped = (tok < 0 || llama_vocab_is_eog(vocab, tok));
         }
 
-        // Cleanup
-        llama_memory_seq_rm(llama_get_memory(ctx),
-            static_cast<llama_seq_id>(slot_id), -1, -1);
-        llama_batch_free(batch);
+        // Cleanup (KV cleared at start of next request, batch is reused)
         llama_sampler_free(smpl);
-        pages.FreeSlot(slot_id);
 
         // Write output
         if (out_text && max_text_len > 0) {
