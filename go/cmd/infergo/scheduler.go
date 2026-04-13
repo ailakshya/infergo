@@ -109,9 +109,9 @@ func newSchedulerModel(m *llm.Model, modelName string, activeSeqGauge prometheus
 		gcInterval:     gcInterval,
 	}
 	s.batchCh = make(chan batchItem, 64)
-	s.wg.Add(2)
+	s.wg.Add(1)
 	go s.run()
-	go s.batchCollector()
+	go s.batchCollector() // not tracked by wg — standalone
 	return s
 }
 
@@ -120,7 +120,11 @@ func newSchedulerModel(m *llm.Model, modelName string, activeSeqGauge prometheus
 // Single requests fire immediately. Multiple concurrent requests within
 // a 2ms window are batched together for shared GPU decode calls.
 func (s *schedulerModel) batchCollector() {
-	defer s.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[infergo] batchCollector panic: %v\n", r)
+		}
+	}()
 	for {
 		// Wait for the first request
 		var first batchItem
@@ -150,15 +154,10 @@ func (s *schedulerModel) batchCollector() {
 			}
 		}
 
-		if len(batch) == 1 {
-			// Single request — use fast path (GenerateC)
-			item := batch[0]
-			text, genToks, err := s.m.GenerateC(item.tokens, item.maxTokens, item.temp, 0.9, item.grammar)
-			item.result <- batchResult{text: text, genToks: genToks, err: err}
-		} else {
-			// Multiple requests — use batch generation (continuous batching)
-			s.fireBatch(batch)
-		}
+		// Always use batch generation — avoids KV state conflicts
+		// between GenerateC and GenerateBatch paths.
+		// Single requests go through the same path for consistency.
+		s.fireBatch(batch)
 	}
 }
 
@@ -179,10 +178,9 @@ func (s *schedulerModel) fireBatch(batch []batchItem) {
 
 	results, err := s.m.GenerateBatch(requests, temp, 0.9, grammar)
 	if err != nil {
-		// Batch failed — fall back to sequential GenerateC for each
+		// Batch failed — report error to all waiters
 		for _, item := range batch {
-			text, genToks, err2 := s.m.GenerateC(item.tokens, item.maxTokens, item.temp, 0.9, item.grammar)
-			item.result <- batchResult{text: text, genToks: genToks, err: err2}
+			item.result <- batchResult{err: err}
 		}
 		return
 	}
@@ -199,7 +197,6 @@ func (s *schedulerModel) fireBatch(batch []batchItem) {
 // Implements server.Model.
 func (s *schedulerModel) Close() {
 	close(s.stopCh)
-	close(s.batchCh)
 	s.wg.Wait()
 	if s.specDecoder != nil {
 		s.specDecoder.Close()
@@ -226,10 +223,10 @@ func (s *schedulerModel) Generate(ctx context.Context, prompt string, maxTokens 
 		return text, promptToks, stats.Predicted, nil
 	}
 
-	// Full C generation loop. Concurrent requests queue on C-side mutex.
-	// TODO: batch collector for continuous batching (batch path crashes —
-	// needs debugging of llama_sampler_sample batch indices)
 	grammar, _ := server.GrammarFromContext(ctx)
+
+	// Submit to batch collector for continuous batching.
+	// Use GenerateC directly (stable, tested path)
 	text, genToks, err := s.m.GenerateC(tokens, maxTokens, temp, 0.9, grammar)
 	if err == nil {
 		return text, promptToks, genToks, nil
