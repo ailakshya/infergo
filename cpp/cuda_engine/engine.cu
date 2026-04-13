@@ -161,6 +161,15 @@ void CUDAEngine::ForwardToken(int token, int pos) {
     kernel_embed_lookup<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
         buf_hidden_, weights_.tok_embd, token, n);
 
+    // DEBUG: check hidden state after embedding
+    if (pos == 0) {
+        half dbg[8];
+        cudaMemcpy(dbg, buf_hidden_, 8 * sizeof(half), cudaMemcpyDeviceToHost);
+        printf("[debug] After embed token=%d: ", token);
+        for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(dbg[i]));
+        printf("\n");
+    }
+
     for (int layer = 0; layer < config_.n_layer; layer++) {
         auto& lw = weights_.layers[layer];
 
@@ -170,16 +179,16 @@ void CUDAEngine::ForwardToken(int token, int pos) {
 
         // 2. Fused RMSNorm + QKV projections
         half* q_out = buf_qkv_;
-        fused_rmsnorm_q4k_gemv(q_out, buf_hidden_, lw.attn_norm,
-                                lw.wq, lw.bq, n, n, RMS_EPS, stream_);
+        f16_gemv(q_out, buf_hidden_, lw.attn_norm,
+                                reinterpret_cast<const half*>(lw.wq), lw.bq, n, n, RMS_EPS, stream_);
 
         half* k_out = buf_qkv_ + n;
-        fused_rmsnorm_q4k_gemv(k_out, buf_hidden_, lw.attn_norm,
-                                lw.wk, lw.bk, n, n_kv, RMS_EPS, stream_);
+        f16_gemv(k_out, buf_hidden_, lw.attn_norm,
+                                reinterpret_cast<const half*>(lw.wk), lw.bk, n, n_kv, RMS_EPS, stream_);
 
         half* v_out = k_out + n_kv;
-        fused_rmsnorm_q4k_gemv(v_out, buf_hidden_, lw.attn_norm,
-                                lw.wv, lw.bv, n, n_kv, RMS_EPS, stream_);
+        f16_gemv(v_out, buf_hidden_, lw.attn_norm,
+                                reinterpret_cast<const half*>(lw.wv), lw.bv, n, n_kv, RMS_EPS, stream_);
 
         // 3. Fused GQA Attention
         fused_gqa_attention(buf_attn_out_, q_out, k_out, v_out,
@@ -187,9 +196,37 @@ void CUDAEngine::ForwardToken(int token, int pos) {
                            config_.n_head, config_.n_kv_head, config_.head_dim,
                            config_.rope_base, stream_);
 
+        if (layer == 0 && pos == 0) {
+            cudaStreamSynchronize(stream_);
+            half dbg[8];
+
+            // Check V projection direct output (before KV cache write)
+            half* v_ptr = buf_qkv_ + n + n_kv;
+            cudaMemcpy(dbg, v_ptr, 8 * sizeof(half), cudaMemcpyDeviceToHost);
+            printf("[debug] V proj out[0:8]: ");
+            for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(dbg[i]));
+            printf("\n");
+
+            int kv_stride = config_.n_kv_head * kv_cache_.max_seq * config_.head_dim;
+            // Check V cache
+            cudaMemcpy(dbg, kv_cache_.v + 0 * kv_stride, 8 * sizeof(half), cudaMemcpyDeviceToHost);
+            printf("[debug] V cache[layer0,head0,pos0,0:8]: ");
+            for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(dbg[i]));
+            printf("\n");
+            // Check K cache after write
+            cudaMemcpy(dbg, kv_cache_.k + 0 * kv_stride, 8 * sizeof(half), cudaMemcpyDeviceToHost);
+            printf("[debug] K cache[layer0,head0,pos0,0:8]: ");
+            for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(dbg[i]));
+            printf("\n");
+
+            cudaMemcpy(dbg, buf_attn_out_, 8 * sizeof(half), cudaMemcpyDeviceToHost);
+            printf("[debug] Attn out[0:8]: ");
+            for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(dbg[i]));
+            printf("\n");
+        }
         // 4. Output projection (no norm)
-        fused_rmsnorm_q4k_gemv(buf_hidden_, buf_attn_out_, nullptr,
-                                lw.wo, nullptr, n, n, 1e30f, stream_);
+        f16_gemv(buf_hidden_, buf_attn_out_, nullptr,
+                                reinterpret_cast<const half*>(lw.wo), nullptr, n, n, 1e30f, stream_);
 
         // 5. Residual add
         kernel_residual_add<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
@@ -210,28 +247,44 @@ void CUDAEngine::ForwardToken(int token, int pos) {
                         cudaMemcpyDeviceToDevice, stream_);
         kernel_residual_add<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
             buf_hidden_, buf_residual_, n);
+
+        if (layer == 0 && pos == 0) {
+            cudaStreamSynchronize(stream_);
+            half dbg[8];
+            cudaMemcpy(dbg, buf_hidden_, 8 * sizeof(half), cudaMemcpyDeviceToHost);
+            printf("[debug] After layer 0: ");
+            for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(dbg[i]));
+            printf("\n");
+            cudaMemcpy(dbg, buf_qkv_, 8 * sizeof(half), cudaMemcpyDeviceToHost);
+            printf("[debug] Q proj[0:8]: ");
+            for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(dbg[i]));
+            printf("\n");
+        }
     }
 
     // 8. Final RMSNorm
     kernel_rmsnorm<<<1, 256, 256 * sizeof(float), stream_>>>(
         buf_hidden_, buf_hidden_, weights_.output_norm, n, RMS_EPS);
 
-    // 9. Output logits (hidden → vocab)
-    dim3 block(32, 4);
-    dim3 grid((config_.n_vocab + 3) / 4);
-    kernel_q4k_gemv_no_norm<<<grid, block, 0, stream_>>>(
-        buf_logits_, buf_hidden_,
-        reinterpret_cast<const Q4KBlock*>(weights_.output),
-        n, config_.n_vocab);
+    // 9. Output logits — F16 GEMV, output to buf_logits_ (reinterpreted)
+    // buf_logits_ is n_vocab * sizeof(float) = n_vocab * 4 bytes
+    // We can fit n_vocab * sizeof(half) = n_vocab * 2 bytes in the first half
+    half* logits_half = reinterpret_cast<half*>(buf_logits_);
+    f16_gemv(logits_half, buf_hidden_, nullptr,
+             reinterpret_cast<const half*>(weights_.output), nullptr,
+             n, config_.n_vocab, 1e30f, stream_);
 
     cudaStreamSynchronize(stream_);
 }
 
 int CUDAEngine::SampleToken(float temperature) {
-    // Copy logits to CPU
+    // Copy F16 logits from buf_ffn_ to CPU and convert to float
+    std::vector<half> h_logits(config_.n_vocab);
+    cudaMemcpy(h_logits.data(), buf_logits_,
+               config_.n_vocab * sizeof(half), cudaMemcpyDeviceToHost);
     std::vector<float> logits(config_.n_vocab);
-    cudaMemcpy(logits.data(), buf_logits_,
-               config_.n_vocab * sizeof(float), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < config_.n_vocab; i++)
+        logits[i] = __half2float(h_logits[i]);
 
     if (temperature <= 0.0f) {
         // Greedy: argmax
@@ -285,6 +338,50 @@ int CUDAEngine::Generate(const int* prompt_tokens, int n_prompt,
     }
 
     return gen;
+}
+
+void CUDAEngine::DebugWeights() {
+    printf("\n[debug] Weight check:\n");
+
+    // Token embedding
+    if (weights_.tok_embd) {
+        half buf[16];
+        cudaMemcpy(buf, weights_.tok_embd, 16 * sizeof(half), cudaMemcpyDeviceToHost);
+        printf("  token_embd[0:8]: ");
+        for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(buf[i]));
+
+        // Check row 1 (token 1)
+        cudaMemcpy(buf, weights_.tok_embd + config_.n_embd, 8 * sizeof(half), cudaMemcpyDeviceToHost);
+        printf("\n  token_embd[row1]: ");
+        for (int i = 0; i < 8; i++) printf("%.4f ", __half2float(buf[i]));
+
+        // Count nonzero in row 0
+        std::vector<half> row(config_.n_embd);
+        cudaMemcpy(row.data(), weights_.tok_embd, config_.n_embd * sizeof(half), cudaMemcpyDeviceToHost);
+        int nz = 0;
+        for (int i = 0; i < config_.n_embd; i++) if (__half2float(row[i]) != 0.0f) nz++;
+        printf("\n  row 0: %d/%d nonzero\n", nz, config_.n_embd);
+    } else printf("  token_embd: NULL!\n");
+
+    // Attn norm (should be F32 → uploaded as raw bytes, need to interpret correctly)
+    if (weights_.layers[0].attn_norm) {
+        // The norm weights are F32 in GGUF but we uploaded raw bytes.
+        // Our kernel expects half*. This is a BUG — we need F32→F16 conversion!
+        float f32buf[8];
+        cudaMemcpy(f32buf, weights_.layers[0].attn_norm, 8 * sizeof(float), cudaMemcpyDeviceToHost);
+        printf("  blk.0.attn_norm (as F32): ");
+        for (int i = 0; i < 8; i++) printf("%.4f ", f32buf[i]);
+        printf("\n");
+    } else printf("  blk.0.attn_norm: NULL!\n");
+
+    // Q4_K weight block
+    if (weights_.layers[0].wq) {
+        unsigned char raw[144]; // sizeof Q4_K block
+        cudaMemcpy(raw, weights_.layers[0].wq, 144, cudaMemcpyDeviceToHost);
+        printf("  blk.0.wq first Q4K block raw[0:16]: ");
+        for (int i = 0; i < 16; i++) printf("%02x ", raw[i]);
+        printf("\n");
+    } else printf("  blk.0.wq: NULL!\n");
 }
 
 } // namespace cuda

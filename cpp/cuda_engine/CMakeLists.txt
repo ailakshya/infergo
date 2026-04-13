@@ -34,3 +34,12 @@ target_link_libraries(cuda_engine_bench
 set_target_properties(cuda_engine_bench PROPERTIES
     CUDA_ARCHITECTURES "120"
 )
+
+# Verify output correctness
+add_executable(cuda_engine_verify verify.cu)
+target_include_directories(cuda_engine_verify PRIVATE
+    ${CMAKE_SOURCE_DIR}/cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(cuda_engine_verify PRIVATE cuda_engine infer_api cublas cudart)
+set_target_properties(cuda_engine_verify PROPERTIES CUDA_ARCHITECTURES "120")

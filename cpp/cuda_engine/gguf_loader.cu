@@ -170,20 +170,134 @@ public:
         return (it != tensors_.end()) ? &it->second : nullptr;
     }
 
-    // Upload tensor directly to GPU
+    // Upload tensor directly to GPU (raw — for Q4_K weight tensors)
     bool UploadTensor(const std::string& name, void** gpu_ptr) {
         auto it = tensors_.find(name);
         if (it == tensors_.end()) return false;
         auto& ti = it->second;
 
-        // Read to CPU temp buffer
         std::vector<char> cpu_buf(ti.data_size);
         file_.seekg(static_cast<std::streamoff>(data_offset_ + ti.offset));
         file_.read(cpu_buf.data(), static_cast<std::streamsize>(ti.data_size));
 
-        // Upload to GPU
         cudaMalloc(gpu_ptr, ti.data_size);
         cudaMemcpy(*gpu_ptr, cpu_buf.data(), ti.data_size, cudaMemcpyHostToDevice);
+        return true;
+    }
+
+    // Upload tensor as FP16 — converts F32→F16 or dequantizes Q4_K→F16
+    bool UploadTensorAsF16(const std::string& name, half** gpu_ptr) {
+        auto it = tensors_.find(name);
+        if (it == tensors_.end()) return false;
+        auto& ti = it->second;
+
+        std::vector<char> cpu_buf(ti.data_size);
+        file_.seekg(static_cast<std::streamoff>(data_offset_ + ti.offset));
+        file_.read(cpu_buf.data(), static_cast<std::streamsize>(ti.data_size));
+
+        size_t n_elements = ti.total_elements;
+
+        if (ti.type == GGML_TYPE_F32) {
+            // F32 → F16 conversion
+            std::vector<half> f16_buf(n_elements);
+            const float* f32 = reinterpret_cast<const float*>(cpu_buf.data());
+            for (size_t i = 0; i < n_elements; i++) {
+                f16_buf[i] = __float2half(f32[i]);
+            }
+            cudaMalloc(gpu_ptr, n_elements * sizeof(half));
+            cudaMemcpy(*gpu_ptr, f16_buf.data(), n_elements * sizeof(half), cudaMemcpyHostToDevice);
+        } else if (ti.type == GGML_TYPE_F16) {
+            // Already F16 — direct upload
+            cudaMalloc(gpu_ptr, n_elements * sizeof(half));
+            cudaMemcpy(*gpu_ptr, cpu_buf.data(), n_elements * sizeof(half), cudaMemcpyHostToDevice);
+        } else if (ti.type == GGML_TYPE_Q4_K) {
+            // Q4_K → F16 dequantization
+            std::vector<half> f16_buf(n_elements);
+            size_t n_blocks = n_elements / 256;
+            const unsigned char* raw = reinterpret_cast<const unsigned char*>(cpu_buf.data());
+
+            for (size_t b = 0; b < n_blocks; b++) {
+                // Parse Q4_K block (144 bytes per block)
+                const unsigned char* blk = raw + b * 144;
+                // d and dmin are FP16 (2 bytes each)
+                half d_h, dmin_h;
+                memcpy(&d_h, blk, 2);
+                memcpy(&dmin_h, blk + 2, 2);
+                float d = __half2float(d_h);
+                float dmin = __half2float(dmin_h);
+                const unsigned char* scales = blk + 4;    // 12 bytes
+                const unsigned char* qs = blk + 16;       // 128 bytes
+
+                for (int j = 0; j < 256; j++) {
+                    int sub = j / 32;
+                    uint8_t sc, m;
+                    if (sub < 4) {
+                        sc = scales[sub] & 0x3F;
+                        m = scales[sub + 4] & 0x3F;
+                    } else {
+                        sc = ((scales[sub + 4] & 0xF) | ((scales[sub - 4] >> 6) << 4));
+                        m = ((scales[sub + 4] >> 4) | ((scales[sub] >> 6) << 4));
+                    }
+                    float scale = d * sc;
+                    float min_val = dmin * m;
+
+                    int byte_idx;
+                    if (sub < 4) byte_idx = sub * 16 + (j % 32) / 2;
+                    else byte_idx = 64 + (sub - 4) * 16 + (j % 32) / 2;
+
+                    uint8_t byte = qs[byte_idx];
+                    int nibble = (j & 1) ? (byte >> 4) : (byte & 0xF);
+                    float val = scale * nibble - min_val;
+
+                    f16_buf[b * 256 + j] = __float2half(val);
+                }
+            }
+            cudaMalloc(gpu_ptr, n_elements * sizeof(half));
+            cudaMemcpy(*gpu_ptr, f16_buf.data(), n_elements * sizeof(half), cudaMemcpyHostToDevice);
+            printf("[gguf] Dequantized %s Q4_K→F16 (%zu elements)\n", name.c_str(), n_elements);
+        } else if (ti.type == GGML_TYPE_Q6_K) {
+            // Q6_K → F16 dequantization
+            // Block: 210 bytes, 256 values
+            // ql[128] (4-bit low), qh[64] (2-bit high), scales[16], d(fp16)
+            std::vector<half> f16_buf(n_elements);
+            size_t n_blocks = n_elements / 256;
+            const unsigned char* raw = reinterpret_cast<const unsigned char*>(cpu_buf.data());
+
+            for (size_t b = 0; b < n_blocks; b++) {
+                const unsigned char* blk = raw + b * 210;
+                const uint8_t* ql = blk;           // 128 bytes
+                const uint8_t* qh = blk + 128;     // 64 bytes
+                const int8_t* sc = reinterpret_cast<const int8_t*>(blk + 192); // 16 bytes
+                half d_h;
+                memcpy(&d_h, blk + 208, 2);
+                float d = __half2float(d_h);
+
+                for (int j = 0; j < 256; j++) {
+                    // Low 4 bits from ql
+                    int ql_idx = j / 2;
+                    int q_low = (j & 1) ? (ql[ql_idx] >> 4) : (ql[ql_idx] & 0xF);
+
+                    // High 2 bits from qh
+                    int qh_idx = j / 4;
+                    int qh_shift = (j % 4) * 2;
+                    int q_high = (qh[qh_idx] >> qh_shift) & 0x3;
+
+                    int q = q_low | (q_high << 4);  // 6-bit value [0..63]
+                    q -= 32;  // center around 0 → [-32..31]
+
+                    int scale_idx = j / 16;
+                    float val = d * sc[scale_idx] * q;
+
+                    f16_buf[b * 256 + j] = __float2half(val);
+                }
+            }
+            cudaMalloc(gpu_ptr, n_elements * sizeof(half));
+            cudaMemcpy(*gpu_ptr, f16_buf.data(), n_elements * sizeof(half), cudaMemcpyHostToDevice);
+            printf("[gguf] Dequantized %s Q6_K→F16 (%zu elements)\n", name.c_str(), n_elements);
+        } else {
+            printf("[gguf] Unsupported type %d for F16 upload: %s\n", ti.type, name.c_str());
+            return false;
+        }
         return true;
     }
 
@@ -277,25 +391,35 @@ bool CUDAEngine::LoadModel(const char* path, const ModelConfig& config) {
 
     size_t total_loaded = 0;
 
-    // Token embedding
-    if (!gguf.UploadTensor("token_embd.weight", (void**)&weights_.tok_embd)) {
+    // Token embedding — dequantize to F16 for direct lookup
+    if (!gguf.UploadTensorAsF16("token_embd.weight", &weights_.tok_embd)) {
         printf("[cuda_engine] WARN: token_embd.weight not found\n");
     } else {
-        total_loaded += gguf.GetTensor("token_embd.weight")->data_size;
+        auto* ti = gguf.GetTensor("token_embd.weight");
+        if (ti) total_loaded += ti->data_size;
     }
 
-    // Output norm + output weight
-    gguf.UploadTensor("output_norm.weight", (void**)&weights_.output_norm);
-    gguf.UploadTensor("output.weight", (void**)&weights_.output);
+    // Output norm (F32→F16)
+    gguf.UploadTensorAsF16("output_norm.weight", &weights_.output_norm);
+
+    // Output weight (Q6_K → dequant to F16)
+    {
+        half* f16_ptr = nullptr;
+        gguf.UploadTensorAsF16("output.weight", &f16_ptr);
+        weights_.output = f16_ptr;
+    }
 
     // Per-layer weights
     for (int i = 0; i < config_.n_layer; i++) {
         auto& lw = weights_.layers[i];
         char name[128];
 
-        auto load = [&](const char* suffix, void** ptr) {
+        // ALL weights → dequantize to F16 (simpler, uses more VRAM but works)
+        auto load_weight = [&](const char* suffix, void** ptr) {
             snprintf(name, sizeof(name), "blk.%d.%s", i, suffix);
-            if (gguf.UploadTensor(name, ptr)) {
+            half* f16_ptr = nullptr;
+            if (gguf.UploadTensorAsF16(name, &f16_ptr)) {
+                *ptr = f16_ptr;
                 auto* ti = gguf.GetTensor(name);
                 if (ti) total_loaded += ti->data_size;
                 return true;
@@ -303,18 +427,34 @@ bool CUDAEngine::LoadModel(const char* path, const ModelConfig& config) {
             return false;
         };
 
-        load("attn_norm.weight", (void**)&lw.attn_norm);
-        load("attn_q.weight", &lw.wq);
-        load("attn_k.weight", &lw.wk);
-        load("attn_v.weight", &lw.wv);
-        load("attn_output.weight", &lw.wo);
-        load("attn_q.bias", (void**)&lw.bq);
-        load("attn_k.bias", (void**)&lw.bk);
-        load("attn_v.bias", (void**)&lw.bv);
-        load("ffn_norm.weight", (void**)&lw.ffn_norm);
-        load("ffn_gate.weight", &lw.w_gate);
-        load("ffn_up.weight", &lw.w_up);
-        load("ffn_down.weight", &lw.w_down);
+        // F32 weights → convert to F16
+        auto load_f16 = [&](const char* suffix, half** ptr) {
+            snprintf(name, sizeof(name), "blk.%d.%s", i, suffix);
+            if (gguf.UploadTensorAsF16(name, ptr)) {
+                auto* ti = gguf.GetTensor(name);
+                if (ti) total_loaded += ti->data_size;
+                return true;
+            }
+            return false;
+        };
+
+        // Norms (F32→F16)
+        load_f16("attn_norm.weight", &lw.attn_norm);
+        load_f16("ffn_norm.weight", &lw.ffn_norm);
+
+        // Biases (F32→F16)
+        load_f16("attn_q.bias", &lw.bq);
+        load_f16("attn_k.bias", &lw.bk);
+        load_f16("attn_v.bias", &lw.bv);
+
+        // Weight matrices (Q4_K raw or Q6_K→F16 dequant)
+        load_weight("attn_q.weight", &lw.wq);
+        load_weight("attn_k.weight", &lw.wk);
+        load_weight("attn_v.weight", &lw.wv);
+        load_weight("attn_output.weight", &lw.wo);
+        load_weight("ffn_gate.weight", &lw.w_gate);
+        load_weight("ffn_up.weight", &lw.w_up);
+        load_weight("ffn_down.weight", &lw.w_down);
     }
 
     printf("[cuda_engine] Loaded %.1f MB of weights to GPU\n", total_loaded / 1e6);

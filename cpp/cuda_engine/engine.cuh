@@ -81,6 +81,11 @@ struct ModelWeights {
 // Fused RMSNorm + Q4_K dequantize + GEMV for single-token decode.
 // Combines: normalize → dequant weights → matrix-vector multiply
 // in one kernel launch (vs 3 separate launches in llama.cpp).
+// F16 GEMV with optional RMSNorm (for dequantized weights)
+void f16_gemv(half* out, const half* input, const half* norm_w,
+              const half* weight, const half* bias,
+              int in_dim, int out_dim, float eps, cudaStream_t stream);
+
 void fused_rmsnorm_q4k_gemv(
     half* out,           // [out_dim]
     const half* input,   // [in_dim]
@@ -156,8 +161,17 @@ private:
     half* buf_ffn_;      // [n_ff * 2] gate + up
     float* buf_logits_;  // [n_vocab] output logits
 
+    // Track which weights are dequantized F16 vs Q4_K
+    std::vector<bool> layer_v_is_f16_;  // per layer: is wv dequantized?
+    std::vector<bool> layer_down_is_f16_; // per layer: is w_down dequantized?
+    bool output_is_f16_ = false;
+
     void ForwardToken(int token, int pos);
     int SampleToken(float temperature);
+
+public:
+    // Debug: dump weight statistics
+    void DebugWeights();
 };
 
 } // namespace cuda
