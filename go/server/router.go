@@ -468,23 +468,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := ChatCompletionResponse{
-		ID:      newID("chatcmpl"),
-		Object:  "chat.completion",
-		Created: time.Now().Unix(),
-		Model:   req.Model,
-		Choices: []ChatChoice{{
-			Index:        0,
-			Message:      ChatMessage{Role: "assistant", Content: text},
-			FinishReason: "stop",
-		}},
-		Usage: UsageInfo{
-			PromptTokens:     promptToks,
-			CompletionTokens: genToks,
-			TotalTokens:      promptToks + genToks,
-		},
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeChatCompletionFast(w, fastID("chatcmpl"), req.Model, text, promptToks, genToks)
 }
 
 func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {

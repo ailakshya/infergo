@@ -167,3 +167,8 @@ endif()
 
 # cpp/api depends on infer_llm, infer_preprocess, infer_postprocess — must come last
 add_subdirectory(cpp/api)
+
+# Experimental: custom CUDA inference engine
+if(CMAKE_CUDA_COMPILER)
+    add_subdirectory(cpp/cuda_engine)
+endif()
