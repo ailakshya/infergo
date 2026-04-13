@@ -14,6 +14,7 @@
 #include "../llm/infer_sequence.hpp"
 #include "../llm/speculative.hpp"
 #include "../llm/prompt_cache.hpp"
+#include <mutex>
 #include "../../vendor/llama.cpp/include/llama.h"
 #ifdef INFER_PREPROCESS_AVAILABLE
 #include "../preprocess/preprocess.hpp"
@@ -845,6 +846,7 @@ struct LLMHandle {
     infergo::LLMEngine       engine;
     infergo::KVPageAllocator pages;  // replaces KVCacheSlotManager
     infergo::PromptCache     prompt_cache;  // LRU cache for prefill KV state
+    std::mutex               gen_mutex;     // serializes infer_llm_generate (llama_decode is not thread-safe)
     int n_ctx = 0;
 
     LLMHandle(int n_seq_max, int ctx_size)
@@ -1270,6 +1272,7 @@ int infer_llm_generate(InferLLM      llm,
         if (max_tokens <= 0) max_tokens = 256;
 
         auto* h = static_cast<LLMHandle*>(llm);
+        std::lock_guard<std::mutex> lock(h->gen_mutex);
         llama_context* ctx = h->engine.Context();
         const llama_vocab* vocab = llama_model_get_vocab(
             llama_get_model(ctx));
@@ -1408,12 +1411,13 @@ int infer_llm_generate(InferLLM      llm,
             }
         }
 
-        // Sample first token
+        // Pre-allocate candidates buffer once (avoid per-token heap alloc)
+        std::vector<llama_token_data> candidates(static_cast<size_t>(vocab_size));
+
         auto sample_at = [&](int batch_idx) -> int32_t {
             const float* logits = llama_get_logits_ith(ctx, batch_idx);
             if (!logits) return -1;
 
-            std::vector<llama_token_data> candidates(static_cast<size_t>(vocab_size));
             for (int i = 0; i < vocab_size; ++i) {
                 candidates[i] = {static_cast<llama_token>(i), logits[i], 0.0f};
             }
@@ -1483,6 +1487,8 @@ int infer_llm_generate(InferLLM      llm,
         return 0;
     } catch (const std::exception& e) {
         infergo::set_last_error(e.what());
+        // Note: slot/batch/smpl freed in normal cleanup above; catch fires
+        // only if cleanup itself throws (unlikely). Mutex auto-unlocks.
         return -1;
     } catch (...) {
         infergo::set_last_error("infer_llm_generate: unknown exception");

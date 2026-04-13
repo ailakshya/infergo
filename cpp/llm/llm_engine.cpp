@@ -55,6 +55,7 @@ void LLMEngine::LoadModel(const std::string& path,
     cparams.n_seq_max  = static_cast<uint32_t>(n_seq_max);
     cparams.offload_kqv = true;   // keep KV cache on GPU
     cparams.no_perf     = true;   // skip perf counters
+    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;   // Flash Attention — faster prefill & decode
 
     ctx_ = llama_init_from_model(model_, cparams);
     if (ctx_ == nullptr) {
@@ -113,6 +114,7 @@ void LLMEngine::LoadModelSplit(const std::string& path,
     cparams.n_seq_max  = static_cast<uint32_t>(n_seq_max);
     cparams.offload_kqv = true;
     cparams.no_perf     = true;
+    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
 
     ctx_ = llama_init_from_model(model_, cparams);
     if (ctx_ == nullptr) {
@@ -172,6 +174,7 @@ void LLMEngine::LoadModelPipeline(const std::string& path,
     cparams.n_seq_max  = static_cast<uint32_t>(n_seq_max);
     cparams.offload_kqv = true;
     cparams.no_perf     = true;
+    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
 
     ctx_ = llama_init_from_model(model_, cparams);
     if (ctx_ == nullptr) {
