@@ -844,10 +844,14 @@ void infer_tokenizer_destroy(InferTokenizer tok) {
 // Internal handle: owns the engine and the paged KV allocator together.
 struct LLMHandle {
     infergo::LLMEngine       engine;
-    infergo::KVPageAllocator pages;  // replaces KVCacheSlotManager
-    infergo::PromptCache     prompt_cache;  // LRU cache for prefill KV state
-    std::mutex               gen_mutex;     // serializes infer_llm_generate (llama_decode is not thread-safe)
-    llama_batch              gen_batch = {};  // pre-allocated batch for generate
+    infergo::KVPageAllocator pages;
+    infergo::PromptCache     prompt_cache;
+    std::mutex               gen_mutex;
+    llama_batch              gen_batch = {};
+    // Prefix cache: reuse KV state from previous request if prefix matches.
+    // This avoids re-prefilling the system prompt + shared context.
+    std::vector<int>         prev_tokens;  // tokens from last request
+    int                      prev_n_kv = 0; // how many KV positions are valid
     int n_ctx = 0;
 
     LLMHandle(int n_seq_max, int ctx_size)
@@ -1283,12 +1287,28 @@ int infer_llm_generate(InferLLM      llm,
         llama_context* ctx = h->engine.Context();
         const llama_vocab* vocab = llama_model_get_vocab(
             llama_get_model(ctx));
-        // Use slot 0 always (single-sequence mode via mutex)
         const int slot_id = 0;
 
-        // Clear previous KV state for this slot
-        llama_memory_seq_rm(llama_get_memory(ctx),
-            static_cast<llama_seq_id>(slot_id), -1, -1);
+        // ── Prefix caching ──
+        // Find how many tokens at the start of this prompt match the previous.
+        // Keep matching KV positions, only clear and decode the new suffix.
+        int prefix_len = 0;
+        {
+            int max_match = std::min(n_prompt, static_cast<int>(h->prev_tokens.size()));
+            // Don't reuse the last position — we need fresh logits there
+            if (max_match > 0) max_match--;
+            for (int i = 0; i < max_match; i++) {
+                if (prompt_tokens[i] != h->prev_tokens[i]) break;
+                prefix_len++;
+            }
+        }
+
+        if (prefix_len < h->prev_n_kv) {
+            // Prefix diverged — clear KV from the divergence point onward
+            llama_memory_seq_rm(llama_get_memory(ctx),
+                static_cast<llama_seq_id>(slot_id),
+                prefix_len, -1);
+        }
 
         // Build sampler chain.
         llama_sampler* smpl = nullptr;
@@ -1331,50 +1351,12 @@ int infer_llm_generate(InferLLM      llm,
         // Reuse pre-allocated batch
         llama_batch& batch = h->gen_batch;
 
-        // ── Prefill (with prompt cache for long prompts) ──
-        // Only use prompt cache for prompts >= 256 tokens. For short prompts,
-        // the GPU sync cost of KV serialization exceeds the prefill savings.
-        const int cache_len = n_prompt - 1;
-        const bool use_cache = (cache_len >= 256);
-        std::vector<uint8_t> cached_kv;
-        int cached_n = 0;
-        bool cache_hit = use_cache &&
-            h->prompt_cache.Get(prompt_tokens, cache_len, cached_kv, cached_n);
-
-        if (cache_hit && cached_n == cache_len) {
-            const size_t consumed = llama_state_seq_set_data(ctx,
-                cached_kv.data(), cached_kv.size(),
-                static_cast<llama_seq_id>(slot_id));
-            if (consumed == 0) {
-                cache_hit = false;
-            } else {
-                // Clear the last cached position so we can decode it fresh for logits.
-                llama_memory_seq_rm(llama_get_memory(ctx),
-                    static_cast<llama_seq_id>(slot_id), cache_len, -1);
-            }
-        } else {
-            cache_hit = false;
-        }
-
-        if (cache_hit) {
-            // Cache hit: only decode the last prompt token (position n-1).
+        // ── Prefix-cached prefill ──
+        // Only decode tokens from prefix_len onward (shared prefix is in KV).
+        {
+            const int start = prefix_len;
             batch.n_tokens = 0;
-            int idx = batch.n_tokens++;
-            batch.token[idx]      = prompt_tokens[n_prompt - 1];
-            batch.pos[idx]        = n_prompt - 1;
-            batch.n_seq_id[idx]   = 1;
-            batch.seq_id[idx][0]  = static_cast<llama_seq_id>(slot_id);
-            batch.logits[idx]     = 1;
-
-            if (llama_decode(ctx, batch) != 0) {
-                llama_sampler_free(smpl);
-                infergo::set_last_error("infer_llm_generate: cache-hit decode failed");
-                return -1;
-            }
-        } else {
-            // Cache miss: full prefill.
-            batch.n_tokens = 0;
-            for (int i = 0; i < n_prompt; ++i) {
+            for (int i = start; i < n_prompt; ++i) {
                 int idx = batch.n_tokens++;
                 batch.token[idx]      = prompt_tokens[i];
                 batch.pos[idx]        = i;
@@ -1383,27 +1365,12 @@ int infer_llm_generate(InferLLM      llm,
                 batch.logits[idx]     = (i == n_prompt - 1) ? 1 : 0;
             }
 
-            int rc = llama_decode(ctx, batch);
-            if (rc != 0) {
-                llama_sampler_free(smpl);
-                infergo::set_last_error("infer_llm_generate: prefill decode failed");
-                return -1;
-            }
-
-            // Cache KV for positions 0..n-2 (only for long prompts).
-            if (use_cache && cache_len > 0) {
-                const size_t kv_size = llama_state_seq_get_size(ctx,
-                    static_cast<llama_seq_id>(slot_id));
-                if (kv_size > 0) {
-                    std::vector<uint8_t> kv_buf(kv_size);
-                    const size_t written = llama_state_seq_get_data(ctx,
-                        kv_buf.data(), kv_buf.size(),
-                        static_cast<llama_seq_id>(slot_id));
-                    if (written > 0) {
-                        // Store keyed by first n-1 tokens (the cached prefix).
-                        h->prompt_cache.Put(prompt_tokens, cache_len,
-                            kv_buf.data(), written);
-                    }
+            if (batch.n_tokens > 0) {
+                int rc = llama_decode(ctx, batch);
+                if (rc != 0) {
+                    llama_sampler_free(smpl);
+                    infergo::set_last_error("infer_llm_generate: prefill decode failed");
+                    return -1;
                 }
             }
         }
@@ -1415,51 +1382,66 @@ int infer_llm_generate(InferLLM      llm,
                 llama_sampler_sample(smpl, ctx, batch_idx));
         };
 
-        std::string result;
+        // Store generated token IDs — detokenize in batch at the end.
+        // This removes llama_token_to_piece + string::append from the hot loop.
+        std::vector<llama_token> gen_token_ids;
+        gen_token_ids.reserve(static_cast<size_t>(max_tokens));
         int gen_tokens = 0;
         int n_past = n_prompt;
+        bool has_callback = (callback != nullptr);
 
         // After cache hit: logits at batch index 0 (single-token decode)
         // After cache miss: logits at batch index n_prompt-1 (full prefill)
-        int32_t tok = sample_at(cache_hit ? 0 : n_prompt - 1);
+        int32_t tok = sample_at(batch.n_tokens - 1);
         bool stopped = (tok < 0 || llama_vocab_is_eog(vocab, tok));
 
-        // ── Decode loop ──
+        // ── Decode loop (minimal work per iteration) ──
         while (!stopped && gen_tokens < max_tokens) {
-            // Output token
-            char buf[256];
-            int n = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, false);
-            if (n > 0) {
-                buf[n] = '\0';
-                result.append(buf, static_cast<size_t>(n));
-                if (callback && !callback(static_cast<int>(tok), buf, user_data)) {
-                    break;
-                }
-            }
+            gen_token_ids.push_back(static_cast<llama_token>(tok));
             gen_tokens++;
 
-            // Decode next
+            // Streaming callback (only if requested)
+            if (has_callback) {
+                char piece[256];
+                int pn = llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, false);
+                if (pn > 0) {
+                    piece[pn] = '\0';
+                    if (!callback(static_cast<int>(tok), piece, user_data)) break;
+                }
+            }
+
+            // Decode next token
             batch.n_tokens = 0;
-            int idx = batch.n_tokens++;
-            batch.token[idx]      = tok;
-            batch.pos[idx]        = n_past;
-            batch.n_seq_id[idx]   = 1;
-            batch.seq_id[idx][0]  = static_cast<llama_seq_id>(slot_id);
-            batch.logits[idx]     = 1;
+            batch.token[0]      = tok;
+            batch.pos[0]        = n_past;
+            batch.n_seq_id[0]   = 1;
+            batch.seq_id[0][0]  = static_cast<llama_seq_id>(slot_id);
+            batch.logits[0]     = 1;
+            batch.n_tokens      = 1;
             n_past++;
 
-            int rc2 = llama_decode(ctx, batch);
-            if (rc2 != 0) break;
+            if (llama_decode(ctx, batch) != 0) break;
 
             tok = sample_at(0);
             stopped = (tok < 0 || llama_vocab_is_eog(vocab, tok));
         }
 
-        // Cleanup (KV cleared at start of next request, batch is reused)
+        // Save prompt tokens for prefix caching on next request
+        h->prev_tokens.assign(prompt_tokens, prompt_tokens + n_prompt);
+        h->prev_n_kv = n_prompt;
+
+        // Cleanup
         llama_sampler_free(smpl);
 
-        // Write output
+        // Batch detokenize all generated tokens at once
         if (out_text && max_text_len > 0) {
+            std::string result;
+            result.reserve(static_cast<size_t>(gen_tokens) * 4);
+            char piece[256];
+            for (auto id : gen_token_ids) {
+                int pn = llama_token_to_piece(vocab, id, piece, sizeof(piece), 0, false);
+                if (pn > 0) result.append(piece, static_cast<size_t>(pn));
+            }
             int n = std::min(static_cast<int>(result.size()), max_text_len - 1);
             std::memcpy(out_text, result.data(), static_cast<size_t>(n));
             out_text[n] = '\0';

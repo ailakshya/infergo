@@ -127,15 +127,15 @@ func (s *schedulerModel) Generate(ctx context.Context, prompt string, maxTokens 
 	}
 
 	// Full C generation loop: one CGo call for the entire request.
-	// Falls back to per-token scheduler if KV slots are exhausted.
+	// The C side holds a mutex to serialize GPU access. Concurrent requests
+	// queue on the mutex — not as fast as true continuous batching but safe.
 	grammar, _ := server.GrammarFromContext(ctx)
 	text, genToks, err := s.m.GenerateC(tokens, maxTokens, temp, 0.9, grammar)
 	if err == nil {
 		return text, promptToks, genToks, nil
 	}
 
-	// Fallback: C loop failed (likely KV exhaustion under concurrency).
-	// Route through the per-token scheduler which queues requests.
+	// Fallback: C loop failed (likely KV exhaustion).
 	tokenCh, err := s.enqueue(ctx, tokens, maxTokens, temp, grammar)
 	if err != nil {
 		return "", promptToks, 0, err

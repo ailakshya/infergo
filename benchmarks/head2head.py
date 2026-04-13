@@ -39,12 +39,15 @@ def do_request(url, model_id):
         {"role": "system", "content": SYS},
         {"role": "user", "content": PROMPT}
     ], "max_tokens": MAX_TOKENS, "temperature": 0.7}
-    t0 = time.perf_counter()
-    r = requests.post(f"{url}/v1/chat/completions", json=body, timeout=60)
-    t1 = time.perf_counter()
-    if r.status_code != 200: return None, 0, ""
-    d = r.json()
-    return (t1-t0)*1000, d.get("usage",{}).get("completion_tokens",0), d["choices"][0]["message"]["content"]
+    try:
+        t0 = time.perf_counter()
+        r = requests.post(f"{url}/v1/chat/completions", json=body, timeout=60)
+        t1 = time.perf_counter()
+        if r.status_code != 200: return None, 0, ""
+        d = r.json()
+        return (t1-t0)*1000, d.get("usage",{}).get("completion_tokens",0), d["choices"][0]["message"]["content"]
+    except Exception:
+        return None, 0, ""
 
 
 def bench(name, url, model_id, c=1):
