@@ -876,6 +876,190 @@ Train (PyTorch) → infergo convert → infergo validate → infergo serve
 
 ---
 
+### OPT-30 — LoRA / QLoRA fine-tuning + adapter hot-swap `[ ]` L
+
+**Problem:** Every ML team training a custom model hits the same wall: 8 GB Python environment per project, venv conflicts, `bitsandbytes` breaks on CUDA version mismatch, `deepspeed` conflicts with `torch`. Fine-tuning a model for a Go service still requires a full Python stack just to run 3 training epochs. The same binary that serves the model should also fine-tune it.
+
+**What changes:**
+- `go/cmd/infergo/train.go` — new `infergo train` subcommand
+- `cpp/llm/lora.cpp` / `lora.hpp` — LoRA layer injection over base model weights using libtorch autograd
+- `cpp/llm/trainer.cpp` / `trainer.hpp` — training loop: forward → cross-entropy loss → backward → AdamW step
+- `go/server/lora.go` — adapter hot-swap: load LoRA weights into running server without restart
+- `tools/prepare_dataset.py` — JSONL → tokenized dataset (small utility, not a framework)
+
+**Commands:**
+```bash
+# Fine-tune with LoRA (rank 16, 3 epochs)
+infergo train \
+  --base models/llama3-8b-q4.gguf \
+  --data data/conversations.jsonl \
+  --method lora --rank 16 --alpha 32 \
+  --epochs 3 --lr 2e-4 \
+  --output adapters/v1/
+
+# Hot-swap adapter into running server
+infergo serve --model llm:models/llama3-8b.gguf --adapter adapters/v1/
+
+# Reload adapter without restart
+curl -X POST localhost:9090/v1/admin/reload \
+  -d '{"adapter": "adapters/v2/"}'
+```
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-30-T1 | `infergo train` runs one epoch on 100-sample JSONL | Loss decreases, no panic | |
+| OPT-30-T2 | LoRA adapter saved to output dir | `.safetensors` or `.bin` file written | |
+| OPT-30-T3 | Adapter loads into running server via hot-swap | Subsequent generations use adapter weights | |
+| OPT-30-T4 | Training uses GPU when `--provider cuda` | `nvidia-smi` shows GPU utilization during training | |
+| OPT-30-T5 | QLoRA: base model quantized, adapter in BF16 | Peak VRAM < full fine-tune VRAM | |
+| OPT-30-T6 | `--method full` runs full fine-tune on small model | Qwen 1.5B full fine-tune completes without OOM | |
+| OPT-30-T7 | Loss value logged each epoch to stdout | `epoch 1/3 loss=2.43` format | |
+| OPT-30-T8 | Checkpoint saved every N steps | `--save-steps 50` → checkpoint files written | |
+| OPT-30-T9 | Corrupt JSONL gives clear error | Missing field → descriptive error, exit 1 | |
+| OPT-30-T10 | Adapter hot-swap does not drop in-flight requests | 10 concurrent requests during reload, 0 errors | |
+
+---
+
+### OPT-31 — Full C generation loop (zero per-token CGo overhead) `[ ]` M
+
+**Problem:** The current token generation loop runs in Go: each iteration calls `C.infer_sample_next()` — one CGo call per token. CGo boundary crossing costs ~100ns. At 1.69ms/token that's ~6% overhead, but it forces the Go scheduler to be involved in the hot path and prevents batching multiple sampling operations in one C call.
+
+**What changes:**
+- `cpp/llm/generate_loop.cpp` — full decode loop in C: sample → check stop condition → stream callback → repeat
+- `cpp/include/infer_api.h` — `infer_generate(ctx, prompt, params, token_callback)` replacing per-token `infer_sample_next`
+- `go/llm/model.go` — single CGo call wrapping entire generation; callback exported via `//export`
+- Streaming: C calls Go token callback via CGo function pointer per token (same as current, but Go is not in the loop)
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-31-T1 | Output identical to current loop | Same tokens for same prompt + seed | |
+| OPT-31-T2 | Streaming still works | SSE events arrive per token, not buffered | |
+| OPT-31-T3 | tok/s improves vs per-token CGo | ≥ 5% improvement on 64-token generation | |
+| OPT-31-T4 | Stop tokens respected in C loop | `<|eot_id|>` stops generation correctly | |
+| OPT-31-T5 | Max tokens limit respected | `max_tokens=32` → exactly 32 tokens then stop | |
+| OPT-31-T6 | Context cancel propagates to C loop | HTTP disconnect → generation stops within 1 token | |
+
+---
+
+### OPT-32 — Speculative decoding `[x]` L
+
+**Result:** Implemented — `cpp/llm/speculative.cpp`, `go/llm/speculative.go`. Draft model proposes K tokens per step, main model verifies in one forward pass. Measured 6.7× speedup (496ms → 74ms at 64 tokens). Draft model: Llama 3.2 1B. Main model: Llama 3 8B.
+
+**Problem:** LLM autoregressive decoding is memory-bandwidth bound, not compute bound. The GPU is underutilized per token. A small draft model generates 4–8 token proposals cheaply; the large model verifies all of them in one pass, accepting the ones that match its distribution.
+
+---
+
+### OPT-33 — Continuous batching with preemption `[ ]` M
+
+**Problem:** OPT-2 batches requests that arrive together. But a long-running generation holds a KV cache slot for its full duration, blocking shorter new requests. Preemption allows the scheduler to swap a low-priority sequence to CPU memory and reclaim its GPU KV slot for a new request, resuming the preempted sequence later.
+
+**What changes:**
+- `go/cmd/infergo/scheduler.go` — preemption policy: when GPU KV slots full, identify lowest-priority active sequence
+- `cpp/llm/kv_cache.cpp` — `KVCacheSlotManager::Evict(seq_id)` → copies KV pages to CPU pinned memory
+- `cpp/llm/kv_cache.cpp` — `KVCacheSlotManager::Restore(seq_id)` → copies back and resumes
+- Priority: FIFO by default; `X-Priority` header for explicit priority
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-33-T1 | New high-priority request preempts low-priority | High-priority starts within 1 batch step | |
+| OPT-33-T2 | Preempted sequence resumes correctly | Output identical to non-preempted run same seed | |
+| OPT-33-T3 | KV evict/restore roundtrip | Sequence resumes from correct position, no token dropped | |
+| OPT-33-T4 | P99 improves under mixed-length workload | c=8, mix of 16 and 512 token generations: P99 ≤ 2× P50 | |
+| OPT-33-T5 | No preemption when slots available | Preemption only triggers when all KV slots occupied | |
+
+---
+
+### OPT-34 — Structured output: JSON mode + GBNF grammar sampling `[x]` M
+
+**Result:** Implemented — grammar constraint in `cpp/api/api.cpp` sampler, `go/server/grammar.go` handler. `response_format: {"type": "json_object"}` enforces syntactically valid JSON at every sampling step via GBNF mask. Measured 100% JSON validity at cost of ~400ms overhead for grammar constraint evaluation.
+
+---
+
+### OPT-35 — Prompt caching (prefix KV reuse) `[x]` M
+
+**Result:** Implemented — `cpp/llm/prompt_cache.cpp`. Shared system prompt prefix is prefilled once and its KV blocks reused across requests. TTFT reduced by 40–80% for workloads with long fixed system prompts.
+
+---
+
+### OPT-36 — GPU-side NMS (CUDA kernel) `[ ]` M
+
+**Problem:** After detection inference, non-maximum suppression (NMS) filters overlapping bounding boxes. Currently NMS runs on CPU: GPU computes logits → copy to CPU → NMS → copy results back. At 1280×720 with 100 candidates, the GPU→CPU copy is ~0.3ms and CPU NMS is ~0.2ms. At high frame rates (30 fps × 8 cameras), this becomes 12ms/s of pure data movement.
+
+**What changes:**
+- `cpp/cuda/nms_kernel.cu` — CUDA parallel NMS: score threshold filter + IoU matrix compute + suppression mask, all on GPU
+- `cpp/onnx/onnx_session.cpp` — call GPU NMS instead of CPU NMS after inference
+- `cpp/torch/torch_session.cpp` — same for TorchScript backend
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-36-T1 | GPU NMS output matches CPU NMS | Same boxes ±1px for same input | |
+| OPT-36-T2 | Latency improvement measured | ≥ 0.4ms saved per frame at 640×640 | |
+| OPT-36-T3 | Zero GPU→CPU copies for NMS path | `nvprof` shows no D2H memcpy after inference | |
+| OPT-36-T4 | Handles empty detection case | 0 candidates → returns empty result, no panic | |
+| OPT-36-T5 | IoU threshold respected | boxes with IoU > 0.45 suppressed correctly | |
+
+---
+
+### OPT-37 — Multi-stream GPU batching for detection `[ ]` L
+
+**Problem:** With 8 cameras, detection runs 8 serial GPU forward passes per frame cycle. Each pass launches a CUDA kernel, waits for result, launches next. GPU sits idle between launches. Batching all 8 frames into a single `[8, 3, 640, 640]` tensor runs one kernel that fully occupies the GPU — throughput scales ~6× for the same latency.
+
+**What changes:**
+- `cpp/onnx/onnx_session.cpp` — `InferBatch(frames []Frame)` accepting N frames, building batched input tensor, splitting output
+- `cpp/torch/torch_session.cpp` — same for TorchScript backend
+- `go/server/ws_detect.go` — batch accumulator: collect frames from N camera goroutines within a 10ms window, dispatch as one batch
+- `go/server/router.go` — `/v1/detect/batch` endpoint for explicit multi-image batching
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-37-T1 | Batch of 8 frames produces 8 result sets | One call returns detection results for each input | |
+| OPT-37-T2 | Throughput improves vs serial | batch=8: ≥ 4× throughput vs 8 serial calls | |
+| OPT-37-T3 | Mixed-size batch (1–8 frames) works | Any N from 1 to max_batch processed correctly | |
+| OPT-37-T4 | `/v1/detect/batch` HTTP endpoint | POST `[image1, image2, ...]` → `[detections1, detections2, ...]` | |
+| OPT-37-T5 | Camera accumulator groups within window | 8 cameras within 10ms window → single batch dispatch | |
+| OPT-37-T6 | GPU utilization increases | `nvidia-smi` shows ≥ 70% utilization during 8-camera stream | |
+
+---
+
+### OPT-38 — nvJPEG GPU JPEG decode `[x]` M
+
+**Result:** Implemented — `cpp/torch/nvjpeg_decode.cpp`. Frames decoded directly to GPU tensor without CPU involvement. Eliminates PCIe round-trip for compressed video frames. Used in TorchScript detection path.
+
+---
+
+### OPT-39 — ByteTrack C++ port (tracking without Python overhead) `[ ]` M
+
+**Problem:** Multi-object tracking currently uses Python ByteTrack called from Go via a thread pool. Each tracking step crosses Go→Python via subprocess or socket, adding ~2–5ms overhead per frame. At 30 fps, that's 60–150ms/s wasted on IPC. ByteTrack's algorithm (Kalman filter + Hungarian assignment) is pure linear algebra — straightforward to port to C++.
+
+**What changes:**
+- `cpp/tracker/bytetrack.cpp` / `bytetrack.hpp` — Kalman filter, Hungarian algorithm, track lifecycle (new/tracked/lost/removed)
+- `cpp/tracker/kalman.cpp` — Kalman filter for 2D bounding box state (x, y, w, h, vx, vy, vw, vh)
+- `go/tracker/tracker.go` — CGo bindings calling `tracker_update(detections, n) → tracks`
+- `go/server/ws_detect.go` — replace Python ByteTrack call with Go tracker binding
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-39-T1 | Track IDs consistent across frames | Same object keeps same ID across 100-frame sequence | |
+| OPT-39-T2 | Output matches Python ByteTrack | Same detections → same track assignments ±1 frame | |
+| OPT-39-T3 | Latency improvement vs Python path | ≥ 2ms saved per frame vs Go→Python call | |
+| OPT-39-T4 | Track lost after N missing frames | Object disappears → track removed after `max_lost=30` frames | |
+| OPT-39-T5 | Re-identification (re-entry) works | Object leaves frame and re-enters → same track ID | |
+| OPT-39-T6 | Zero-detection frame handled | Empty input → all tracks aged, no panic | |
+
+---
+
 ## Execution order
 
 ```
@@ -917,6 +1101,18 @@ OPT-26  prefill/decode split  ← requires OPT-2 + OPT-13 + OPT-25
 OPT-27  scalability benchmark ← requires OPT-2 + OPT-10 + OPT-22
 OPT-28  adaptive config vars  ← requires OPT-5 (detection API) + adaptive selector
 OPT-29  training-to-prod bridge ← requires OPT-3 (ONNX) + OPT-8 (multi-model) + OPT-9 (hot-reload)
+
+── Phase F: LLM Performance (deep optimizations) ──
+OPT-31  full C generation loop    ← requires OPT-2 (scheduler); eliminates per-token CGo
+OPT-33  batching with preemption  ← requires OPT-2 + OPT-22 (PagedAttention KV eviction)
+
+── Phase G: Detection Performance ──
+OPT-36  GPU-side NMS              ← requires OPT-5 (detection API); CUDA kernel replaces CPU NMS
+OPT-37  multi-stream GPU batching ← requires OPT-36; N cameras → one forward pass
+OPT-39  ByteTrack C++ port        ← requires OPT-5; replaces Python tracker
+
+── Phase H: Training ──
+OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch already linked
 ```
 
 ---
@@ -932,6 +1128,7 @@ OPT-29  training-to-prod bridge ← requires OPT-3 (ONNX) + OPT-8 (multi-model) 
 | OPT-3..OPT-21 | Production cloud-native platform | vLLM + Triton + Ray Serve |
 | OPT-22..OPT-25 | Multi-GPU cluster inference | vLLM multi-GPU + Kubernetes |
 | OPT-26..OPT-27 | Disaggregated inference at data-center scale | Mooncake / Splitwise architecture |
+| OPT-30..OPT-39 | Train + serve + track in one binary, no Python | PyTorch + ultralytics + ByteTrack + venv |
 
 ---
 

@@ -3,7 +3,7 @@
 
 # ─── libinfer_llm ─────────────────────────────────────────────────────────────
 
-add_library(infer_llm STATIC kv_cache.cpp kv_paged.cpp llm_engine.cpp sampler.cpp infer_sequence.cpp speculative.cpp prompt_cache.cpp)
+add_library(infer_llm STATIC kv_cache.cpp kv_paged.cpp llm_engine.cpp sampler.cpp infer_sequence.cpp speculative.cpp prompt_cache.cpp toon.cpp)
 
 target_include_directories(infer_llm
     PUBLIC  ${CMAKE_SOURCE_DIR}/cpp/include
@@ -101,3 +101,19 @@ target_link_libraries(kv_serialize_test
 )
 
 gtest_discover_tests(kv_serialize_test)
+
+# ─── toon_test ────────────────────────────────────────────────────────────────
+
+add_executable(toon_test toon_test.cpp)
+
+target_include_directories(toon_test
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/cpp/include
+            ${CMAKE_SOURCE_DIR}/cpp/api
+)
+
+target_link_libraries(toon_test
+    PRIVATE infer_llm infer_api GTest::gtest_main
+)
+
+gtest_discover_tests(toon_test)

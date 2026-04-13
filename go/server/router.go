@@ -416,6 +416,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		switch req.ResponseFormat.Type {
 		case "json_object":
 			ctx = WithGrammar(ctx, JSONGrammar)
+		case "toon":
+			ctx = WithGrammar(ctx, TOONGrammar)
 		case "grammar":
 			if req.ResponseFormat.Grammar == "" {
 				writeError(w, http.StatusBadRequest, "response_format type 'grammar' requires a non-empty 'grammar' field")

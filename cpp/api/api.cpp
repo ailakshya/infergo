@@ -9,6 +9,7 @@
 #include "../llm/kv_cache.hpp"
 #include "../llm/kv_paged.hpp"
 #include "../llm/llm_engine.hpp"
+#include "../llm/toon.hpp"
 #include "../search/hnsw.hpp"
 #include "../llm/infer_sequence.hpp"
 #include "../llm/speculative.hpp"
@@ -2577,4 +2578,36 @@ InferError infer_frame_annotate_full(
     infergo::set_last_error("infer_frame_annotate_full: video not available");
     return INFER_ERR_RUNTIME;
 #endif
+}
+
+// ─── TOON (Token-Oriented Object Notation) API ─────────────────────────────
+
+#include "toon.hpp"
+
+const char* infer_toon_grammar(void) {
+    return infergo::TOON_GRAMMAR;
+}
+
+int infer_toon_to_json(const char* toon, int toon_len, char* out_json, int max_json_len) {
+    if (toon == nullptr || toon_len <= 0 || out_json == nullptr || max_json_len <= 0) return -1;
+    try {
+        std::string json = infergo::toon_to_json(toon, toon_len);
+        int n = static_cast<int>(json.size());
+        if (n >= max_json_len) n = max_json_len - 1;
+        std::memcpy(out_json, json.data(), static_cast<size_t>(n));
+        out_json[n] = '\0';
+        return n;
+    } catch (...) { return -1; }
+}
+
+int infer_json_to_toon(const char* json_str, int json_len, char* out_toon, int max_toon_len) {
+    if (json_str == nullptr || json_len <= 0 || out_toon == nullptr || max_toon_len <= 0) return -1;
+    try {
+        std::string toon = infergo::json_to_toon(json_str, json_len);
+        int n = static_cast<int>(toon.size());
+        if (n >= max_toon_len) n = max_toon_len - 1;
+        std::memcpy(out_toon, toon.data(), static_cast<size_t>(n));
+        out_toon[n] = '\0';
+        return n;
+    } catch (...) { return -1; }
 }

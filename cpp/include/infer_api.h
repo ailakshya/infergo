@@ -453,6 +453,19 @@ int infer_sampler_sample_seq(InferSampler smpl, InferSeq seq);
 void infer_sampler_free(InferSampler smpl);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TOON (Token-Oriented Object Notation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Get the TOON GBNF grammar string (for use with grammar sampling).
+const char* infer_toon_grammar(void);
+
+// Convert TOON string to JSON. Returns length written, or -1 on error.
+int infer_toon_to_json(const char* toon, int toon_len, char* out_json, int max_json_len);
+
+// Convert JSON string to TOON. Returns length written, or -1 on error.
+int infer_json_to_toon(const char* json_str, int json_len, char* out_toon, int max_toon_len);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // FULL C EMBEDDING PIPELINE
 // ─────────────────────────────────────────────────────────────────────────────
 
