@@ -411,6 +411,37 @@ int infer_llm_generate(InferLLM      llm,
                         int*         out_gen_tokens);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BATCH GENERATION (continuous batching for multiple concurrent requests)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Generate text for N requests simultaneously using continuous batching.
+// All sequences share one llama_decode call per step → GPU utilization
+// scales with concurrency instead of serializing.
+//
+// n_requests:     number of concurrent requests (1..max_seqs)
+// all_tokens:     concatenated prompt tokens for all requests
+// token_offsets:  start offset of each request in all_tokens (n_requests+1 entries)
+// max_tokens:     max generation tokens per request
+// temperature:    sampling temperature
+// top_p:          nucleus sampling threshold
+// grammar:        GBNF grammar (NULL = no constraint, shared by all requests)
+// out_texts:      array of n_requests output buffers (each max_text_len bytes)
+// max_text_len:   capacity of each output buffer
+// out_gen_tokens: array of n_requests token counts
+// Returns 0 on success, -1 on error.
+int infer_llm_generate_batch(InferLLM      llm,
+                              int           n_requests,
+                              const int*    all_tokens,
+                              const int*    token_offsets,
+                              int           max_tokens,
+                              float         temperature,
+                              float         top_p,
+                              const char*   grammar,
+                              char**        out_texts,
+                              int           max_text_len,
+                              int*          out_gen_tokens);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GRAMMAR-CONSTRAINED SAMPLER API
 // ─────────────────────────────────────────────────────────────────────────────
 

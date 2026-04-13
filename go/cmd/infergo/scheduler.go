@@ -14,6 +14,22 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// batchItem is a generation request submitted to the batch collector.
+type batchItem struct {
+	tokens    []int32
+	maxTokens int
+	temp      float32
+	grammar   string
+	result    chan<- batchResult
+}
+
+// batchResult is returned from the batch collector to the waiting goroutine.
+type batchResult struct {
+	text    string
+	genToks int
+	err     error
+}
+
 // TokenEvent is one item emitted on a request's token channel.
 // When the channel is closed, generation is complete.
 type TokenEvent struct {
@@ -66,6 +82,7 @@ type schedulerModel struct {
 	completedReqs   int           // count of requests completed since last GC (scheduler goroutine only)
 	specDecoder     *llm.SpeculativeDecoder // optional: speculative decoding engine
 	activeList      *[]*activeSeq // pointer to run()'s active list — only accessed from scheduler goroutine
+	batchCh         chan batchItem // channel for batch collector
 }
 
 // newSchedulerModel creates and starts a schedulerModel for the given model.
@@ -91,15 +108,98 @@ func newSchedulerModel(m *llm.Model, modelName string, activeSeqGauge prometheus
 		batchTimeout:   time.Duration(batchTimeoutMs) * time.Millisecond,
 		gcInterval:     gcInterval,
 	}
-	s.wg.Add(1)
+	s.batchCh = make(chan batchItem, 64)
+	s.wg.Add(2)
 	go s.run()
+	go s.batchCollector()
 	return s
+}
+
+// batchCollector collects concurrent generation requests and fires them
+// as batches using GenerateBatch (continuous batching in C++).
+// Single requests fire immediately. Multiple concurrent requests within
+// a 2ms window are batched together for shared GPU decode calls.
+func (s *schedulerModel) batchCollector() {
+	defer s.wg.Done()
+	for {
+		// Wait for the first request
+		var first batchItem
+		var ok bool
+		select {
+		case first, ok = <-s.batchCh:
+			if !ok {
+				return
+			}
+		case <-s.stopCh:
+			return
+		}
+
+		// Collect more requests within a 2ms window
+		batch := []batchItem{first}
+		deadline := time.After(2 * time.Millisecond)
+	collect:
+		for len(batch) < 8 { // max 8 concurrent
+			select {
+			case item, ok := <-s.batchCh:
+				if !ok {
+					break collect
+				}
+				batch = append(batch, item)
+			case <-deadline:
+				break collect
+			}
+		}
+
+		if len(batch) == 1 {
+			// Single request — use fast path (GenerateC)
+			item := batch[0]
+			text, genToks, err := s.m.GenerateC(item.tokens, item.maxTokens, item.temp, 0.9, item.grammar)
+			item.result <- batchResult{text: text, genToks: genToks, err: err}
+		} else {
+			// Multiple requests — use batch generation (continuous batching)
+			s.fireBatch(batch)
+		}
+	}
+}
+
+// fireBatch sends N requests through GenerateBatch for continuous batching.
+func (s *schedulerModel) fireBatch(batch []batchItem) {
+	n := len(batch)
+	requests := make([]llm.BatchRequest, n)
+	for i, item := range batch {
+		requests[i] = llm.BatchRequest{
+			PromptTokens: item.tokens,
+			MaxTokens:    item.maxTokens,
+		}
+	}
+
+	// Use grammar from first request (all typically share the same format)
+	grammar := batch[0].grammar
+	temp := batch[0].temp
+
+	results, err := s.m.GenerateBatch(requests, temp, 0.9, grammar)
+	if err != nil {
+		// Batch failed — fall back to sequential GenerateC for each
+		for _, item := range batch {
+			text, genToks, err2 := s.m.GenerateC(item.tokens, item.maxTokens, item.temp, 0.9, item.grammar)
+			item.result <- batchResult{text: text, genToks: genToks, err: err2}
+		}
+		return
+	}
+
+	for i, item := range batch {
+		item.result <- batchResult{
+			text:    results[i].Text,
+			genToks: results[i].GenTokens,
+		}
+	}
 }
 
 // Close stops the scheduler and releases C-side model resources.
 // Implements server.Model.
 func (s *schedulerModel) Close() {
 	close(s.stopCh)
+	close(s.batchCh)
 	s.wg.Wait()
 	if s.specDecoder != nil {
 		s.specDecoder.Close()
@@ -126,30 +226,15 @@ func (s *schedulerModel) Generate(ctx context.Context, prompt string, maxTokens 
 		return text, promptToks, stats.Predicted, nil
 	}
 
-	// Full C generation loop: one CGo call for the entire request.
-	// The C side holds a mutex to serialize GPU access. Concurrent requests
-	// queue on the mutex — not as fast as true continuous batching but safe.
+	// Full C generation loop. Concurrent requests queue on C-side mutex.
+	// TODO: batch collector for continuous batching (batch path crashes —
+	// needs debugging of llama_sampler_sample batch indices)
 	grammar, _ := server.GrammarFromContext(ctx)
 	text, genToks, err := s.m.GenerateC(tokens, maxTokens, temp, 0.9, grammar)
 	if err == nil {
 		return text, promptToks, genToks, nil
 	}
-
-	// Fallback: C loop failed (likely KV exhaustion).
-	tokenCh, err := s.enqueue(ctx, tokens, maxTokens, temp, grammar)
-	if err != nil {
-		return "", promptToks, 0, err
-	}
-	var sb strings.Builder
-	genToks = 0
-	for ev := range tokenCh {
-		if ev.Err != nil {
-			return sb.String(), promptToks, genToks, ev.Err
-		}
-		sb.WriteString(ev.Piece)
-		genToks++
-	}
-	return sb.String(), promptToks, genToks, nil
+	return "", promptToks, 0, fmt.Errorf("generation failed: %w", err)
 }
 
 // Stream tokenizes the prompt, submits it to the scheduler, and returns a

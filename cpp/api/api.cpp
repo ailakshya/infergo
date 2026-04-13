@@ -1473,6 +1473,194 @@ struct SamplerHandle {
     }
 };
 
+// ─── Batch Generation (continuous batching) ────────────────────────────────
+
+int infer_llm_generate_batch(InferLLM      llm,
+                              int           n_requests,
+                              const int*    all_tokens,
+                              const int*    token_offsets,
+                              int           max_tokens,
+                              float         temperature,
+                              float         top_p,
+                              const char*   grammar,
+                              char**        out_texts,
+                              int           max_text_len,
+                              int*          out_gen_tokens) {
+    try {
+        if (llm == nullptr || n_requests <= 0 || all_tokens == nullptr ||
+            token_offsets == nullptr || out_texts == nullptr) {
+            infergo::set_last_error("infer_llm_generate_batch: invalid argument");
+            return -1;
+        }
+        if (max_tokens <= 0) max_tokens = 256;
+
+        auto* h = static_cast<LLMHandle*>(llm);
+        std::lock_guard<std::mutex> lock(h->gen_mutex);
+        llama_context* ctx = h->engine.Context();
+        const llama_vocab* vocab = llama_model_get_vocab(llama_get_model(ctx));
+
+        // Clear all KV
+        llama_memory_seq_rm(llama_get_memory(ctx), -1, -1, -1);
+
+        // Per-sequence state
+        struct SeqState {
+            int seq_id;
+            int n_prompt;
+            int n_past;
+            int gen_count;
+            llama_token last_tok;
+            llama_sampler* smpl;
+            std::vector<llama_token> generated;
+            bool done;
+        };
+
+        std::vector<SeqState> seqs(static_cast<size_t>(n_requests));
+        bool has_grammar = (grammar != nullptr && grammar[0] != '\0');
+
+        // Initialize each sequence
+        for (int r = 0; r < n_requests; r++) {
+            auto& s = seqs[r];
+            s.seq_id = r;
+            s.n_prompt = token_offsets[r + 1] - token_offsets[r];
+            s.n_past = 0;
+            s.gen_count = 0;
+            s.last_tok = -1;
+            s.done = false;
+            s.generated.reserve(static_cast<size_t>(max_tokens));
+
+            // Build sampler
+            auto sparams = llama_sampler_chain_default_params();
+            sparams.no_perf = true;
+            s.smpl = llama_sampler_chain_init(sparams);
+            if (has_grammar) {
+                llama_sampler* gsmp = llama_sampler_init_grammar(vocab, grammar, "root");
+                if (gsmp) llama_sampler_chain_add(s.smpl, gsmp);
+            }
+            if (temperature > 0.0f)
+                llama_sampler_chain_add(s.smpl, llama_sampler_init_temp(temperature));
+            if (top_p > 0.0f && top_p < 1.0f)
+                llama_sampler_chain_add(s.smpl, llama_sampler_init_top_p(top_p, 1));
+            llama_sampler_chain_add(s.smpl, llama_sampler_init_dist(0));
+        }
+
+        // ── Prefill all sequences ──
+        llama_batch& batch = h->gen_batch;
+        batch.n_tokens = 0;
+
+        for (int r = 0; r < n_requests; r++) {
+            const int offset = token_offsets[r];
+            const int n = seqs[r].n_prompt;
+            for (int i = 0; i < n; i++) {
+                int idx = batch.n_tokens++;
+                batch.token[idx]      = all_tokens[offset + i];
+                batch.pos[idx]        = i;
+                batch.n_seq_id[idx]   = 1;
+                batch.seq_id[idx][0]  = static_cast<llama_seq_id>(r);
+                batch.logits[idx]     = (i == n - 1) ? 1 : 0;
+            }
+            seqs[r].n_past = n;
+        }
+
+        if (llama_decode(ctx, batch) != 0) {
+            for (auto& s : seqs) llama_sampler_free(s.smpl);
+            infergo::set_last_error("infer_llm_generate_batch: prefill failed");
+            return -1;
+        }
+
+        // Sample first token for each sequence.
+        // logits are at the batch positions where we set logits[idx] = 1,
+        // which is the last token of each sequence's prefill.
+        {
+            int pos = 0;
+            for (int r = 0; r < n_requests; r++) {
+                pos += seqs[r].n_prompt; // position after this sequence's tokens
+                int logit_batch_idx = pos - 1; // last token of this sequence in batch
+                llama_token tok = llama_sampler_sample(seqs[r].smpl, ctx, logit_batch_idx);
+                seqs[r].last_tok = tok;
+                if (tok < 0 || llama_vocab_is_eog(vocab, tok)) seqs[r].done = true;
+            }
+        }
+
+        // ── Autoregressive loop — all sequences batched ──
+        int active = n_requests;
+        for (auto& s : seqs) if (s.done) active--;
+
+        while (active > 0) {
+            batch.n_tokens = 0;
+            int batch_seq_map[64]; // map batch idx → seq idx (max 64 concurrent)
+            int n_batch_seqs = 0;
+
+            for (int r = 0; r < n_requests; r++) {
+                auto& s = seqs[r];
+                if (s.done) continue;
+
+                s.generated.push_back(s.last_tok);
+                s.gen_count++;
+
+                if (s.gen_count >= max_tokens) {
+                    s.done = true;
+                    active--;
+                    continue;
+                }
+
+                int idx = batch.n_tokens++;
+                batch.token[idx]      = s.last_tok;
+                batch.pos[idx]        = s.n_past;
+                batch.n_seq_id[idx]   = 1;
+                batch.seq_id[idx][0]  = static_cast<llama_seq_id>(r);
+                batch.logits[idx]     = 1;
+                batch_seq_map[n_batch_seqs++] = r;
+                s.n_past++;
+            }
+
+            if (batch.n_tokens == 0) break;
+
+            if (llama_decode(ctx, batch) != 0) break;
+
+            // Sample next token for each active sequence
+            for (int b = 0; b < n_batch_seqs; b++) {
+                int r = batch_seq_map[b];
+                auto& s = seqs[r];
+                llama_token tok = llama_sampler_sample(s.smpl, ctx, b);
+                s.last_tok = tok;
+                if (tok < 0 || llama_vocab_is_eog(vocab, tok)) {
+                    s.done = true;
+                    active--;
+                }
+            }
+        }
+
+        // ── Detokenize and write results ──
+        for (int r = 0; r < n_requests; r++) {
+            auto& s = seqs[r];
+            llama_sampler_free(s.smpl);
+
+            if (out_gen_tokens) out_gen_tokens[r] = s.gen_count;
+
+            if (out_texts[r] && max_text_len > 0) {
+                std::string text;
+                text.reserve(static_cast<size_t>(s.gen_count) * 4);
+                char piece[256];
+                for (auto id : s.generated) {
+                    int pn = llama_token_to_piece(vocab, id, piece, sizeof(piece), 0, false);
+                    if (pn > 0) text.append(piece, static_cast<size_t>(pn));
+                }
+                int n = std::min(static_cast<int>(text.size()), max_text_len - 1);
+                std::memcpy(out_texts[r], text.data(), static_cast<size_t>(n));
+                out_texts[r][n] = '\0';
+            }
+        }
+
+        return 0;
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    } catch (...) {
+        infergo::set_last_error("infer_llm_generate_batch: unknown exception");
+        return -1;
+    }
+}
+
 InferSampler infer_sampler_create(InferLLM     llm,
                                    const char* grammar_str,
                                    const char* grammar_root,
