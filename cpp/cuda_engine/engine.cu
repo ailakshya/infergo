@@ -1,6 +1,7 @@
 // infergo Custom CUDA Engine — forward pass + sampling
 #include "engine.cuh"
 #include "q4k_fast.cuh"
+#include "q4k_lut.cuh"
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -174,14 +175,14 @@ void CUDAEngine::ForwardToken(int token, int pos) {
         kernel_copy<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
             buf_residual_, buf_hidden_, n);
 
-        // 2. QKV projections — use dp4a-accelerated Q4K or F16 GEMV
-        BlockQ8_1* q8 = reinterpret_cast<BlockQ8_1*>(buf_q8_);
+        // 2. QKV projections — LUT-accelerated Q4K or F16 GEMV
+        Q8Block* q8_lut = reinterpret_cast<Q8Block*>(buf_q8_);
 
         #define GEMV_DISPATCH(out_p, in_p, norm_p, w_p, bias_p, is_f16_p, in_d, out_d, ep) \
             if (is_f16_p) \
                 f16_gemv(out_p, in_p, norm_p, reinterpret_cast<const half*>(w_p), bias_p, in_d, out_d, ep, stream_); \
             else \
-                fast_q4k_gemv(out_p, in_p, norm_p, w_p, bias_p, in_d, out_d, ep, q8, buf_rms_, stream_);
+                lut_q4k_gemv(out_p, in_p, norm_p, w_p, bias_p, in_d, out_d, ep, q8_lut, stream_);
 
         half* q_out = buf_qkv_;
         GEMV_DISPATCH(q_out, buf_hidden_, lw.attn_norm, lw.wq, lw.bq, lw.wq_f16, n, n, RMS_EPS);
@@ -198,11 +199,11 @@ void CUDAEngine::ForwardToken(int token, int pos) {
                            config_.n_head, config_.n_kv_head, config_.head_dim,
                            config_.rope_base, stream_);
 
-        // 4. Output projection (no norm — pass nullptr for norm)
+        // 4. Output projection (no norm)
         if (lw.wo_f16)
             f16_gemv(buf_hidden_, buf_attn_out_, nullptr, reinterpret_cast<const half*>(lw.wo), nullptr, n, n, 1e30f, stream_);
         else
-            fast_q4k_gemv(buf_hidden_, buf_attn_out_, nullptr, lw.wo, nullptr, n, n, 1e30f, q8, buf_rms_, stream_);
+            lut_q4k_gemv(buf_hidden_, buf_attn_out_, nullptr, lw.wo, nullptr, n, n, 1e30f, q8_lut, stream_);
 
         // 5. Residual add
         kernel_residual_add<<<(n + threads - 1) / threads, threads, 0, stream_>>>(
@@ -245,15 +246,15 @@ void CUDAEngine::ForwardToken(int token, int pos) {
 
     // 9. Output logits
     half* logits_half = reinterpret_cast<half*>(buf_logits_);
-    BlockQ8_1* q8 = reinterpret_cast<BlockQ8_1*>(buf_q8_);
+    Q8Block* q8_out = reinterpret_cast<Q8Block*>(buf_q8_);
     if (weights_.output_f16) {
         f16_gemv(logits_half, buf_hidden_, nullptr,
                  reinterpret_cast<const half*>(weights_.output), nullptr,
                  n, config_.n_vocab, 1e30f, stream_);
     } else {
-        fast_q4k_gemv(logits_half, buf_hidden_, nullptr,
-                      weights_.output, nullptr,
-                      n, config_.n_vocab, 1e30f, q8, buf_rms_, stream_);
+        lut_q4k_gemv(logits_half, buf_hidden_, nullptr,
+                     weights_.output, nullptr,
+                     n, config_.n_vocab, 1e30f, q8_out, stream_);
     }
 
     cudaStreamSynchronize(stream_);
