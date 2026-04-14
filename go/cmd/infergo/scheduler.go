@@ -230,20 +230,13 @@ func (s *schedulerModel) Generate(ctx context.Context, prompt string, maxTokens 
 
 	grammar, _ := server.GrammarFromContext(ctx)
 
-	// Submit to batch collector for continuous batching.
-	// Submit to batch collector for continuous batching.
-	// Single requests fire immediately. Concurrent requests within 2ms
-	// are batched into one GPU decode call for maximum throughput.
-	result := make(chan batchResult, 1)
-	s.batchCh <- batchItem{
-		tokens:    tokens,
-		maxTokens: maxTokens,
-		temp:      temp,
-		grammar:   grammar,
-		result:    result,
+	// Direct call — zero channel overhead. The C-side mutex handles
+	// concurrency. For c=1 this saves ~1ms from channel round-trip.
+	text, genToks, err := s.m.GenerateC(tokens, maxTokens, temp, 0.9, grammar)
+	if err == nil {
+		return text, promptToks, genToks, nil
 	}
-	r := <-result
-	return r.text, promptToks, r.genToks, r.err
+	return "", promptToks, 0, fmt.Errorf("generation failed: %w", err)
 }
 
 // Stream tokenizes the prompt, submits it to the scheduler, and returns a

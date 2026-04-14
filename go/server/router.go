@@ -397,8 +397,14 @@ func newID(prefix string) string {
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	// Read body + unmarshal (faster than json.Decoder for small bodies)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB max
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
 	var req ChatCompletionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
