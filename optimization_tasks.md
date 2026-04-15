@@ -2497,3 +2497,801 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 | N — Security & Compliance | OPT-91..94 | 0/4 | 4 |
 | O — Edge & Mobile | OPT-95..97 | 0/3 | 3 |
 | **Total** | **97** | **36** | **58 + 5 FUTURE** |
+
+---
+
+## PHASE P — Generative AI
+
+### OPT-98 — Video Generation (Text/Image → Video) `[ ]` XL
+
+**Problem:** Text-to-video and image-to-video require separate heavy Python pipelines. GGUF-quantized video models can run locally.
+
+**What changes:**
+- `cpp/diffusion/video.cpp` — wrap video generation model (Mochi, CogVideo, AnimateDiff)
+- `POST /v1/videos/generations` — `{prompt: "A cat walking", duration: 4, fps: 24}`
+- Response: video file (MP4) or streaming frames
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-98-T1 | Text → video | "A sunset" → valid MP4 file | |
+| OPT-98-T2 | Image → video | Base image + prompt → animated video | |
+| OPT-98-T3 | Duration control | `duration: 4` → ~4 second video | |
+| OPT-98-T4 | FPS control | `fps: 24` → 24 frames per second | |
+
+---
+
+### OPT-99 — Music Generation `[ ]` L
+
+**Problem:** Text-to-music requires separate service. MusicGen/AudioCraft models can generate music from text descriptions.
+
+**What changes:**
+- `cpp/audio/musicgen.cpp` — music generation model wrapper
+- `POST /v1/audio/music` — `{prompt: "upbeat jazz piano", duration: 30}`
+- Response: audio/wav or audio/mp3
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-99-T1 | Text → music | "Jazz piano" → valid audio file | |
+| OPT-99-T2 | Duration control | `duration: 30` → ~30 second audio | |
+| OPT-99-T3 | Style variation | Different prompts → different styles | |
+| OPT-99-T4 | Continuation | Input audio + prompt → extended audio | |
+
+---
+
+### OPT-100 — 3D Model Generation `[ ]` XL
+
+**Problem:** Text/image to 3D mesh generation for game assets, product visualization.
+
+**What changes:**
+- `cpp/diffusion/mesh.cpp` — 3D generation model wrapper (TripoSR, InstantMesh)
+- `POST /v1/3d/generations` — `{prompt: "A red chair", format: "glb"}`
+- Response: GLB/OBJ/STL mesh file
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-100-T1 | Text → 3D mesh | "A chair" → valid GLB file | |
+| OPT-100-T2 | Image → 3D | Photo of object → 3D reconstruction | |
+| OPT-100-T3 | Format options | GLB, OBJ, STL output formats | |
+| OPT-100-T4 | Texture quality | Generated mesh has UV-mapped textures | |
+
+---
+
+### OPT-101 — Image Editing (Inpainting/Outpainting) `[ ]` L
+
+**Problem:** Edit specific regions of images using text prompts.
+
+**What changes:**
+- `POST /v1/images/edits` — `{image: "...", mask: "...", prompt: "Replace sky with sunset"}`
+- Modes: inpainting (fill masked region), outpainting (extend image), style transfer
+- Uses SD inpainting model
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-101-T1 | Inpainting | Mask + prompt → region replaced | |
+| OPT-101-T2 | Outpainting | Extend image beyond borders | |
+| OPT-101-T3 | Style transfer | "Make it watercolor" → style applied | |
+| OPT-101-T4 | Mask formats | PNG mask and auto-detect both work | |
+
+---
+
+### OPT-102 — Voice Cloning `[ ]` L
+
+**Problem:** TTS with generic voices. Voice cloning creates custom voice from 5-second sample.
+
+**What changes:**
+- `POST /v1/audio/voice-clone` — `{audio_sample: "...", name: "my_voice"}`
+- `POST /v1/audio/speech` with `voice: "my_voice"` → speaks in cloned voice
+- Uses XTTS or OpenVoice model
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-102-T1 | Clone from 5s audio | Upload sample → voice profile saved | |
+| OPT-102-T2 | TTS with cloned voice | Generate speech in cloned voice | |
+| OPT-102-T3 | Voice similarity | Cloned output perceptually similar to sample | |
+| OPT-102-T4 | Multiple voices | Store and switch between 5+ cloned voices | |
+
+---
+
+## PHASE Q — Retrieval & Search
+
+### OPT-103 — Multi-Modal Search `[ ]` M
+
+**Problem:** Current search is text-only. Users want to search by image ("find similar products").
+
+**What changes:**
+- `go/search/multimodal.go` — CLIP-based image+text embeddings
+- `POST /v1/search` — accept `image_b64` field alongside `query` text
+- Index images and text in same vector space
+- Cross-modal: text query finds images, image query finds text
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-103-T1 | Image search | Upload image → find similar images | |
+| OPT-103-T2 | Text finds image | "red car" → finds red car images | |
+| OPT-103-T3 | Image finds text | Photo → finds matching text descriptions | |
+| OPT-103-T4 | Mixed index | Images and text in same DB, cross-modal works | |
+
+---
+
+### OPT-104 — Cross-Language Search `[ ]` M
+
+**Problem:** Query in English should find documents in Hindi, Spanish, etc.
+
+**What changes:**
+- Use multilingual embedding model (e.g., `multilingual-e5-large`)
+- `--model embed:models/multilingual-e5.onnx` support
+- Same query → matches across all languages
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-104-T1 | English query, Hindi doc | "weather" finds Hindi weather article | |
+| OPT-104-T2 | Spanish query, English doc | Spanish query finds English match | |
+| OPT-104-T3 | Same-language still works | English-English search unaffected | |
+
+---
+
+### OPT-105 — Table/CSV Search `[ ]` M
+
+**Problem:** RAG doesn't understand structured data. Tables need column-aware chunking and search.
+
+**What changes:**
+- `go/ingest/table.go` — CSV/Excel parser with column-aware chunking
+- Each row becomes a searchable document with column metadata
+- `POST /v1/ingest` accepts CSV/XLSX files
+- SQL-like filtering: `{query: "revenue > 1M", filters: {year: 2024}}`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-105-T1 | CSV ingested | Upload CSV → rows searchable | |
+| OPT-105-T2 | Column-aware | "highest revenue" → correct row returned | |
+| OPT-105-T3 | Filtering | `filters: {year: 2024}` → only 2024 rows | |
+| OPT-105-T4 | Excel support | XLSX file ingested correctly | |
+
+---
+
+### OPT-106 — Real-Time Index Updates `[ ]` S
+
+**Problem:** Vector DB updates are batch-only. Need real-time insert/delete with immediate searchability.
+
+**What changes:**
+- `go/search/realtime.go` — write-ahead log + async index rebuild
+- Inserted documents searchable within 100ms
+- Deleted documents excluded immediately
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-106-T1 | Insert → search | Insert doc → search finds it within 100ms | |
+| OPT-106-T2 | Delete → gone | Delete doc → search no longer returns it | |
+| OPT-106-T3 | Concurrent ops | 100 inserts + 100 searches simultaneously → correct | |
+
+---
+
+## PHASE R — Observability
+
+### OPT-107 — Distributed Tracing UI `[ ]` M
+
+**Problem:** OpenTelemetry traces require Jaeger/Zipkin. Built-in trace viewer shows request flow.
+
+**What changes:**
+- `go/server/trace_ui.go` — embedded trace viewer at `/ui/traces`
+- Shows: request → tokenize → prefill → decode → sample → response
+- Per-span timing, GPU kernel breakdown
+- Filter by latency, model, error
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-107-T1 | Trace UI loads | `/ui/traces` shows trace list | |
+| OPT-107-T2 | Request trace visible | Click request → waterfall view of spans | |
+| OPT-107-T3 | Filter works | Filter by latency > 500ms → only slow requests | |
+
+---
+
+### OPT-108 — Cost Tracking `[ ]` S
+
+**Problem:** No visibility into compute cost per request.
+
+**What changes:**
+- `go/server/cost.go` — estimate cost based on tokens + GPU time
+- Response header: `X-Compute-Cost: $0.0003`
+- `GET /v1/admin/costs` — aggregate cost report per API key, model, time range
+- Configurable pricing: `--cost-per-1k-tokens 0.002`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-108-T1 | Cost header present | Response includes `X-Compute-Cost` | |
+| OPT-108-T2 | Aggregate report | `/v1/admin/costs` shows per-key totals | |
+| OPT-108-T3 | Pricing configurable | Different rates for different models | |
+
+---
+
+### OPT-109 — Quality Monitoring `[ ]` M
+
+**Problem:** No way to detect when model output quality degrades over time.
+
+**What changes:**
+- `go/server/quality.go` — auto-evaluate outputs using LLM-as-judge
+- Sample N% of requests, score quality 1-5
+- Alert when rolling average drops below threshold
+- `GET /v1/admin/quality` — quality dashboard
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-109-T1 | Quality scored | Sampled responses get quality score | |
+| OPT-109-T2 | Alert on degradation | Quality drops → alert fired | |
+| OPT-109-T3 | Dashboard shows trend | `/v1/admin/quality` shows rolling average | |
+
+---
+
+### OPT-110 — Drift Detection `[ ]` M
+
+**Problem:** Model outputs shift over time due to prompt changes or data drift.
+
+**What changes:**
+- `go/server/drift.go` — embedding-based output distribution tracking
+- Compute centroid of output embeddings per day
+- Alert when centroid shifts beyond threshold
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-110-T1 | Baseline established | First 100 requests → baseline centroid | |
+| OPT-110-T2 | Drift detected | Significantly different outputs → alert | |
+| OPT-110-T3 | No false alarm | Normal variation → no alert | |
+
+---
+
+## PHASE S — Collaboration
+
+### OPT-111 — Team Workspaces `[ ]` M
+
+**Problem:** Single-user setup. Teams need shared prompts, models, and API keys.
+
+**What changes:**
+- `go/server/workspace.go` — workspace CRUD
+- Each workspace: own API keys, prompts, models, usage limits
+- `POST /v1/admin/workspaces` — create/manage workspaces
+- Member management: invite, roles, remove
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-111-T1 | Create workspace | New workspace with name + members | |
+| OPT-111-T2 | Workspace isolation | Workspace A can't see Workspace B data | |
+| OPT-111-T3 | Shared prompts | Prompt created in workspace visible to all members | |
+
+---
+
+### OPT-112 — Prompt Versioning `[ ]` S
+
+**Problem:** No history of prompt changes. Need git-like versioning.
+
+**What changes:**
+- `go/server/prompt_version.go` — version tracking for prompts
+- Each edit creates a new version (auto-incrementing)
+- Rollback to any previous version
+- Diff between versions
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-112-T1 | Version created on edit | Edit prompt → version 2 created | |
+| OPT-112-T2 | Rollback works | Rollback to v1 → original prompt active | |
+| OPT-112-T3 | History viewable | List all versions with timestamps | |
+| OPT-112-T4 | Diff between versions | Compare v1 vs v2 → changes highlighted | |
+
+---
+
+### OPT-113 — Annotation Tool `[ ]` M
+
+**Problem:** Fine-tuning needs labeled data. Built-in annotation lets humans rate/correct LLM outputs.
+
+**What changes:**
+- `go/server/annotate.go` — annotation UI at `/ui/annotate`
+- Show LLM output → human rates (good/bad) or edits
+- Export annotations as JSONL for training
+- Active learning: prioritize uncertain outputs for annotation
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-113-T1 | Annotation UI loads | `/ui/annotate` shows pending outputs | |
+| OPT-113-T2 | Rate output | Click good/bad → annotation saved | |
+| OPT-113-T3 | Edit output | Correct text → saved as training pair | |
+| OPT-113-T4 | Export JSONL | Download annotations as training data | |
+
+---
+
+### OPT-114 — Feedback Loop `[ ]` S
+
+**Problem:** Users give thumbs up/down but data isn't collected for retraining.
+
+**What changes:**
+- `POST /v1/feedback` — `{request_id: "...", rating: "positive", comment: "..."}`
+- Store feedback linked to request/response
+- `GET /v1/admin/feedback` — view feedback report
+- Auto-generate training data from positive-rated responses
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-114-T1 | Feedback submitted | POST feedback → stored | |
+| OPT-114-T2 | Linked to request | Feedback references original request_id | |
+| OPT-114-T3 | Report generated | Admin report shows positive/negative ratio | |
+| OPT-114-T4 | Training data export | Positive responses exported as JSONL | |
+
+---
+
+## PHASE T — Integration
+
+### OPT-115 — Slack Bot `[ ]` M
+
+**Problem:** Users want to chat with infergo from Slack.
+
+**What changes:**
+- `go/integrations/slack.go` — Slack Bot integration
+- `--slack-token xoxb-...` flag
+- Responds to @mentions and DMs
+- Slash commands: `/ask`, `/summarize`, `/translate`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-115-T1 | Bot responds to mention | @infergo "Hello" → bot replies | |
+| OPT-115-T2 | DM works | Direct message → bot responds | |
+| OPT-115-T3 | Slash command | `/ask What is Go?` → answer | |
+| OPT-115-T4 | Thread context | Reply in thread → maintains context | |
+
+---
+
+### OPT-116 — Discord Bot `[ ]` M
+
+**Problem:** Same as Slack but for Discord communities.
+
+**What changes:**
+- `go/integrations/discord.go` — Discord Bot integration
+- `--discord-token ...` flag
+- Responds to mentions and slash commands
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-116-T1 | Bot responds | @infergo "Hello" → bot replies | |
+| OPT-116-T2 | Slash command | `/chat Hello` → response | |
+| OPT-116-T3 | Streaming | Long response → edits message as tokens arrive | |
+
+---
+
+### OPT-117 — Email Agent `[ ]` M
+
+**Problem:** Auto-classify, summarize, and draft email replies.
+
+**What changes:**
+- `go/integrations/email.go` — IMAP reader + SMTP sender
+- Read inbox → classify (support/sales/spam) → draft reply → human approves
+- `POST /v1/email/process` — process single email
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-117-T1 | Email classified | Support email → labeled "support" | |
+| OPT-117-T2 | Reply drafted | Draft reply generated from context | |
+| OPT-117-T3 | Spam filtered | Spam email → marked, no reply | |
+
+---
+
+### OPT-118 — Zapier / n8n Webhook Integration `[ ]` S
+
+**Problem:** Connect infergo to 1000+ apps via workflow automation.
+
+**What changes:**
+- `go/server/webhook_integration.go` — webhook trigger + action endpoints
+- Trigger: fire webhook on any infergo event (new chat, detection, etc.)
+- Action: receive webhook from external app → run inference
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-118-T1 | Trigger fires | Chat completion → webhook to n8n | |
+| OPT-118-T2 | Action received | n8n sends text → infergo processes → returns result | |
+| OPT-118-T3 | Authentication | Webhook signature verified | |
+
+---
+
+### OPT-119 — LangChain Compatible `[ ]` S
+
+**Problem:** LangChain users want to use infergo as a drop-in replacement for OpenAI.
+
+**What changes:**
+- Already OpenAI-compatible — just document the setup
+- Handle LangChain-specific headers and parameters
+- Support: `ChatOpenAI(base_url="http://localhost:9090/v1")`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-119-T1 | LangChain chat works | `ChatOpenAI` → response | |
+| OPT-119-T2 | Streaming works | LangChain streaming callback → tokens | |
+| OPT-119-T3 | Embeddings work | `OpenAIEmbeddings` → vectors | |
+| OPT-119-T4 | Tool calling works | LangChain tools → function calls | |
+
+---
+
+### OPT-120 — LlamaIndex Compatible `[ ]` S
+
+**Problem:** LlamaIndex users want infergo as backend.
+
+**What changes:**
+- Document setup: `OpenAI(api_base="http://localhost:9090/v1")`
+- Verify: query engine, chat engine, agent work
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-120-T1 | Query engine works | LlamaIndex query → infergo generates answer | |
+| OPT-120-T2 | Index build works | LlamaIndex builds index using infergo embeddings | |
+| OPT-120-T3 | Agent works | LlamaIndex agent uses infergo for reasoning | |
+
+---
+
+## PHASE U — Advanced Inference
+
+### OPT-121 — Mixture of Experts Routing `[ ]` L
+
+**Problem:** Single model can't excel at everything. Route queries to specialized models based on topic.
+
+**What changes:**
+- `go/server/moe_router.go` — classify query → route to best model
+- Config: `{code_model: "deepseek-coder", general_model: "llama3", math_model: "qwen-math"}`
+- Auto-classification using embedding similarity to category exemplars
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-121-T1 | Code query → code model | "Write Python sort" → routed to code model | |
+| OPT-121-T2 | Math query → math model | "Solve x^2=4" → routed to math model | |
+| OPT-121-T3 | General query → general | "Tell me about cats" → general model | |
+| OPT-121-T4 | Router overhead < 5ms | Classification adds < 5ms latency | |
+
+---
+
+### OPT-122 — Ensemble Inference `[ ]` M
+
+**Problem:** Single model answers may be wrong. Ensemble runs N models and picks the best answer.
+
+**What changes:**
+- `go/server/ensemble.go` — run query on N models in parallel
+- Voting: majority vote, highest confidence, or LLM-as-judge
+- `{ensemble: true, models: ["llm1", "llm2", "llm3"]}`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-122-T1 | 3 models queried | All 3 generate responses | |
+| OPT-122-T2 | Best selected | Most agreed-upon answer returned | |
+| OPT-122-T3 | Latency = max single | Total time ≈ slowest model (parallel) | |
+
+---
+
+### OPT-123 — Confidence Scoring `[ ]` S
+
+**Problem:** No way to know if the model is confident in its answer.
+
+**What changes:**
+- `go/server/confidence.go` — compute confidence from token logprobs
+- Response includes `confidence: 0.85` field
+- Low confidence → flag for human review
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-123-T1 | Confidence returned | Response includes confidence score 0-1 | |
+| OPT-123-T2 | Factual = high | "2+2=4" → confidence > 0.9 | |
+| OPT-123-T3 | Uncertain = low | Obscure question → confidence < 0.5 | |
+
+---
+
+### OPT-124 — Hallucination Detection `[ ]` M
+
+**Problem:** LLM makes up facts. Detect hallucinations by cross-referencing with retrieved sources.
+
+**What changes:**
+- `go/server/hallucination.go` — compare response claims against RAG sources
+- For each claim: check if supported by retrieved documents
+- Response includes `{verified: true/false, unsupported_claims: [...]}`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-124-T1 | Supported claim verified | Claim in source → `verified: true` | |
+| OPT-124-T2 | Unsupported detected | Made-up fact → flagged as unsupported | |
+| OPT-124-T3 | No false positives | Paraphrased claim → still verified | |
+
+---
+
+### OPT-125 — Context Extension (YaRN/NTK) `[ ]` M
+
+**Problem:** Models trained on 4K context can't handle 32K inputs. RoPE scaling extends context.
+
+**What changes:**
+- `--rope-scaling yarn` or `--rope-scaling ntk` flag
+- `--ctx-size 32768` with scaling for 4K-trained models
+- llama.cpp already supports this — expose via CLI
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-125-T1 | 32K context works | 32K token input → response references early tokens | |
+| OPT-125-T2 | Quality maintained | Perplexity at 32K ≤ 1.5x perplexity at 4K | |
+| OPT-125-T3 | No crash | Fill entire 32K context → stable generation | |
+
+---
+
+### OPT-126 — Speculative Decoding v2 (Medusa) `[ ]` L
+
+**Problem:** Standard speculative decoding needs a separate draft model. Medusa adds extra prediction heads to the main model for multi-token prediction without a draft.
+
+**What changes:**
+- `cpp/llm/medusa.cpp` — Medusa head integration
+- Multiple tokens predicted per forward pass
+- No separate draft model needed
+- 2-3x speedup over standard decoding
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-126-T1 | Medusa heads load | Model with Medusa heads loads correctly | |
+| OPT-126-T2 | Multi-token predict | 2-3 tokens accepted per step | |
+| OPT-126-T3 | Speedup | ≥ 1.5x over standard decoding | |
+| OPT-126-T4 | Quality preserved | Output identical to standard decoding | |
+
+---
+
+## PHASE V — Compliance & Governance
+
+### OPT-127 — SOC2 Compliance Mode `[ ]` M
+
+**Problem:** SOC2 certification requires specific controls. One flag enables all required features.
+
+**What changes:**
+- `--soc2` flag enables: audit logging, encryption at rest, RBAC, PII detection, data retention
+- Compliance report: `GET /v1/admin/compliance` shows status of each control
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-127-T1 | Flag enables all controls | `--soc2` → audit + encryption + RBAC active | |
+| OPT-127-T2 | Compliance report | All controls show "enabled" status | |
+| OPT-127-T3 | Missing requirement flagged | Disabled encryption → warning in report | |
+
+---
+
+### OPT-128 — GDPR Data Deletion `[ ]` S
+
+**Problem:** GDPR requires deleting all data for a specific user on request.
+
+**What changes:**
+- `DELETE /v1/admin/gdpr/{user_id}` — delete all data: conversations, embeddings, feedback, audit logs
+- Confirmation response with list of deleted items
+- Irreversible — requires admin role
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-128-T1 | All data deleted | Delete user → conversations, vectors, logs all gone | |
+| OPT-128-T2 | Confirmation | Response lists all deleted items + counts | |
+| OPT-128-T3 | Admin only | Non-admin → 403 | |
+
+---
+
+### OPT-129 — Model Card Generation `[ ]` S
+
+**Problem:** No documentation for deployed models. Auto-generate model cards with metadata, benchmarks, limitations.
+
+**What changes:**
+- `go/cmd/infergo/modelcard.go` — `infergo modelcard model.gguf`
+- Auto-extract: architecture, parameters, quantization, training data (from GGUF metadata)
+- Run quick benchmarks, include results
+- Output: Markdown model card
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-129-T1 | Card generated | `infergo modelcard` → Markdown file | |
+| OPT-129-T2 | Metadata extracted | Architecture, params, quant level shown | |
+| OPT-129-T3 | Benchmarks included | tok/s, latency in card | |
+
+---
+
+### OPT-130 — Bias Detection `[ ]` M
+
+**Problem:** Models may exhibit demographic bias. Built-in bias testing reveals issues.
+
+**What changes:**
+- `go/eval/bias.go` — bias evaluation suite
+- Test across demographics: gender, race, age, nationality
+- Compare response quality/sentiment for different groups
+- Report: bias score per category
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-130-T1 | Bias test runs | Evaluate model on bias benchmark | |
+| OPT-130-T2 | Report generated | Bias scores per category | |
+| OPT-130-T3 | Flagged issues | Significant bias → flagged in report | |
+
+---
+
+### OPT-131 — Explainability (Attention Visualization) `[ ]` M
+
+**Problem:** Black-box outputs. Show which input tokens influenced the output most.
+
+**What changes:**
+- `go/server/explain.go` — extract attention weights during generation
+- `{explain: true}` flag in request
+- Response includes `attention_map` showing token importance scores
+- `/ui/explain` — visual attention heatmap
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-131-T1 | Attention returned | `explain: true` → attention weights in response | |
+| OPT-131-T2 | Important tokens highlighted | Key context words have high attention | |
+| OPT-131-T3 | UI visualization | `/ui/explain` shows heatmap | |
+
+---
+
+## PHASE W — Edge & IoT
+
+### OPT-132 — MQTT Integration `[ ]` M
+
+**Problem:** IoT devices communicate via MQTT. infergo should subscribe to MQTT topics and process messages.
+
+**What changes:**
+- `go/integrations/mqtt.go` — MQTT client
+- `--mqtt-broker tcp://broker:1883` flag
+- Subscribe to topics → process messages → publish results
+- Use cases: sensor data classification, camera frame analysis
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-132-T1 | Subscribe works | Connect to broker, receive messages | |
+| OPT-132-T2 | Process message | Text message → LLM response published | |
+| OPT-132-T3 | Image message | JPEG payload → detection results published | |
+
+---
+
+### OPT-133 — Offline Mode `[ ]` M
+
+**Problem:** Edge devices lose connectivity. Queue requests when offline, sync when back online.
+
+**What changes:**
+- `go/server/offline.go` — request queue with local persistence
+- Detect network status, queue requests to disk when offline
+- Auto-sync queued requests when connectivity restored
+- Local response for cached queries
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-133-T1 | Offline queuing | Disconnect → requests saved to disk | |
+| OPT-133-T2 | Auto-sync | Reconnect → queued requests processed | |
+| OPT-133-T3 | Local cache | Cached response served while offline | |
+
+---
+
+### OPT-134 — Model Compression for Edge `[ ]` M
+
+**Problem:** Edge devices have limited resources. Auto-compress model for target device.
+
+**What changes:**
+- `go/cmd/infergo/compress.go` — `infergo compress model.gguf --target rpi5 --max-ram 2g`
+- Auto-select quantization level based on target constraints
+- Benchmark on target device (if connected via SSH)
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-134-T1 | Compression runs | 8B model → Q2_K for 2GB target | |
+| OPT-134-T2 | Size matches target | Compressed model fits in specified RAM | |
+| OPT-134-T3 | Quality report | Perplexity before/after reported | |
+
+---
+
+### OPT-135 — Federated Inference `[ ]` XL
+
+**Problem:** Multiple edge devices each have partial compute. Federated inference distributes layers across devices.
+
+**What changes:**
+- `go/server/federated.go` — device mesh coordination
+- Split model layers across N devices
+- Each device runs assigned layers, forwards activations to next
+- Coordinator manages the pipeline
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-135-T1 | 2-device split | Model split across 2 Pis → generates text | |
+| OPT-135-T2 | Auto-balance | Faster device gets more layers | |
+| OPT-135-T3 | Device failure | One device dies → graceful degradation | |
+
+---
+
+## Updated task summary
+
+| Phase | Tasks | Done | Pending |
+|---|---|---|---|
+| A — Performance | OPT-1..2 | 2/2 | 0 |
+| B — Core Inference | OPT-3..7 | 5/5 | 0 |
+| C — Production Serving | OPT-8..21 | 14/14 | 0 |
+| D — Advanced Optimization | OPT-22..39 | 15/15 | 0 (5 FUTURE) |
+| E — Multi-Modal | OPT-40..48 | 0/9 | 9 |
+| F — Advanced AI | OPT-49..55 | 0/7 | 7 |
+| G — Enterprise | OPT-56..61 | 0/6 | 6 |
+| H — Real-Time & Streaming | OPT-62..65 | 0/4 | 4 |
+| I — Model Intelligence | OPT-66..70 | 0/5 | 5 |
+| J — Data & Knowledge | OPT-71..75 | 0/5 | 5 |
+| K — Specialized AI | OPT-76..81 | 0/6 | 6 |
+| L — Developer Experience | OPT-82..87 | 0/6 | 6 |
+| M — Infrastructure | OPT-88..90 | 0/3 | 3 |
+| N — Security & Compliance | OPT-91..94 | 0/4 | 4 |
+| O — Edge & Mobile | OPT-95..97 | 0/3 | 3 |
+| P — Generative AI | OPT-98..102 | 0/5 | 5 |
+| Q — Retrieval & Search | OPT-103..106 | 0/4 | 4 |
+| R — Observability | OPT-107..110 | 0/4 | 4 |
+| S — Collaboration | OPT-111..114 | 0/4 | 4 |
+| T — Integration | OPT-115..120 | 0/6 | 6 |
+| U — Advanced Inference | OPT-121..126 | 0/6 | 6 |
+| V — Compliance & Governance | OPT-127..131 | 0/5 | 5 |
+| W — Edge & IoT | OPT-132..135 | 0/4 | 4 |
+| **Total** | **135** | **36** | **96 + 5 FUTURE** |
