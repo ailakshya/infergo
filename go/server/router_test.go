@@ -423,6 +423,165 @@ func TestHandleDetectBinary_DefaultThresholds(t *testing.T) {
 	}
 }
 
+// ─── POST /v1/detect with max_det and classes ──────────────────────────────
+
+func TestRouter_Detect_MaxDet(t *testing.T) {
+	srv, reg := newTestServer(t)
+	// Return 5 detections.
+	reg.Load("yolo", &mockDetector{objs: []server.DetectedObject{
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.95},
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.90},
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.85},
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.80},
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.75},
+	}})
+
+	imgB64 := base64.StdEncoding.EncodeToString([]byte("fakeimagebytes"))
+	rr := doRequest(t, srv, http.MethodPost, "/v1/detect", server.DetectRequest{
+		Model:    "yolo",
+		ImageB64: imgB64,
+		MaxDet:   2,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp server.DetectResponse
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if len(resp.Objects) != 2 {
+		t.Fatalf("expected 2 objects (max_det=2), got %d", len(resp.Objects))
+	}
+	// Should keep the highest confidence ones.
+	if resp.Objects[0].Confidence != 0.95 {
+		t.Errorf("expected first detection conf=0.95, got %v", resp.Objects[0].Confidence)
+	}
+}
+
+func TestRouter_Detect_ClassFilter(t *testing.T) {
+	srv, reg := newTestServer(t)
+	reg.Load("yolo", &mockDetector{objs: []server.DetectedObject{
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.9},  // person
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 2, Confidence: 0.8},  // car
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.7},  // person
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 5, Confidence: 0.6},  // bus
+	}})
+
+	imgB64 := base64.StdEncoding.EncodeToString([]byte("fakeimagebytes"))
+	rr := doRequest(t, srv, http.MethodPost, "/v1/detect", server.DetectRequest{
+		Model:    "yolo",
+		ImageB64: imgB64,
+		Classes:  []int{0}, // only persons
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp server.DetectResponse
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if len(resp.Objects) != 2 {
+		t.Fatalf("expected 2 person objects, got %d", len(resp.Objects))
+	}
+	for _, o := range resp.Objects {
+		if o.ClassID != 0 {
+			t.Errorf("expected ClassID=0, got %d", o.ClassID)
+		}
+	}
+}
+
+func TestRouter_Detect_ClassFilterAndMaxDet(t *testing.T) {
+	srv, reg := newTestServer(t)
+	reg.Load("yolo", &mockDetector{objs: []server.DetectedObject{
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.9},
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 2, Confidence: 0.8},
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.7},
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.6},
+	}})
+
+	imgB64 := base64.StdEncoding.EncodeToString([]byte("fakeimagebytes"))
+	rr := doRequest(t, srv, http.MethodPost, "/v1/detect", server.DetectRequest{
+		Model:    "yolo",
+		ImageB64: imgB64,
+		Classes:  []int{0},
+		MaxDet:   1,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp server.DetectResponse
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if len(resp.Objects) != 1 {
+		t.Fatalf("expected 1 object (class=0, max_det=1), got %d", len(resp.Objects))
+	}
+	if resp.Objects[0].Confidence != 0.9 {
+		t.Errorf("expected conf=0.9, got %v", resp.Objects[0].Confidence)
+	}
+}
+
+func TestHandleDetectBinary_MaxDetAndClasses(t *testing.T) {
+	srv, reg := newTestServer(t)
+	reg.Load("yolo", &mockDetector{objs: []server.DetectedObject{
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.9},
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 2, Confidence: 0.8},
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.7},
+	}})
+
+	rr := doBinaryRequest(t, srv,
+		"/v1/detect/binary?model=yolo&classes=0&max_det=1",
+		[]byte("fakeimagebytes"),
+		map[string]string{"Content-Type": "image/jpeg"},
+	)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp server.DetectResponse
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if len(resp.Objects) != 1 {
+		t.Fatalf("expected 1 object, got %d", len(resp.Objects))
+	}
+	if resp.Objects[0].ClassID != 0 {
+		t.Errorf("expected ClassID=0, got %d", resp.Objects[0].ClassID)
+	}
+}
+
+func TestHandleDetectBinary_MultipleClasses(t *testing.T) {
+	srv, reg := newTestServer(t)
+	reg.Load("yolo", &mockDetector{objs: []server.DetectedObject{
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 0, Confidence: 0.9},
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 1, Confidence: 0.8},
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 2, Confidence: 0.7},
+		{X1: 0, Y1: 0, X2: 10, Y2: 10, ClassID: 3, Confidence: 0.6},
+	}})
+
+	rr := doBinaryRequest(t, srv,
+		"/v1/detect/binary?model=yolo&classes=0,2",
+		[]byte("fakeimagebytes"),
+		map[string]string{"Content-Type": "image/jpeg"},
+	)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp server.DetectResponse
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if len(resp.Objects) != 2 {
+		t.Fatalf("expected 2 objects (classes 0,2), got %d", len(resp.Objects))
+	}
+}
+
+func TestFilterDetections_DefaultMaxDet(t *testing.T) {
+	// Build 400 detections — default limit is 300.
+	objs := make([]server.DetectedObject, 400)
+	for i := range objs {
+		objs[i] = server.DetectedObject{ClassID: 0, Confidence: float32(400-i) / 400.0}
+	}
+	filtered := server.FilterDetections(objs, nil, 0) // maxDet=0 → default 300
+	if len(filtered) != 300 {
+		t.Fatalf("expected 300 objects (default max_det), got %d", len(filtered))
+	}
+}
+
 func BenchmarkHandleDetect(b *testing.B) {
 	reg := server.NewRegistry()
 	srv := server.NewServer(reg)

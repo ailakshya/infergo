@@ -138,6 +138,10 @@ else()
     message(STATUS "OpenCV not found — skipping infer_preprocess (install via vcpkg: opencv4)")
 endif()
 
+# Postprocessing — pure C++, no external deps; must come before cpp/api.
+# Moved before torch so infer_nms_cuda target exists for OPT-36 GPU NMS.
+add_subdirectory(cpp/postprocess)
+
 # ─── libtorch (PyTorch C++ backend) — optional, must come before cpp/api ─────
 find_package(Torch QUIET)
 if(Torch_FOUND)
@@ -146,9 +150,6 @@ if(Torch_FOUND)
 else()
     message(STATUS "libtorch not found — skipping infer_torch")
 endif()
-
-# Postprocessing — pure C++, no external deps; must come before cpp/api
-add_subdirectory(cpp/postprocess)
 
 # CUDA VRAM monitor — must come before cpp/api so infer_cuda_monitor target exists
 add_subdirectory(cpp/cuda)

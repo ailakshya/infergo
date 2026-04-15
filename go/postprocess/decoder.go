@@ -109,6 +109,58 @@ func NMS(predictions *tensor.Tensor, confThresh, iouThresh float32, maxBoxes int
 	return out, nil
 }
 
+// NMSCuda runs non-maximum suppression entirely on GPU using CUDA kernels.
+// The input is a device pointer to pre-decoded detections — each detection is
+// 6 floats: [x1, y1, x2, y2, confidence, class_id].
+//
+// devicePtr: unsafe.Pointer to GPU memory containing the detections.
+// nBoxes:    number of input detections.
+// confThresh: minimum confidence to keep.
+// iouThresh:  IoU threshold for suppression (class-aware).
+// maxBoxes:   upper bound on the number of returned boxes.
+//
+// Returns kept boxes sorted by confidence descending, or error.
+// Falls back to CPU NMS if CUDA is not available at build time.
+func NMSCuda(devicePtr unsafe.Pointer, nBoxes int, confThresh, iouThresh float32, maxBoxes int) ([]Box, error) {
+	if devicePtr == nil {
+		return nil, errors.New("postprocess: NMSCuda: nil device pointer")
+	}
+	if nBoxes <= 0 {
+		return nil, nil
+	}
+	if maxBoxes <= 0 {
+		return nil, errors.New("postprocess: NMSCuda: maxBoxes must be positive")
+	}
+	buf := make([]C.InferBox, maxBoxes)
+	var count C.int
+	rc := C.infer_nms_cuda(
+		(*C.float)(devicePtr),
+		C.int(nBoxes),
+		C.float(confThresh),
+		C.float(iouThresh),
+		(*C.InferBox)(unsafe.Pointer(&buf[0])),
+		C.int(maxBoxes),
+		&count,
+		nil, // default CUDA stream
+	)
+	if rc != C.INFER_OK {
+		return nil, fmt.Errorf("postprocess: NMSCuda failed (error code %d): %w", int(rc), lastError())
+	}
+	n := int(count)
+	out := make([]Box, n)
+	for i := 0; i < n; i++ {
+		out[i] = Box{
+			X1:         float32(buf[i].x1),
+			Y1:         float32(buf[i].y1),
+			X2:         float32(buf[i].x2),
+			Y2:         float32(buf[i].y2),
+			ClassID:    int(buf[i].class_idx),
+			Confidence: float32(buf[i].confidence),
+		}
+	}
+	return out, nil
+}
+
 // NormalizeEmbedding L2-normalizes a float32 tensor in-place.
 // Each element is divided by sqrt(sum of squares). No-op on a zero vector.
 func NormalizeEmbedding(t *tensor.Tensor) error {

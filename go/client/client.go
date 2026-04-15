@@ -259,6 +259,8 @@ type DetectRequest struct {
 	ImageB64   string  `json:"image_b64"`
 	ConfThresh float32 `json:"conf_thresh,omitempty"`
 	IouThresh  float32 `json:"iou_thresh,omitempty"`
+	MaxDet     int     `json:"max_det,omitempty"`  // max detections to return (default 300)
+	Classes    []int   `json:"classes,omitempty"`   // filter to specific class IDs (empty = all)
 }
 
 // Detection is a single bounding box result.

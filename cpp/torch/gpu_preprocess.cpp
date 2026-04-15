@@ -189,10 +189,47 @@ std::vector<Detection> torch_nms_gpu(torch::Tensor yolo_output,
     auto y1 = filtered_cy - filtered_bh / 2.0f;
     auto x2 = filtered_cx + filtered_bw / 2.0f;
     auto y2 = filtered_cy + filtered_bh / 2.0f;
+
+#ifdef INFER_CUDA_AVAILABLE
+    // ── OPT-36: GPU-side NMS using CUDA kernel ──────────────────────────────
+    if (x1.is_cuda()) {
+        auto classes_f = filtered_classes.to(torch::kFloat32);
+        auto packed = torch::stack({x1, y1, x2, y2, filtered_scores, classes_f}, 1)
+                          .contiguous();
+
+        const int N = static_cast<int>(packed.size(0));
+        const int max_out = std::min(N, 300);
+        std::vector<::InferBox> buf(max_out);
+        int nms_count = 0;
+
+        InferError err = infer_nms_cuda(
+            packed.data_ptr<float>(), N,
+            0.0f, iou_thresh,
+            buf.data(), max_out,
+            &nms_count, nullptr);
+
+        if (err != INFER_OK) {
+            throw std::runtime_error("torch_nms_gpu: infer_nms_cuda failed");
+        }
+
+        std::vector<Detection> dets(nms_count);
+        const float fw = static_cast<float>(orig_w);
+        const float fh = static_cast<float>(orig_h);
+        for (int i = 0; i < nms_count; ++i) {
+            dets[i].x1         = std::max(0.0f, std::min((buf[i].x1 - pad_x) / scale, fw));
+            dets[i].y1         = std::max(0.0f, std::min((buf[i].y1 - pad_y) / scale, fh));
+            dets[i].x2         = std::max(0.0f, std::min((buf[i].x2 - pad_x) / scale, fw));
+            dets[i].y2         = std::max(0.0f, std::min((buf[i].y2 - pad_y) / scale, fh));
+            dets[i].class_id   = buf[i].class_idx;
+            dets[i].confidence = buf[i].confidence;
+        }
+        return dets;
+    }
+#endif // INFER_CUDA_AVAILABLE
+
+    // ── CPU fallback ────────────────────────────────────────────────────────
     auto boxes = torch::stack({x1, y1, x2, y2}, 1);  // [N,4]
 
-    // Copy the small filtered tensors to CPU for greedy NMS
-    // (typically <300 candidates, so CPU NMS is fine)
     auto boxes_cpu   = boxes.to(torch::kCPU).contiguous();
     auto scores_cpu  = filtered_scores.to(torch::kCPU).contiguous();
     auto classes_cpu = filtered_classes.to(torch::kCPU).to(torch::kInt32).contiguous();

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -194,10 +195,62 @@ func TestConvertCmdInvalidFormat(t *testing.T) {
 	if !validConvertFormats["onnx"] {
 		t.Error("onnx should be a valid format")
 	}
+	if !validConvertFormats["tensorrt"] {
+		t.Error("tensorrt should be a valid format")
+	}
+	if !validConvertFormats["gguf"] {
+		t.Error("gguf should be a valid format")
+	}
 	if validConvertFormats["tflite"] {
 		t.Error("tflite should not be a valid format")
 	}
 	if validConvertFormats[""] {
 		t.Error("empty string should not be a valid format")
+	}
+}
+
+// TestFindConvertScript verifies that findConvertScript returns empty string
+// when no llama.cpp directory exists.
+func TestFindConvertScript(t *testing.T) {
+	// With a non-existent directory, should return "".
+	result := findConvertScript("/nonexistent/path/to/llamacpp")
+	if result != "" {
+		t.Errorf("expected empty string for nonexistent dir, got %q", result)
+	}
+}
+
+// TestFindLlamaQuantize verifies that findLlamaQuantize returns empty string
+// when no llama-quantize binary exists.
+func TestFindLlamaQuantize(t *testing.T) {
+	result := findLlamaQuantize("/nonexistent/path/to/llamacpp")
+	if result != "" {
+		t.Errorf("expected empty string for nonexistent dir, got %q", result)
+	}
+}
+
+// TestAutoOutputPathGGUF verifies auto-generated output paths for GGUF format.
+func TestAutoOutputPathGGUF(t *testing.T) {
+	tests := []struct {
+		input  string
+		quant  string
+		expect string
+	}{
+		{"model.safetensors", "", "models/model-f16.gguf"},
+		{"model.safetensors", "q4_k_m", "models/model-q4_k_m.gguf"},
+		{"model.safetensors", "Q8_0", "models/model-q8_0.gguf"},
+		{"/path/to/weights.safetensors", "q4_0", "models/weights-q4_0.gguf"},
+	}
+
+	for _, tt := range tests {
+		base := filepath.Base(tt.input)
+		base = base[:len(base)-len(filepath.Ext(base))]
+		suffix := "f16"
+		if tt.quant != "" {
+			suffix = strings.ToLower(tt.quant)
+		}
+		got := filepath.Join("models", base+"-"+suffix+".gguf")
+		if got != tt.expect {
+			t.Errorf("input=%q quant=%q: got %q, want %q", tt.input, tt.quant, got, tt.expect)
+		}
 	}
 }

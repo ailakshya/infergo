@@ -96,3 +96,19 @@ std::vector<Box> nms(const Tensor* predictions,
 }
 
 } // namespace infergo
+
+// ─── Stub for infer_nms_cuda when CUDA is not available ─────────────────────
+// The Go wrapper always references this symbol. On non-CUDA builds, return
+// INFER_ERR_CUDA to indicate the operation is not supported.
+
+#ifndef INFER_CUDA_AVAILABLE
+extern "C"
+InferError infer_nms_cuda(const float* /*d_boxes*/, int /*n_boxes*/,
+                          float /*conf_thresh*/, float /*iou_thresh*/,
+                          InferBox* /*out_boxes*/, int /*max_out*/,
+                          int* out_count, void* /*stream*/)
+{
+    if (out_count) *out_count = 0;
+    return INFER_ERR_CUDA;
+}
+#endif

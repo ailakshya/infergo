@@ -14,7 +14,9 @@ type DetectStreamRequest struct {
 	Source     string  `json:"source"`      // RTSP URL, video file, or camera index
 	ConfThresh float32 `json:"conf_thresh"`
 	IouThresh  float32 `json:"iou_thresh"`
-	FPS        int     `json:"fps,omitempty"` // target FPS (0 = source FPS)
+	MaxDet     int     `json:"max_det,omitempty"`  // max detections per frame (default 300)
+	Classes    []int   `json:"classes,omitempty"`   // filter to specific class IDs (empty = all)
+	FPS        int     `json:"fps,omitempty"`       // target FPS (0 = source FPS)
 }
 
 // DetectStreamEvent is one SSE event with detection results for a frame.

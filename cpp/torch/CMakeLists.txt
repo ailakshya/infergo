@@ -26,6 +26,16 @@ target_link_libraries(infer_torch
     PRIVATE infer_tensor
 )
 
+# Link GPU NMS kernel for OPT-36 (CUDA NMS in torch_nms_gpu)
+if(TARGET infer_nms_cuda)
+    target_link_libraries(infer_torch PRIVATE infer_nms_cuda)
+endif()
+
+# Ensure INFER_CUDA_AVAILABLE is set whenever CUDA is available
+if(INFER_CUDA_AVAILABLE)
+    target_compile_definitions(infer_torch PRIVATE INFER_CUDA_AVAILABLE=1)
+endif()
+
 # Link nvJPEG for GPU JPEG decode
 if(INFER_CUDA_AVAILABLE AND EXISTS "/usr/local/cuda/include/nvjpeg.h")
     target_include_directories(infer_torch PRIVATE /usr/local/cuda/include)

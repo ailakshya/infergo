@@ -5,7 +5,8 @@
 //	infergo serve     --model <path> [--provider cpu|cuda] [--backend auto|onnx|torch] [--port 9090]
 //	infergo list-models [--addr http://localhost:9090]
 //	infergo benchmark --model <path> --requests 1000 [--concurrency 8]
-//	infergo convert   --input <model.pt> [--format torchscript|onnx] [--output <path>]
+//	infergo convert   --input <model> --format onnx|torchscript|tensorrt|gguf [--output <path>] [--quant q4_k_m]
+//	infergo validate  <model.gguf|.onnx|.pt> [--type llm|embed|detect]
 //	infergo validate  --source <original.pt> --export <exported.pt> [--samples 100]
 package main
 
@@ -65,8 +66,9 @@ Usage:
                       [--zones zones.yaml] [--webhook http://...] [--output rtsp://...]
   infergo pull        owner/repo [--quant Q4_K_M] [--format gguf|onnx]
                       [--file model.gguf] [--hf-token <token>] [--dir <path>]
-  infergo convert     --input <model.pt> [--format torchscript|onnx]
-                      [--output <path>] [--imgsz 640]
+  infergo convert     --input <model> --format onnx|torchscript|tensorrt|gguf
+                      [--output <path>] [--imgsz 640] [--quant q4_k_m]
+  infergo validate    <model.gguf|.onnx|.pt> [--type llm|embed|detect]
   infergo validate    --source <original.pt> --export <exported.pt>
                       [--samples 100] [--tolerance 1e-4]
 
@@ -76,8 +78,8 @@ Subcommands:
   list-models   List models loaded on a running infergo server.
   benchmark     Stress-test a running infergo server.
   pull          Download a model from HuggingFace Hub.
-  convert       Export a PyTorch model to TorchScript or ONNX format.
-  validate      Compare a source model against its export on random inputs.
+  convert       Convert model format (PyTorch→ONNX/TorchScript, ONNX→TensorRT, HF→GGUF).
+  validate      Quick-validate a model or compare source vs export on random inputs.
 
 `)
 	flag.PrintDefaults()

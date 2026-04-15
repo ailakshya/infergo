@@ -142,3 +142,52 @@ func TestUpdateRegistryValidation(t *testing.T) {
 		t.Error("Validation.Passed = false, want true")
 	}
 }
+
+// TestDetectModelType verifies automatic model type detection from filenames.
+func TestDetectModelType(t *testing.T) {
+	tests := []struct {
+		path   string
+		ext    string
+		expect string
+	}{
+		{"yolo11n.onnx", ".onnx", "detect"},
+		{"yolov8s.pt", ".pt", "detect"},
+		{"all-MiniLM-L6-v2.onnx", ".onnx", "embed"},
+		{"bge-small-en.onnx", ".onnx", "embed"},
+		{"e5-large.onnx", ".onnx", "embed"},
+		{"gte-base.onnx", ".onnx", "embed"},
+		{"llama3-8b-q4.gguf", ".gguf", "llm"},
+		{"random-model.onnx", ".onnx", "unknown"},
+	}
+
+	for _, tt := range tests {
+		// Create a fake path to avoid tokenizer.json lookup.
+		got := detectModelType(filepath.Join("/nonexistent", tt.path), tt.ext)
+		if got != tt.expect {
+			t.Errorf("detectModelType(%q, %q) = %q, want %q", tt.path, tt.ext, got, tt.expect)
+		}
+	}
+}
+
+// TestFormatName verifies human-readable format names.
+func TestFormatName(t *testing.T) {
+	tests := []struct {
+		ext    string
+		expect string
+	}{
+		{".gguf", "GGUF (llama.cpp)"},
+		{".onnx", "ONNX"},
+		{".pt", "TorchScript"},
+		{".pth", "TorchScript"},
+		{".engine", "TensorRT"},
+		{".safetensors", "SafeTensors"},
+		{".xyz", ".xyz"},
+	}
+
+	for _, tt := range tests {
+		got := formatName(tt.ext)
+		if got != tt.expect {
+			t.Errorf("formatName(%q) = %q, want %q", tt.ext, got, tt.expect)
+		}
+	}
+}
