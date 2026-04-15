@@ -10,3 +10,5 @@ benchmarks/*.py
 benchmarks/vs_python/*.py
 tools/*.py
 deploy/*.py
+*.pt
+__pycache__/
