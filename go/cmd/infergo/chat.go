@@ -54,7 +54,7 @@ func chatCmd(args []string) {
 	}
 
 	fmt.Printf("infergo chat — connected to %s (model: %s)\n", serverURL, model)
-	fmt.Println("Type /help for commands, /quit to exit.\n")
+	fmt.Println("Type /help for commands, /quit to exit.")
 
 	var messages []chatMsg
 	if system != "" {

@@ -1161,7 +1161,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ## PHASE E — Multi-Modal & New Capabilities
 
-### OPT-40 — Vision LLM (LLaVA / Qwen-VL) `[ ]` M
+### OPT-40 — Vision LLM (LLaVA / Qwen-VL) `[x]` M
 
 **Problem:** infergo handles text-only LLM. Modern applications need image+text → text (visual QA, image captioning, OCR). We already have image preprocessing (OPT-6) and LLM (OPT-1/2) — combining them enables multimodal inference.
 
@@ -1185,7 +1185,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-41 — Speech-to-Text (Whisper) `[ ]` M
+### OPT-41 — Speech-to-Text (Whisper) `[x]` M
 
 **Problem:** Audio transcription requires a separate Python service (faster-whisper, whisper.cpp). infergo should handle audio natively.
 
@@ -1210,7 +1210,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-42 — Text-to-Speech `[ ]` M
+### OPT-42 — Text-to-Speech `[x]` M
 
 **Problem:** TTS requires external services. GGUF-based TTS models (Kokoro, OuteTTS) can run locally via llama.cpp.
 
@@ -1369,7 +1369,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ## PHASE F — Advanced AI Capabilities
 
-### OPT-49 — Image Generation (Stable Diffusion) `[ ]` L
+### OPT-49 — Image Generation (Stable Diffusion) `[x]` L
 
 **Problem:** Text-to-image requires separate services. GGUF-quantized SD models can run via stable-diffusion.cpp.
 
@@ -1710,7 +1710,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE H — Real-Time & Streaming
 
-### OPT-62 — Live Video Analysis Pipeline `[ ]` L
+### OPT-62 — Live Video Analysis Pipeline `[x]` L
 
 **Problem:** Real-time video analysis requires stitching together decode → detect → track → annotate at 30 FPS. infergo already has all components — need a unified pipeline endpoint.
 
@@ -1733,7 +1733,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-63 — Real-Time Translation Pipeline `[ ]` L
+### OPT-63 — Real-Time Translation Pipeline `[x]` L
 
 **Problem:** Audio → transcribe → translate → TTS as a single pipeline for live translation.
 
@@ -1776,7 +1776,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-65 — WebRTC Video Streaming `[ ]` L
+### OPT-65 — WebRTC Video Streaming `[x]` L
 
 **Problem:** Browser needs live annotated video. WebRTC provides low-latency bidirectional video.
 
@@ -1799,7 +1799,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE I — Model Intelligence
 
-### OPT-66 — QLoRA Fine-Tuning `[ ]` XL
+### OPT-66 — QLoRA Fine-Tuning `[x]` XL
 
 **Problem:** Fine-tuning requires separate Python workflow. infergo should fine-tune models in-place.
 
@@ -1822,7 +1822,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-67 — Model Distillation `[ ]` L
+### OPT-67 — Model Distillation `[x]` L
 
 **Problem:** Large models are slow. Distillation compresses a large model into a small one with minimal quality loss.
 
@@ -1906,7 +1906,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE J — Data & Knowledge
 
-### OPT-71 — Knowledge Graph Extraction `[ ]` L
+### OPT-71 — Knowledge Graph Extraction `[x]` L
 
 **Problem:** RAG with flat text misses entity relationships. Knowledge graphs capture structured relationships for better retrieval.
 
@@ -1971,7 +1971,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-74 — Data Connectors `[ ]` L
+### OPT-74 — Data Connectors `[x]` L
 
 **Problem:** RAG sources are scattered: PostgreSQL, MongoDB, S3, Google Drive. Need connectors to pull data automatically.
 
@@ -2141,7 +2141,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE L — Developer Experience
 
-### OPT-82 — Interactive Playground UI `[ ]` M
+### OPT-82 — Interactive Playground UI `[x]` M
 
 **Problem:** Built-in `/ui` is minimal. Need a full playground with model picker, parameter sliders, history, and multi-modal input.
 
@@ -2164,7 +2164,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-83 — Python SDK `[ ]` M
+### OPT-83 — Python SDK `[x]` M
 
 **Problem:** Python developers need a typed client library. `pip install infergo` for easy integration.
 
@@ -2186,7 +2186,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-84 — TypeScript SDK `[ ]` M
+### OPT-84 — TypeScript SDK `[x]` M
 
 **Problem:** Frontend and Node.js developers need a typed client.
 
@@ -2311,7 +2311,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-90 — Health Dashboard UI `[ ]` M
+### OPT-90 — Health Dashboard UI `[x]` M
 
 **Problem:** Monitoring requires external Grafana. Built-in dashboard shows real-time metrics.
 
@@ -2334,7 +2334,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE N — Security & Compliance
 
-### OPT-91 — Model Encryption at Rest `[ ]` M
+### OPT-91 — Model Encryption at Rest `[x]` M
 
 **Problem:** Model files on disk are unprotected. Encrypt at rest, decrypt on load.
 
@@ -2417,7 +2417,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE O — Edge & Mobile
 
-### OPT-95 — ARM64 / Apple Silicon Build `[ ]` M
+### OPT-95 — ARM64 / Apple Silicon Build `[x]` M
 
 **Problem:** No native macOS ARM build. Need Metal backend for M1/M2/M3/M4.
 

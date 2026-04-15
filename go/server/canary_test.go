@@ -81,11 +81,12 @@ func TestCanaryAutoRollback(t *testing.T) {
 		MaxErrorRate: 0.05, // 5%
 	})
 
-	// Simulate 10 requests: 9 errors + 1 success = 90% error rate.
-	for i := 0; i < 9; i++ {
-		cd.RecordError()
+	// Simulate 11 requests: 10 errors + 1 success = ~91% error rate.
+	// The rollback check requires at least 10 total requests.
+	cd.RecordSuccess() // total=1
+	for i := 0; i < 10; i++ {
+		cd.RecordError() // total=2..11, errors=1..10
 	}
-	cd.RecordSuccess()
 
 	// Should have rolled back.
 	status := cd.Status()
