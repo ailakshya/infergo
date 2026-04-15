@@ -12,3 +12,8 @@ tools/*.py
 deploy/*.py
 *.pt
 __pycache__/
+*.gguf
+models/
+*.so
+infergo
+infergo_*
