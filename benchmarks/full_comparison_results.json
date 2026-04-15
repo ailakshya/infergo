@@ -1,0 +1,66 @@
+[
+  {
+    "name": "infergo c=1",
+    "avg": 107.3,
+    "rps": 9.31,
+    "tps": 279.3,
+    "tok": 30,
+    "err": 0
+  },
+  {
+    "name": "infergo c=4",
+    "avg": 392.3,
+    "rps": 9.42,
+    "tps": 282.6,
+    "tok": 30,
+    "err": 0
+  },
+  {
+    "name": "infergo c=8",
+    "avg": 699.0,
+    "rps": 9.44,
+    "tps": 283.2,
+    "tok": 30,
+    "err": 0
+  },
+  {
+    "name": "lm-studio c=1",
+    "avg": 100.9,
+    "rps": 9.9,
+    "tps": 304.0,
+    "tok": 30.7,
+    "err": 0
+  },
+  {
+    "name": "lm-studio c=4",
+    "avg": 259.4,
+    "rps": 15.22,
+    "tps": 465.0,
+    "tok": 30.6,
+    "err": 0
+  },
+  {
+    "name": "lm-studio c=8",
+    "avg": 480.3,
+    "rps": 14.93,
+    "tps": 459.7,
+    "tok": 30.8,
+    "err": 0
+  },
+  {
+    "name": "python c=1",
+    "avg": 674.6,
+    "rps": 1.48,
+    "tps": 44.0,
+    "tok": 29.7,
+    "err": 0
+  },
+  {
+    "name": "python c=4",
+    "avg": 2506.3,
+    "rps": 1.48,
+    "tps": 43.9,
+    "tok": 29.7,
+    "err": 0
+  }
+]
