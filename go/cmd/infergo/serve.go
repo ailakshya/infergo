@@ -191,6 +191,8 @@ func runServe(args []string) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(server.WebUIHTML))
 	})
+	// Route /ui/* pages to the API server's handlers
+	mux.Handle("/ui/", apiSrv)
 	health.RegisterRoutes(mux)
 	mux.Handle("/metrics", metrics.Handler())
 
