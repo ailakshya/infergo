@@ -322,6 +322,7 @@ type Server struct {
 	tenants           *TenantStore        // multi-tenant management (OPT-56)
 	canary            *CanaryDeploy       // canary deployment (OPT-61)
 	triggers          *TriggerEngine      // event triggers (OPT-64)
+	knowledgeGraph    *KnowledgeGraph     // knowledge graph (OPT-71)
 }
 
 // NewServer creates a Server backed by the given Registry and registers all routes.
@@ -388,6 +389,13 @@ func NewServer(reg *Registry) *Server {
 	s.mux.HandleFunc("POST /v1/admin/triggers", s.handleTriggersCreate)
 	s.mux.HandleFunc("GET /v1/admin/triggers", s.handleTriggersList)
 	s.mux.HandleFunc("DELETE /v1/admin/triggers/{name}", s.handleTriggersDelete)
+	// Playground UI (OPT-82)
+	s.mux.HandleFunc("GET /ui/playground", s.handlePlayground)
+	// Health dashboard (OPT-90)
+	s.mux.HandleFunc("GET /ui/dashboard", s.handleDashboard)
+	// Knowledge graph (OPT-71)
+	s.mux.HandleFunc("POST /v1/knowledge/extract", s.handleKnowledgeExtract)
+	s.mux.HandleFunc("GET /v1/knowledge/query", s.handleKnowledgeQuery)
 	return s
 }
 
@@ -440,6 +448,11 @@ func (s *Server) SetCanary(cd *CanaryDeploy) {
 // SetTriggers injects an event trigger engine.
 func (s *Server) SetTriggers(te *TriggerEngine) {
 	s.triggers = te
+}
+
+// SetKnowledgeGraph injects a knowledge graph for entity extraction and querying.
+func (s *Server) SetKnowledgeGraph(kg *KnowledgeGraph) {
+	s.knowledgeGraph = kg
 }
 
 // ServeHTTP implements http.Handler.
