@@ -69,6 +69,7 @@ func builtinTools() map[string]AgentTool {
 			Parameters:  `{}`,
 			Execute:     toolCurrentTime,
 		},
+		"code_executor": codeExecutorTool(),
 	}
 }
 

@@ -368,6 +368,8 @@ func NewServer(reg *Registry) *Server {
 	// Agent framework (OPT-51)
 	s.mux.HandleFunc("POST /v1/agents/run", s.handleAgentRun)
 	s.mux.HandleFunc("POST /v1/rag/stream", s.handleStreamingRAG)
+	// Code execution sandbox (OPT-50)
+	s.mux.HandleFunc("POST /v1/code/execute", s.handleCodeExecute)
 	return s
 }
 
