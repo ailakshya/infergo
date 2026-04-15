@@ -1156,3 +1156,552 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 | OPT-4 | Embedding CUDA sentences/sec | — | ≥ sentence-transformers |
 | OPT-5 | Detection CUDA batch=32 images/sec | — | ≥ ultralytics ONNX Runtime |
 | OPT-19 | TRT detection vs CUDA ONNX | — | ≥ 1.5× faster |
+
+---
+
+## PHASE E — Multi-Modal & New Capabilities
+
+### OPT-40 — Vision LLM (LLaVA / Qwen-VL) `[ ]` M
+
+**Problem:** infergo handles text-only LLM. Modern applications need image+text → text (visual QA, image captioning, OCR). We already have image preprocessing (OPT-6) and LLM (OPT-1/2) — combining them enables multimodal inference.
+
+**What changes:**
+- `cpp/llm/vision.cpp` — image encoder (CLIP/SigLIP) via ONNX or llama.cpp's `llava` module
+- `cpp/api/api.cpp` — `infer_llm_generate_vision(llm, tokens, n_tokens, image_data, ...)` C API
+- `go/llm/vision.go` — Go wrapper for vision generation
+- `go/server/router.go` — accept `image_url` or `image_b64` in chat messages (OpenAI multimodal format)
+- Support models: LLaVA 1.6, Qwen-VL, InternVL (GGUF format)
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-40-T1 | Image+text input accepted | `POST /v1/chat/completions` with `image_url` field returns text | |
+| OPT-40-T2 | Image description correct | Photo of cat → response contains "cat" | |
+| OPT-40-T3 | Base64 image input works | `image_b64` field with JPEG base64 → valid response | |
+| OPT-40-T4 | Text-only still works | Regular text prompt → same output as before | |
+| OPT-40-T5 | Latency acceptable | Image+text P50 ≤ 2× text-only P50 | |
+| OPT-40-T6 | Multiple images | 2 images in one request → response references both | |
+
+---
+
+### OPT-41 — Speech-to-Text (Whisper) `[ ]` M
+
+**Problem:** Audio transcription requires a separate Python service (faster-whisper, whisper.cpp). infergo should handle audio natively.
+
+**What changes:**
+- `cpp/audio/whisper.cpp` — wrap whisper.cpp for audio transcription
+- `cpp/api/api.cpp` — `infer_transcribe(model, audio_data, n_bytes, ...)` C API
+- `go/audio/whisper.go` — Go wrapper
+- `go/server/router.go` — `POST /v1/audio/transcriptions` (OpenAI-compatible)
+- `--model stt:models/whisper-base.gguf` model type
+- Support models: whisper-tiny, whisper-base, whisper-small, whisper-medium (GGUF)
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-41-T1 | WAV file transcribed | Upload WAV → returns text | |
+| OPT-41-T2 | MP3 file transcribed | Upload MP3 → returns text | |
+| OPT-41-T3 | Language detection | Auto-detect language in response | |
+| OPT-41-T4 | Timestamps | `timestamp_granularities: ["segment"]` → timestamps per segment | |
+| OPT-41-T5 | Streaming | Long audio → stream partial transcriptions | |
+| OPT-41-T6 | Latency vs Python | P50 ≤ faster-whisper Python for same model | |
+
+---
+
+### OPT-42 — Text-to-Speech `[ ]` M
+
+**Problem:** TTS requires external services. GGUF-based TTS models (Kokoro, OuteTTS) can run locally via llama.cpp.
+
+**What changes:**
+- `cpp/audio/tts.cpp` — TTS generation from text
+- `go/audio/tts.go` — Go wrapper
+- `go/server/router.go` — `POST /v1/audio/speech` (OpenAI-compatible)
+- `--model tts:models/kokoro-tts.gguf` model type
+- Response: audio/wav or audio/mp3 binary stream
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-42-T1 | Text → WAV output | "Hello world" → valid WAV audio file | |
+| OPT-42-T2 | Voice selection | `voice: "alloy"` parameter works | |
+| OPT-42-T3 | Streaming audio | Long text → stream audio chunks | |
+| OPT-42-T4 | Speed control | `speed: 1.5` → faster audio | |
+| OPT-42-T5 | Multiple formats | `response_format: "mp3"` and `"wav"` both work | |
+
+---
+
+### OPT-43 — Function Calling `[ ]` S
+
+**Problem:** LLMs need to call external tools (search, calculator, API). Function calling lets the model decide which tool to invoke with structured arguments. We already have grammar sampling — function calling is structured output with tool definitions.
+
+**What changes:**
+- `go/server/router.go` — accept `tools` and `tool_choice` in chat completion request
+- `go/server/function_call.go` — generate GBNF grammar from tool function schemas
+- Auto-construct grammar that constrains output to valid function call JSON
+- Support `auto`, `none`, `required`, or specific function name for `tool_choice`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-43-T1 | Tool defined, model calls it | `tools: [{name: "get_weather", ...}]` → model returns `tool_calls` | |
+| OPT-43-T2 | Arguments valid JSON | Function args are always valid JSON matching schema | |
+| OPT-43-T3 | tool_choice: none | Model responds normally, no function call | |
+| OPT-43-T4 | tool_choice: required | Model always calls a function | |
+| OPT-43-T5 | Multiple tools | 3 tools defined → model picks correct one | |
+| OPT-43-T6 | Parallel tool calls | Model calls 2 tools in one response | |
+
+---
+
+### OPT-44 — Conversation Memory `[ ]` S
+
+**Problem:** Each request is stateless. Multi-turn conversations require the client to resend full history. Built-in memory management reduces bandwidth and enables automatic context window management.
+
+**What changes:**
+- `go/server/memory.go` — conversation store (in-memory LRU, keyed by session ID)
+- `go/server/router.go` — `X-Session-ID` header or `session_id` field
+- Auto-append new messages to stored history
+- Sliding window: when context exceeds limit, summarize or drop oldest messages
+- `DELETE /v1/sessions/{id}` to clear memory
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-44-T1 | Multi-turn works | Send 3 messages with same session_id → model remembers context | |
+| OPT-44-T2 | Session isolation | Different session_ids → independent conversations | |
+| OPT-44-T3 | Context window management | Send 100 messages → no OOM, oldest dropped | |
+| OPT-44-T4 | Session delete | `DELETE /v1/sessions/abc` → next request starts fresh | |
+| OPT-44-T5 | No session = stateless | Request without session_id → normal stateless behavior | |
+
+---
+
+### OPT-45 — Streaming RAG `[ ]` S
+
+**Problem:** Current RAG pipeline waits for full retrieval before starting generation. Streaming RAG starts generating tokens while retrieval is still running, reducing time-to-first-token.
+
+**What changes:**
+- `go/server/rag.go` — parallel embed+search, then stream generate
+- Start LLM generation with partial context as soon as top-k results available
+- Append additional context as more results arrive
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-45-T1 | RAG response streams | SSE events arrive within 500ms of request | |
+| OPT-45-T2 | Context includes retrieved docs | Response references ingested document content | |
+| OPT-45-T3 | TTFT improves | Time-to-first-token ≤ 50% of non-streaming RAG | |
+| OPT-45-T4 | Quality maintained | Answer quality same as non-streaming RAG | |
+
+---
+
+### OPT-46 — Response Caching `[ ]` S
+
+**Problem:** Identical prompts generate identical responses, wasting GPU compute. Caching saves the full response for repeated queries.
+
+**What changes:**
+- `go/server/cache.go` — LRU response cache keyed by hash(messages + model + params)
+- `X-Cache: HIT/MISS` response header
+- `--cache-size` flag (default 1000 entries)
+- Cache bypass: `X-No-Cache: true` header
+- Prometheus metric: `infergo_cache_hit_rate`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-46-T1 | Cache hit returns instantly | Same prompt twice → second response < 1ms | |
+| OPT-46-T2 | Cache miss generates normally | New prompt → normal generation time | |
+| OPT-46-T3 | Different params = cache miss | Same prompt, different temperature → regenerate | |
+| OPT-46-T4 | Cache bypass works | `X-No-Cache: true` → always regenerate | |
+| OPT-46-T5 | Cache header present | Response includes `X-Cache: HIT` or `MISS` | |
+| OPT-46-T6 | LRU eviction | Cache full → oldest entries evicted | |
+
+---
+
+### OPT-47 — Webhook / Async Callback `[ ]` S
+
+**Problem:** Batch inference results need polling. Webhooks push results to a URL when complete.
+
+**What changes:**
+- `go/server/webhook.go` — HTTP POST callback on batch completion
+- `POST /v1/batches` accepts `webhook_url` field
+- Retry with exponential backoff on failure
+- HMAC signature for webhook authentication
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-47-T1 | Webhook fires on completion | Batch completes → POST to webhook_url with results | |
+| OPT-47-T2 | Retry on failure | Webhook URL returns 500 → retry 3 times | |
+| OPT-47-T3 | HMAC signature valid | `X-Webhook-Signature` header matches HMAC-SHA256 | |
+| OPT-47-T4 | No webhook = normal behavior | Batch without webhook_url → poll as before | |
+
+---
+
+### OPT-48 — Model Auto-Download `[ ]` S
+
+**Problem:** Users must manually download models. `--model hf:org/repo` should auto-download from HuggingFace.
+
+**What changes:**
+- `go/cmd/infergo/download.go` — HuggingFace Hub download via API
+- `--model hf:Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF:q4_k_m` syntax
+- Download to `~/.infergo/models/` with progress bar
+- Resume partial downloads
+- Verify SHA256 after download
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-48-T1 | Auto-download works | `--model hf:Qwen/...` downloads and serves | |
+| OPT-48-T2 | Cached model reused | Second start with same model → no download | |
+| OPT-48-T3 | Progress displayed | Download shows progress bar with ETA | |
+| OPT-48-T4 | Invalid repo handled | Bad repo name → clear error message | |
+| OPT-48-T5 | Resume partial download | Kill during download → restart resumes | |
+
+---
+
+## PHASE F — Advanced AI Capabilities
+
+### OPT-49 — Image Generation (Stable Diffusion) `[ ]` L
+
+**Problem:** Text-to-image requires separate services. GGUF-quantized SD models can run via stable-diffusion.cpp.
+
+**What changes:**
+- `cpp/diffusion/sd.cpp` — wrap stable-diffusion.cpp
+- `go/diffusion/sd.go` — Go wrapper
+- `POST /v1/images/generations` (OpenAI-compatible)
+- `--model img:models/sd-v1.5-q4.gguf` model type
+- Support: SD 1.5, SDXL, Flux (GGUF quantized)
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-49-T1 | Text → image | "A cat" → valid PNG image | |
+| OPT-49-T2 | Size parameter | `size: "512x512"` → correct dimensions | |
+| OPT-49-T3 | Multiple images | `n: 4` → 4 different images | |
+| OPT-49-T4 | Negative prompt | `negative_prompt` field excludes concepts | |
+| OPT-49-T5 | Seed reproducibility | Same seed → same image | |
+
+---
+
+### OPT-50 — Code Execution Sandbox `[ ]` M
+
+**Problem:** LLMs generate code but can't verify it. A sandbox runs generated code safely and returns output.
+
+**What changes:**
+- `go/sandbox/executor.go` — sandboxed code execution (Docker or nsjail)
+- Support: Python, JavaScript, Go, Bash
+- Timeout, memory limit, no network access
+- `POST /v1/code/execute` endpoint
+- Integration with function calling (OPT-43)
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-50-T1 | Python code runs | `print(2+2)` → `4` | |
+| OPT-50-T2 | Timeout enforced | Infinite loop → killed after 5s | |
+| OPT-50-T3 | No network access | `requests.get(...)` → blocked | |
+| OPT-50-T4 | Memory limited | `[0]*10**9` → OOM error, not crash | |
+| OPT-50-T5 | Output captured | stdout + stderr both returned | |
+
+---
+
+### OPT-51 — Agent Framework `[ ]` M
+
+**Problem:** Complex tasks require multi-step reasoning: plan → execute tool → observe → repeat. An agent framework orchestrates this loop.
+
+**What changes:**
+- `go/agent/agent.go` — ReAct-style agent loop
+- Tool registry: register Go functions as tools
+- Built-in tools: web search, code execution, file read, calculator
+- `POST /v1/agents/run` endpoint
+- Streaming: show thoughts + actions as they happen
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-51-T1 | Agent uses tool | "What's 2+2?" → agent calls calculator → returns 4 | |
+| OPT-51-T2 | Multi-step | "Search for X then summarize" → search tool + LLM summary | |
+| OPT-51-T3 | Max iterations | Agent stuck in loop → stops after max_iterations | |
+| OPT-51-T4 | Streaming thoughts | SSE events show agent reasoning steps | |
+| OPT-51-T5 | Custom tools | User registers tool via API → agent can use it | |
+
+---
+
+### OPT-52 — Document Parsing + Ingestion `[ ]` M
+
+**Problem:** RAG needs documents ingested into vector DB. Currently manual. Auto-parse PDF/DOCX/HTML/MD, chunk, embed, store.
+
+**What changes:**
+- `go/ingest/parser.go` — parse PDF (pdfcpu), DOCX (unioffice), HTML, Markdown
+- `go/ingest/chunker.go` — recursive text splitter with overlap
+- `POST /v1/ingest` accepts file upload
+- Auto: parse → chunk → embed → store in HNSW
+- Metadata: filename, page number, chunk index
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-52-T1 | PDF ingested | Upload PDF → chunks in vector DB | |
+| OPT-52-T2 | DOCX ingested | Upload DOCX → chunks in vector DB | |
+| OPT-52-T3 | Markdown ingested | Upload MD → chunks preserving headers | |
+| OPT-52-T4 | Chunking correct | 10-page PDF → ~50 chunks with overlap | |
+| OPT-52-T5 | RAG finds content | Ingest doc → ask question → answer from doc | |
+| OPT-52-T6 | Metadata preserved | Search results include filename + page number | |
+
+---
+
+### OPT-53 — A/B Model Testing `[ ]` S
+
+**Problem:** Comparing model quality requires manual switching. A/B testing routes traffic between models and collects metrics.
+
+**What changes:**
+- `go/server/ab_test.go` — traffic routing with configurable split
+- `POST /v1/admin/ab` — configure A/B test: `{model_a: "llm1", model_b: "llm2", split: 0.5}`
+- Response includes `X-Model-Used` header
+- Prometheus metrics per model variant
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-53-T1 | Traffic splits correctly | 50/50 split → ~50% to each model over 100 requests | |
+| OPT-53-T2 | Header identifies model | `X-Model-Used: llm1` or `llm2` in response | |
+| OPT-53-T3 | Metrics per variant | `/metrics` shows latency/tok per model variant | |
+| OPT-53-T4 | Disable A/B | `DELETE /v1/admin/ab` → all traffic to primary | |
+
+---
+
+### OPT-54 — Response Caching with Semantic Similarity `[ ]` M
+
+**Problem:** Exact-match caching (OPT-46) misses similar prompts. Semantic caching uses embeddings to find similar past queries and return cached responses.
+
+**What changes:**
+- `go/server/semantic_cache.go` — embed query → search cache → return if cosine > threshold
+- Uses the loaded embedding model for cache key computation
+- Threshold configurable: `--cache-similarity 0.95`
+- `X-Cache: SEMANTIC_HIT` header when similar match found
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-54-T1 | Exact match hits | Same prompt → cache hit | |
+| OPT-54-T2 | Similar prompt hits | "What's the weather?" vs "How's the weather?" → hit | |
+| OPT-54-T3 | Different prompt misses | "What's the weather?" vs "Write a poem" → miss | |
+| OPT-54-T4 | Threshold configurable | Lower threshold → more hits, less precision | |
+| OPT-54-T5 | Embedding model required | Error if no embedding model loaded for semantic cache | |
+
+---
+
+### OPT-55 — OpenAI Proxy / Fallback Mode `[ ]` S
+
+**Problem:** Local model can't handle all queries. Proxy mode forwards to OpenAI/Anthropic API when local model confidence is low or model type is unavailable.
+
+**What changes:**
+- `go/server/proxy.go` — forward requests to upstream API
+- `--fallback-url https://api.openai.com/v1` flag
+- `--fallback-key sk-...` for upstream auth
+- Forward when: model not loaded locally, or `X-Force-Remote: true` header
+- Response includes `X-Served-By: local` or `X-Served-By: remote`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-55-T1 | Local model served locally | Request for loaded model → local inference | |
+| OPT-55-T2 | Unknown model forwarded | Request for "gpt-4" → forwarded to upstream | |
+| OPT-55-T3 | Force remote header | `X-Force-Remote: true` → always forward | |
+| OPT-55-T4 | Served-by header | Response includes `X-Served-By` indicating source | |
+| OPT-55-T5 | Fallback on error | Local inference fails → auto-forward to upstream | |
+
+---
+
+## PHASE G — Enterprise & Security
+
+### OPT-56 — Multi-Tenant Isolation `[ ]` L
+
+**Problem:** Single API key for all users. Production needs per-tenant rate limits, model access, and usage tracking.
+
+**What changes:**
+- `go/server/tenant.go` — tenant configuration store
+- Per-API-key: allowed models, rate limits, max tokens, usage quotas
+- `POST /v1/admin/tenants` CRUD
+- Usage tracking per tenant
+- Quota enforcement with 429 responses
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-56-T1 | Tenant rate limit enforced | Tenant with 10 req/min → 11th gets 429 | |
+| OPT-56-T2 | Model access restricted | Tenant without "llm" access → 403 on chat | |
+| OPT-56-T3 | Usage tracked | `/v1/admin/tenants/{id}/usage` shows token counts | |
+| OPT-56-T4 | Quota enforcement | Tenant exceeds monthly quota → 429 | |
+
+---
+
+### OPT-57 — PII Detection and Redaction `[ ]` M
+
+**Problem:** Requests may contain personal data (emails, phone numbers, SSNs). Auto-detect and redact before sending to LLM.
+
+**What changes:**
+- `go/server/pii.go` — regex + NER-based PII detection
+- Detects: email, phone, SSN, credit card, IP address, names (via NER)
+- Modes: `block` (reject request), `redact` (replace with [REDACTED]), `log` (warn only)
+- `--pii-mode redact` flag
+- `X-PII-Detected: true` response header
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-57-T1 | Email detected | "Contact john@example.com" → redacted | |
+| OPT-57-T2 | Phone detected | "Call 555-0123" → redacted | |
+| OPT-57-T3 | Block mode | PII found → 400 error | |
+| OPT-57-T4 | Clean text passes | No PII → normal processing | |
+| OPT-57-T5 | Header indicates PII | `X-PII-Detected: true` when redacted | |
+
+---
+
+### OPT-58 — Audit Logging `[ ]` S
+
+**Problem:** Compliance requires logging all requests/responses. Audit log captures full interaction history.
+
+**What changes:**
+- `go/server/audit.go` — structured audit log writer
+- Log: timestamp, API key, model, prompt hash, response hash, tokens, latency
+- `--audit-log /var/log/infergo/audit.jsonl` flag
+- Configurable: log prompt text (for debugging) or hash only (for privacy)
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-58-T1 | Audit entry written | Request → JSONL line in audit file | |
+| OPT-58-T2 | Hash mode | `--audit-hash-only` → prompt hash, not text | |
+| OPT-58-T3 | All fields present | Entry has timestamp, key, model, tokens, latency | |
+| OPT-58-T4 | File rotation | Log file > 100MB → rotated | |
+
+---
+
+### OPT-59 — RBAC (Role-Based Access Control) `[ ]` M
+
+**Problem:** All API keys have same permissions. Need admin vs user vs readonly roles.
+
+**What changes:**
+- `go/server/rbac.go` — role definitions and permission checks
+- Roles: `admin` (all), `user` (inference only), `readonly` (models + health only)
+- `--rbac-config rbac.yaml` file
+- Admin endpoints require `admin` role
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-59-T1 | Admin can reload | Admin key → `POST /v1/admin/reload` succeeds | |
+| OPT-59-T2 | User can't reload | User key → `POST /v1/admin/reload` → 403 | |
+| OPT-59-T3 | Readonly can list models | Readonly key → `GET /v1/models` succeeds | |
+| OPT-59-T4 | Readonly can't infer | Readonly key → `POST /v1/chat/completions` → 403 | |
+| OPT-59-T5 | Unknown role rejected | Invalid role in config → startup error | |
+
+---
+
+### OPT-60 — Model Registry with Versioning `[ ]` M
+
+**Problem:** No way to track model versions, rollback, or promote staging→production.
+
+**What changes:**
+- `go/server/registry_versioned.go` — versioned model store
+- `POST /v1/admin/models/push` — register new model version
+- `POST /v1/admin/models/promote` — promote version to production
+- `POST /v1/admin/models/rollback` — revert to previous version
+- `GET /v1/admin/models/{name}/versions` — list versions
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-60-T1 | Push new version | Push v2 → v2 becomes active | |
+| OPT-60-T2 | Rollback works | Rollback → v1 becomes active | |
+| OPT-60-T3 | Version list | List versions → shows v1, v2 with timestamps | |
+| OPT-60-T4 | Zero-downtime promote | Promote during traffic → no 503s | |
+
+---
+
+### OPT-61 — Canary Deployments `[ ]` M
+
+**Problem:** Deploying a new model risks quality regression. Canary deploys route a small percentage of traffic to the new model, auto-rollback if error rate spikes.
+
+**What changes:**
+- `go/server/canary.go` — canary routing with health monitoring
+- `POST /v1/admin/canary` — `{model: "llm-v2", traffic: 0.1, rollback_on_error_rate: 0.05}`
+- Auto-increase traffic if metrics are healthy
+- Auto-rollback if error rate > threshold
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-61-T1 | 10% canary traffic | 10% config → ~10% of requests to new model | |
+| OPT-61-T2 | Auto-rollback | New model errors > 5% → auto-revert to old | |
+| OPT-61-T3 | Auto-promote | Healthy after 100 requests → increase to 50% | |
+| OPT-61-T4 | Manual promote | `POST /v1/admin/canary/promote` → 100% new model | |
+
+---
+
+## Updated dependency map
+
+```
+PHASE E — Multi-Modal:
+OPT-40  vision LLM        ← requires OPT-6 (image preprocess) + OPT-31 (C generation loop)
+OPT-41  whisper STT        ← standalone, uses whisper.cpp
+OPT-42  TTS                ← standalone
+OPT-43  function calling   ← requires OPT-34 (grammar sampling)
+OPT-44  conversation mem   ← standalone
+OPT-45  streaming RAG      ← requires OPT-4 (embedding) + search + OPT-31
+OPT-46  response cache     ← standalone
+OPT-47  webhook            ← standalone
+OPT-48  model auto-download ← standalone
+
+PHASE F — Advanced AI:
+OPT-49  image generation   ← requires stable-diffusion.cpp
+OPT-50  code sandbox       ← standalone (Docker/nsjail)
+OPT-51  agent framework    ← requires OPT-43 (function calling)
+OPT-52  document ingestion ← requires OPT-4 (embedding) + vector DB
+OPT-53  A/B testing        ← requires OPT-8 (multi-model)
+OPT-54  semantic cache     ← requires OPT-4 (embedding) + OPT-46 (cache)
+OPT-55  OpenAI proxy       ← standalone
+
+PHASE G — Enterprise:
+OPT-56  multi-tenant       ← requires OPT-11 (auth) + OPT-12 (rate limit)
+OPT-57  PII detection      ← standalone
+OPT-58  audit logging      ← standalone
+OPT-59  RBAC               ← requires OPT-11 (auth)
+OPT-60  model registry     ← requires OPT-9 (hot-reload)
+OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
+```
+
+## Updated task summary
+
+| Phase | Tasks | Done | Pending |
+|---|---|---|---|
+| A — Performance | OPT-1..2 | 2/2 | 0 |
+| B — Core Inference | OPT-3..7 | 5/5 | 0 |
+| C — Production Serving | OPT-8..21 | 14/14 | 0 |
+| D — Advanced Optimization | OPT-22..39 | 15/15 | 0 (5 FUTURE) |
+| E — Multi-Modal | OPT-40..48 | 0/9 | 9 |
+| F — Advanced AI | OPT-49..55 | 0/7 | 7 |
+| G — Enterprise | OPT-56..61 | 0/6 | 6 |
+| **Total** | **61** | **36** | **22 + 5 FUTURE** |
