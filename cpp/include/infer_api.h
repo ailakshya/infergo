@@ -637,6 +637,64 @@ int infer_index_size(InferIndex idx);
 void infer_index_free(InferIndex idx);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BM25 FULL-TEXT SEARCH API
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef void* InferBM25;
+
+// Create a BM25 full-text search index.
+// k1: term frequency saturation (default 1.2).
+// b:  document length normalization (default 0.75).
+InferBM25 infer_bm25_create(float k1, float b);
+
+// Insert a document into the BM25 index.
+// id: unique document ID. text: null-terminated document text.
+void infer_bm25_insert(InferBM25 idx, int64_t id, const char* text);
+
+// Remove a document from the BM25 index.
+void infer_bm25_remove(InferBM25 idx, int64_t id);
+
+// Search the BM25 index.
+// query: null-terminated query string.
+// k: max results to return.
+// out_ids: caller-allocated array of max_results int64_t.
+// out_scores: caller-allocated array of max_results float.
+// Returns number of results found (≤ k), or -1 on error.
+int infer_bm25_search(InferBM25 idx, const char* query, int k,
+                       int64_t* out_ids, float* out_scores, int max_results);
+
+// Number of documents in the BM25 index.
+int infer_bm25_size(InferBM25 idx);
+
+// Save BM25 index to file.
+int infer_bm25_save(InferBM25 idx, const char* path);
+
+// Load BM25 index from file.
+int infer_bm25_load(InferBM25 idx, const char* path);
+
+// Free the BM25 index. Safe to call with NULL.
+void infer_bm25_free(InferBM25 idx);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HYBRID SEARCH API (BM25 + Vector fusion)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Combine vector search results and BM25 results using weighted score fusion.
+// alpha: weight for vector scores (1.0 = pure vector, 0.0 = pure BM25, 0.5 = equal).
+// Scores are normalized to [0,1] before combining.
+//
+// vec_ids/vec_distances: HNSW results (cosine distance, lower = better).
+// bm25_ids/bm25_scores:  BM25 results (BM25 score, higher = better).
+// out_ids/out_scores: caller-allocated output arrays.
+//
+// Returns number of fused results (≤ k), or -1 on error.
+int infer_hybrid_search(
+    const int64_t* vec_ids,   const float* vec_distances,  int n_vec,
+    const int64_t* bm25_ids,  const float* bm25_scores,    int n_bm25,
+    float alpha, int k,
+    int64_t* out_ids, float* out_scores, int max_results);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SPECULATIVE DECODING API
 // ─────────────────────────────────────────────────────────────────────────────
 

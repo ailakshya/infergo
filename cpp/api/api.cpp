@@ -11,6 +11,8 @@
 #include "../llm/llm_engine.hpp"
 #include "../llm/toon.hpp"
 #include "../search/hnsw.hpp"
+#include "../search/bm25.hpp"
+#include "../search/hybrid.hpp"
 #include "../llm/infer_sequence.hpp"
 #include "../llm/speculative.hpp"
 #include "../llm/prompt_cache.hpp"
@@ -1912,6 +1914,91 @@ int infer_index_size(InferIndex idx) {
 void infer_index_free(InferIndex idx) {
     if (idx == nullptr) return;
     try { delete static_cast<infergo::HNSWIndex*>(idx); } catch (...) {}
+}
+
+// ─── BM25 Full-Text Search API ──────────────────────────────────────────────
+
+InferBM25 infer_bm25_create(float k1, float b) {
+    try {
+        float actual_k1 = k1 > 0 ? k1 : 1.2f;
+        float actual_b  = (b >= 0 && b <= 1) ? b : 0.75f;
+        return static_cast<InferBM25>(new infergo::BM25Index(actual_k1, actual_b));
+    } catch (...) { return nullptr; }
+}
+
+void infer_bm25_insert(InferBM25 idx, int64_t id, const char* text) {
+    if (idx == nullptr || text == nullptr) return;
+    try {
+        static_cast<infergo::BM25Index*>(idx)->Insert(id, text);
+    } catch (...) {}
+}
+
+void infer_bm25_remove(InferBM25 idx, int64_t id) {
+    if (idx == nullptr) return;
+    try {
+        static_cast<infergo::BM25Index*>(idx)->Remove(id);
+    } catch (...) {}
+}
+
+int infer_bm25_search(InferBM25 idx, const char* query, int k,
+                       int64_t* out_ids, float* out_scores, int max_results) {
+    if (idx == nullptr || query == nullptr || out_ids == nullptr) return -1;
+    try {
+        std::vector<int64_t> ids;
+        std::vector<float> scores;
+        static_cast<infergo::BM25Index*>(idx)->Search(query, k, ids, scores);
+
+        int n = std::min(static_cast<int>(ids.size()), max_results);
+        for (int i = 0; i < n; ++i) {
+            out_ids[i] = ids[i];
+            if (out_scores) out_scores[i] = scores[i];
+        }
+        return n;
+    } catch (...) { return -1; }
+}
+
+int infer_bm25_size(InferBM25 idx) {
+    if (idx == nullptr) return 0;
+    return static_cast<infergo::BM25Index*>(idx)->Size();
+}
+
+int infer_bm25_save(InferBM25 idx, const char* path) {
+    if (idx == nullptr || path == nullptr) return -1;
+    return static_cast<infergo::BM25Index*>(idx)->Save(path) ? 0 : -1;
+}
+
+int infer_bm25_load(InferBM25 idx, const char* path) {
+    if (idx == nullptr || path == nullptr) return -1;
+    return static_cast<infergo::BM25Index*>(idx)->Load(path) ? 0 : -1;
+}
+
+void infer_bm25_free(InferBM25 idx) {
+    if (idx == nullptr) return;
+    try { delete static_cast<infergo::BM25Index*>(idx); } catch (...) {}
+}
+
+// ─── Hybrid Search API ──────────────────────────────────────────────────────
+
+int infer_hybrid_search(
+    const int64_t* vec_ids,   const float* vec_distances,  int n_vec,
+    const int64_t* bm25_ids,  const float* bm25_scores,    int n_bm25,
+    float alpha, int k,
+    int64_t* out_ids, float* out_scores, int max_results)
+{
+    if (out_ids == nullptr || k <= 0) return -1;
+    try {
+        auto results = infergo::HybridSearch(
+            vec_ids, vec_distances, n_vec,
+            bm25_ids, bm25_scores, n_bm25,
+            alpha, k);
+
+        int n = std::min(static_cast<int>(results.size()), max_results);
+        for (int i = 0; i < n; ++i) {
+            out_ids[i] = results[i].id;
+            if (out_scores) out_scores[i] = results[i].score;
+        }
+        return n;
+    } catch (...) { return -1; }
 }
 
 // ─── Speculative Decoding API ────────────────────────────────────────────────

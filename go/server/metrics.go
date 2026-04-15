@@ -39,6 +39,15 @@ type Metrics struct {
 
 	// infergo_kv_pages_total: total KV cache pages (set once at startup)
 	KVPagesTotal *prometheus.GaugeVec // label: model
+
+	// infergo_cache_hits_total: response cache hit counter
+	CacheHits prometheus.Counter
+
+	// infergo_cache_misses_total: response cache miss counter
+	CacheMisses prometheus.Counter
+
+	// infergo_cache_size: current number of cached responses
+	CacheSize prometheus.Gauge
 }
 
 // NewMetrics creates and registers all metrics on a fresh Prometheus registry.
@@ -94,6 +103,21 @@ func NewMetrics() *Metrics {
 			Name: "infergo_kv_pages_total",
 			Help: "Total KV cache pages for this model instance.",
 		}, []string{"model"}),
+
+		CacheHits: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "infergo_cache_hits_total",
+			Help: "Total number of response cache hits.",
+		}),
+
+		CacheMisses: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "infergo_cache_misses_total",
+			Help: "Total number of response cache misses.",
+		}),
+
+		CacheSize: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "infergo_cache_size",
+			Help: "Current number of entries in the response cache.",
+		}),
 	}
 
 	reg.MustRegister(
@@ -106,6 +130,9 @@ func NewMetrics() *Metrics {
 		m.ActiveSequences,
 		m.KVPagesFree,
 		m.KVPagesTotal,
+		m.CacheHits,
+		m.CacheMisses,
+		m.CacheSize,
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 	)

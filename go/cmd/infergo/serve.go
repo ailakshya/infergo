@@ -88,6 +88,7 @@ func runServe(args []string) {
 	detectGPUSlots := fs.Int("detect-gpu-slots", 8, "max concurrent GPU detection inference slots (overflow routes to fallback)")
 	draftModel  := fs.String("draft-model", "", "path to draft GGUF model for speculative decoding (must share vocab with target LLM)")
 	nDraft      := fs.Int("n-draft", 5, "number of tokens to draft per speculative step")
+	cacheSize   := fs.Int("cache-size", 1000, "max entries in response cache (0 = disabled)")
 	fs.Parse(args)
 
 	// Store speculative config for loadLLM.
@@ -161,6 +162,11 @@ func runServe(args []string) {
 	mux := http.NewServeMux()
 	apiSrv := server.NewServer(reg)
 	apiSrv.SetMode(*mode)
+	apiSrv.SetMetrics(metrics)
+	if *cacheSize > 0 {
+		apiSrv.SetCache(server.NewResponseCache(*cacheSize))
+		log.Printf("response cache enabled: max %d entries", *cacheSize)
+	}
 
 	// Inject the hot-reload function so POST /v1/admin/reload works.
 	apiSrv.SetReloader(func(name, path string) error {
