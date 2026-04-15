@@ -1,134 +1,381 @@
-# Using infergo from Python
+# Python SDK Reference
 
-infergo exposes an OpenAI-compatible HTTP server. Any Python code that already uses the OpenAI SDK works with infergo unchanged — just point `base_url` at your infergo server.
+The infergo Python SDK provides a typed client for the infergo AI platform. Zero dependencies -- uses only the Python standard library.
 
 ---
 
 ## Contents
 
-- [The right architecture](#the-right-architecture)
-- [Quickstart](#quickstart)
-- [OpenAI SDK](#openai-sdk)
-- [Zero-dependency (stdlib only)](#zero-dependency-stdlib-only)
-- [Async / asyncio](#async--asyncio)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Client configuration](#client-configuration)
+- [Chat completions](#chat-completions)
 - [Streaming](#streaming)
 - [Embeddings](#embeddings)
-- [LangChain](#langchain)
-- [Production patterns](#production-patterns)
-- [Scaling](#scaling)
+- [Object detection](#object-detection)
+- [Search](#search)
+- [Document ingestion](#document-ingestion)
+- [NLP tasks](#nlp-tasks)
+- [Models and health](#models-and-health)
+- [OpenAI SDK compatibility](#openai-sdk-compatibility)
+- [Async / asyncio](#async--asyncio)
+- [LangChain integration](#langchain-integration)
 - [Native Python bindings](#native-python-bindings)
-- [Benchmark: all 5 approaches](#benchmark-all-5-approaches)
+- [Production patterns](#production-patterns)
+- [Performance](#performance)
 
 ---
 
-## The right architecture
-
-```
-Python app
-    │
-    │  HTTP (OpenAI-compatible)
-    ▼
-infergo serve  ←── one binary, one GPU, continuous batching
-    │
-    │  CGo
-    ▼
-llama.cpp / CUDA
-```
-
-Start the server once. Point all your Python code at it. Multiple processes, threads, and requests all share the same GPU efficiently — no locks, no serialisation.
-
----
-
-## Quickstart
+## Installation
 
 ```bash
-# 1. Download a model
-wget -O llama3-8b-q4.gguf \
-  "https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
-
-# 2. Start the server (CPU)
-infergo serve --model llama3-8b-q4.gguf --port 9090
-
-# 3. Or with GPU
-infergo serve --model llama3-8b-q4.gguf --provider cuda --gpu-layers 999 --port 9090
-
-# 4. Install the OpenAI SDK
-pip install openai
+pip install infergo
 ```
+
+Or from source:
+
+```bash
+cd sdk/python
+pip install .
+```
+
+---
+
+## Quick start
+
+```python
+from infergo import InfergoClient
+
+client = InfergoClient("http://localhost:9090")
+
+# Chat
+response = client.chat([{"role": "user", "content": "Hello!"}])
+print(response)
+
+# Stream tokens
+for token in client.chat_stream([{"role": "user", "content": "Count to 5"}]):
+    print(token, end="", flush=True)
+print()
+```
+
+---
+
+## Client configuration
+
+```python
+from infergo import InfergoClient
+
+# Basic
+client = InfergoClient("http://localhost:9090")
+
+# With API key authentication
+client = InfergoClient("http://localhost:9090", api_key="my-api-key")
+```
+
+The client uses Python's built-in `urllib` with a 120-second timeout. No external dependencies required.
+
+---
+
+## Chat completions
+
+```python
+response = client.chat(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Explain KV caching in one paragraph."},
+    ],
+    model="llama3-8b-q4",
+    max_tokens=200,
+    temperature=0.7,
+)
+print(response)  # string: the assistant's reply
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `messages` | list[dict] | (required) | Conversation messages with `role` and `content` |
+| `model` | str | `"llm"` | Model name |
+| `max_tokens` | int | `256` | Maximum tokens to generate |
+| `temperature` | float | `0.7` | Sampling temperature |
+| `**kwargs` | any | -- | Additional fields passed to the API (e.g. `tools`, `response_format`) |
+
+### Return value
+
+Returns a `str` containing the assistant's response text.
+
+---
+
+## Streaming
+
+```python
+for token in client.chat_stream(
+    messages=[{"role": "user", "content": "Write a haiku about inference."}],
+    model="llama3-8b-q4",
+    max_tokens=64,
+    temperature=0.7,
+):
+    print(token, end="", flush=True)
+print()
+```
+
+`chat_stream` returns an iterator of token strings. Tokens are delivered via SSE (Server-Sent Events) as they are generated.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `messages` | list[dict] | (required) | Conversation messages |
+| `model` | str | `"llm"` | Model name |
+| `max_tokens` | int | `256` | Maximum tokens to generate |
+| `temperature` | float | `0.7` | Sampling temperature |
+
+---
+
+## Embeddings
+
+### Single text
+
+```python
+vector = client.embed("hello world", model="embed")
+print(f"Dimension: {len(vector)}")  # e.g. 384
+```
+
+### Batch embedding
+
+```python
+vectors = client.embed_batch(
+    ["hello world", "infergo is fast", "transformers are powerful"],
+    model="embed",
+)
+print(f"{len(vectors)} vectors, dim={len(vectors[0])}")
+```
+
+### Cosine similarity
+
+```python
+import math
+
+def cosine_sim(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+
+v1 = client.embed("machine learning")
+v2 = client.embed("deep learning")
+print(f"Similarity: {cosine_sim(v1, v2):.3f}")
+```
+
+---
+
+## Object detection
+
+```python
+import base64
+
+with open("photo.jpg", "rb") as f:
+    image_b64 = base64.b64encode(f.read()).decode()
+
+detections = client.detect(
+    image_b64=image_b64,
+    model="yolo11n",
+    conf=0.25,
+    iou=0.45,
+)
+
+for obj in detections:
+    print(f"Class {obj['ClassID']}: {obj['Confidence']:.2f} "
+          f"at ({obj['X1']:.0f},{obj['Y1']:.0f})-({obj['X2']:.0f},{obj['Y2']:.0f})")
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `image_b64` | str | (required) | Base64-encoded JPEG/PNG image |
+| `model` | str | `"detect"` | Detection model name |
+| `conf` | float | `0.25` | Confidence threshold |
+| `iou` | float | `0.45` | IoU threshold for NMS |
+
+### Return value
+
+Returns a `list[dict]` where each dict has: `X1`, `Y1`, `X2`, `Y2`, `ClassID`, `Confidence`.
+
+---
+
+## Search
+
+```python
+results = client.search(
+    query="transformer architecture",
+    model="embed",
+    k=5,
+    mode="hybrid",  # "vector", "bm25", or "hybrid"
+)
+
+for hit in results:
+    print(f"ID={hit['id']} Score={hit['score']:.3f} {hit.get('metadata', '')}")
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `query` | str | (required) | Search query text |
+| `model` | str | `"embed"` | Embedding model for vector search |
+| `k` | int | `5` | Number of results to return |
+| `mode` | str | `"hybrid"` | Search mode: `"vector"`, `"bm25"`, or `"hybrid"` |
+
+---
+
+## Document ingestion
+
+```python
+result = client.ingest(
+    texts=["Document 1 content...", "Document 2 content..."],
+    model="embed",
+    metadata=[
+        {"source": "file1.txt"},
+        {"source": "file2.txt"},
+    ],
+)
+print(result)
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `texts` | list[str] | (required) | Documents to ingest |
+| `model` | str | `"embed"` | Embedding model for vectorization |
+| `metadata` | list[dict] | `None` | Optional metadata per document |
+
+---
+
+## NLP tasks
+
+### Named Entity Recognition
+
+```python
+entities = client.ner(
+    text="Apple CEO Tim Cook announced new products in Cupertino.",
+    model="llama3-8b-q4",
+)
+for entity in entities:
+    print(f"{entity['text']} -> {entity['type']}")
+# Apple -> ORG
+# Tim Cook -> PERSON
+# Cupertino -> LOCATION
+```
+
+### Sentiment analysis
+
+```python
+result = client.sentiment(
+    text="This product is absolutely fantastic!",
+    model="llama3-8b-q4",
+)
+print(f"{result['sentiment']}: {result['score']:.2f}")
+# positive: 0.95
+```
+
+### Text classification
+
+```python
+result = client.classify(
+    text="Stock prices surged today on Wall Street.",
+    labels=["business", "sports", "politics", "technology"],
+    model="llama3-8b-q4",
+)
+print(f"Label: {result['label']}, Score: {result['score']:.2f}")
+# Label: business, Score: 0.92
+```
+
+### Summarization
+
+```python
+summary = client.summarize(
+    text="<long article text...>",
+    model="llama3-8b-q4",
+    max_length=100,
+)
+print(summary)
+```
+
+---
+
+## Models and health
+
+### List loaded models
+
+```python
+models = client.models()
+for m in models:
+    print(m["id"])
+```
+
+### Health check
+
+```python
+status = client.health()
+print(status)  # {"status": "ok"}
+```
+
+---
+
+## OpenAI SDK compatibility
+
+infergo is fully compatible with the OpenAI Python SDK. Use it as a drop-in replacement:
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(base_url="http://localhost:9090/v1", api_key="none")
-resp = client.chat.completions.create(
-    model="llama3-8b-q4",
-    messages=[{"role": "user", "content": "Hello!"}],
-)
-print(resp.choices[0].message.content)
-```
 
----
-
-## OpenAI SDK
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:9090/v1",
-    api_key="none",          # infergo ignores this unless --api-key is set
-)
-
-# Basic chat
+# Chat
 resp = client.chat.completions.create(
     model="llama3-8b-q4",
     messages=[
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user",   "content": "Explain KV caching in one paragraph."},
+        {"role": "user", "content": "Explain KV caching in one paragraph."},
     ],
     max_tokens=200,
     temperature=0.7,
 )
 print(resp.choices[0].message.content)
-print(f"tokens used: {resp.usage.completion_tokens}")
+print(f"Tokens used: {resp.usage.completion_tokens}")
 ```
 
 **With API key auth** (when infergo is started with `--api-key mytoken`):
 
 ```python
-client = OpenAI(
-    base_url="http://localhost:9090/v1",
-    api_key="mytoken",
-)
+client = OpenAI(base_url="http://localhost:9090/v1", api_key="mytoken")
 ```
 
----
-
-## Zero-dependency (stdlib only)
-
-No pip install needed. Uses Python's built-in `urllib`:
+### Streaming with OpenAI SDK
 
 ```python
-import urllib.request
-import json
+with client.chat.completions.stream(
+    model="llama3-8b-q4",
+    messages=[{"role": "user", "content": "Write a haiku about inference."}],
+    max_tokens=64,
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+print()
+```
 
-def chat(prompt: str, model: str = "llama3-8b-q4", max_tokens: int = 200) -> str:
-    payload = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-    }).encode()
+### Embeddings with OpenAI SDK
 
-    req = urllib.request.Request(
-        "http://localhost:9090/v1/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        body = json.loads(resp.read())
-    return body["choices"][0]["message"]["content"]
-
-print(chat("What is a transformer model?"))
+```python
+result = client.embeddings.create(
+    model="embed",
+    input=["hello world", "infergo is fast"],
+)
+vec1 = result.data[0].embedding
+vec2 = result.data[1].embedding
 ```
 
 ---
@@ -150,7 +397,6 @@ async def ask(question: str) -> str:
     return resp.choices[0].message.content
 
 async def main():
-    # Fire 4 requests concurrently — infergo batches them on the GPU
     questions = [
         "What is attention?",
         "What is a transformer?",
@@ -164,58 +410,11 @@ async def main():
 asyncio.run(main())
 ```
 
-Because infergo uses continuous batching, all 4 requests above go through the GPU together in the same forward pass — same latency as 1 request, 4x the throughput.
+Because infergo uses continuous batching, all 4 requests go through the GPU together in the same forward pass -- same latency as 1 request, 4x the throughput.
 
 ---
 
-## Streaming
-
-```python
-from openai import OpenAI
-
-client = OpenAI(base_url="http://localhost:9090/v1", api_key="none")
-
-with client.chat.completions.stream(
-    model="llama3-8b-q4",
-    messages=[{"role": "user", "content": "Write a haiku about inference."}],
-    max_tokens=64,
-) as stream:
-    for text in stream.text_stream:
-        print(text, end="", flush=True)
-print()
-```
-
-Tokens are streamed via SSE (Server-Sent Events) as they are generated. The WebSocket endpoint (`ws://localhost:9090/v1/chat/completions/ws`) is also available for browser clients.
-
----
-
-## Embeddings
-
-```python
-from openai import OpenAI
-
-# Start server with an embedding model:
-# infergo serve --model embed:models/all-MiniLM-L6-v2.onnx --port 9090
-
-client = OpenAI(base_url="http://localhost:9090/v1", api_key="none")
-
-result = client.embeddings.create(
-    model="embed",
-    input=["hello world", "infergo is fast"],
-)
-
-vec1 = result.data[0].embedding  # list of floats
-vec2 = result.data[1].embedding
-
-# Cosine similarity
-import numpy as np
-cos = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
-print(f"similarity: {cos:.3f}")
-```
-
----
-
-## LangChain
+## LangChain integration
 
 ```python
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -236,76 +435,10 @@ embeddings = OpenAIEmbeddings(
     model="embed",
 )
 vecs = embeddings.embed_documents(["hello", "world"])
-print(f"embedding dim: {len(vecs[0])}")
+print(f"Embedding dim: {len(vecs[0])}")
 ```
 
-Works with any LangChain chain, agent, or retrieval pipeline — no custom integration needed.
-
----
-
-## Production patterns
-
-**FastAPI service**
-
-```python
-from fastapi import FastAPI
-from openai import AsyncOpenAI
-from pydantic import BaseModel
-
-app = FastAPI()
-client = AsyncOpenAI(base_url="http://localhost:9090/v1", api_key="none")
-
-class ChatRequest(BaseModel):
-    message: str
-
-@app.post("/chat")
-async def chat(req: ChatRequest):
-    resp = await client.chat.completions.create(
-        model="llama3-8b-q4",
-        messages=[{"role": "user", "content": req.message}],
-        max_tokens=200,
-    )
-    return {"reply": resp.choices[0].message.content}
-```
-
-**Multiple infergo servers behind a load balancer**
-
-```python
-import random
-from openai import OpenAI
-
-SERVERS = [
-    "http://gpu-node-1:9090/v1",
-    "http://gpu-node-2:9090/v1",
-    "http://gpu-node-3:9090/v1",
-]
-
-def get_client() -> OpenAI:
-    return OpenAI(base_url=random.choice(SERVERS), api_key="none")
-```
-
-Each infergo server saturates one GPU. Add more servers for linear throughput scaling.
-
----
-
-## Scaling
-
-| Users | Setup | Expected throughput |
-|---|---|---|
-| 1–10 | Single infergo server | ~3–4 req/s on one GPU |
-| 10–100 | Single infergo server | Same req/s, higher latency — queue builds |
-| 100+ | Multiple infergo servers + load balancer | Linear: N servers = N × req/s |
-
-**What infergo does for you at scale:**
-- All concurrent requests share one GPU via continuous batching
-- No Python GIL — Go handles all scheduling
-- Prometheus metrics (`/metrics`) show queue depth, active sequences, tok/s
-- KEDA autoscaler can scale infergo pods based on queue depth
-
-**What you need to do:**
-- Run infergo behind nginx or a Kubernetes service for load balancing
-- Set `--max-queue` to control backpressure (default 100)
-- Monitor `infergo_queue_depth` in Grafana
+Works with any LangChain chain, agent, or retrieval pipeline.
 
 ---
 
@@ -313,17 +446,17 @@ Each infergo server saturates one GPU. Add more servers for linear throughput sc
 
 For cases where you cannot run a separate server process, the `python/infergo` package provides ctypes bindings that load `libinfer_api.so` directly into your Python process.
 
-**Install**
+### Install
 
 ```bash
-# From source — requires libinfer_api.so to be built first
-PYTHONPATH=/path/to/infergo/python python your_script.py
-
-# Or point to the built library
+# Point to the built library
 INFERGO_LIB=/path/to/build/cpp/api/libinfer_api.so python your_script.py
+
+# Or add to PYTHONPATH
+PYTHONPATH=/path/to/infergo/python python your_script.py
 ```
 
-**Usage**
+### Usage
 
 ```python
 import infergo
@@ -331,7 +464,7 @@ import infergo
 # Load model
 llm = infergo.LLM(
     "models/llama3-8b-q4.gguf",
-    gpu_layers=999,    # offload all layers to GPU
+    gpu_layers=999,
     ctx_size=16384,
 )
 
@@ -359,7 +492,26 @@ with infergo.LLM("models/llama3-8b-q4.gguf") as llm:
     print(llm.chat("Hello"))
 ```
 
-**When to use native bindings vs the server**
+### ONNX sessions
+
+```python
+session = infergo.Session("cuda", 0)
+session.load("model.onnx")
+
+tensor = infergo.Tensor.cpu([1, 3, 224, 224], infergo.FLOAT32)
+# ... fill tensor data ...
+outputs = session.run([tensor])
+```
+
+### TorchScript sessions
+
+```python
+torch_session = infergo.TorchSession("cuda", 0)
+torch_session.load("model.torchscript.pt")
+outputs = torch_session.run([input_tensor])
+```
+
+### When to use native bindings vs the server
 
 | Situation | Use |
 |---|---|
@@ -369,11 +521,73 @@ with infergo.LLM("models/llama3-8b-q4.gguf") as llm:
 | Self-contained script, no server process | native bindings |
 | Testing / development | either |
 
-The server is always faster under concurrent load because it batches requests. Native bindings serialize through a Python lock — one request at a time.
+The server is always faster under concurrent load because it batches requests. Native bindings serialize through a Python lock -- one request at a time.
 
 ---
 
-## Benchmark: all 5 approaches
+## Production patterns
+
+### FastAPI service
+
+```python
+from fastapi import FastAPI
+from infergo import InfergoClient
+
+app = FastAPI()
+client = InfergoClient("http://localhost:9090")
+
+@app.post("/chat")
+async def chat(message: str):
+    return {"reply": client.chat([{"role": "user", "content": message}])}
+
+@app.post("/detect")
+async def detect(image_b64: str):
+    return {"objects": client.detect(image_b64)}
+
+@app.post("/search")
+async def search(query: str):
+    return {"results": client.search(query)}
+```
+
+### Multiple infergo servers behind a load balancer
+
+```python
+import random
+from infergo import InfergoClient
+
+SERVERS = [
+    "http://gpu-node-1:9090",
+    "http://gpu-node-2:9090",
+    "http://gpu-node-3:9090",
+]
+
+def get_client() -> InfergoClient:
+    return InfergoClient(random.choice(SERVERS))
+```
+
+### RAG pipeline
+
+```python
+# 1. Ingest documents
+client.ingest(
+    texts=["Document 1...", "Document 2...", "Document 3..."],
+    model="embed",
+)
+
+# 2. Search for relevant documents
+results = client.search("What is the main topic?", mode="hybrid", k=5)
+
+# 3. Build context and generate
+context = "\n".join(r.get("metadata", "") for r in results)
+response = client.chat([
+    {"role": "system", "content": f"Answer based on this context:\n{context}"},
+    {"role": "user", "content": "What is the main topic?"},
+])
+```
+
+---
+
+## Performance
 
 Measured on RTX 5070 Ti, LLaMA 3 8B Q4\_K\_M, 20 requests per scenario.
 
@@ -381,16 +595,34 @@ Measured on RTX 5070 Ti, LLaMA 3 8B Q4\_K\_M, 20 requests per scenario.
 |---|---|---|---|---|---|
 | infergo native (ctypes) | 545ms | 119 | 2182ms | 1.83 | 119 |
 | infergo server + OpenAI SDK | 457ms | 139 | 1055ms | 3.79 | 242 |
-| infergo server + urllib | 457ms | 139 | 1045ms | **3.83** | **245** |
+| infergo server + infergo SDK | 457ms | 139 | 1045ms | **3.83** | **245** |
 | infergo server + Go CLI | 459ms | 139 | 1048ms | 3.80 | 244 |
 | llama-cpp-python (baseline) | 456ms | 140 | 1823ms | 2.19 | 140 |
 
-**Key findings:**
+Key findings:
 
-- At c=1: all approaches are identical — same GPU, same model, same speed
-- At c=4: infergo server is **1.75× faster** than llama-cpp-python (3.83 vs 2.19 req/s)
-- llama-cpp-python throughput is flat regardless of concurrency — serialised lock
+- At c=1: all approaches are identical -- same GPU, same model, same speed
+- At c=4: infergo server is **1.75x faster** than llama-cpp-python (3.83 vs 2.19 req/s)
+- llama-cpp-python throughput is flat regardless of concurrency -- serialized lock
 - Native bindings hit the same wall as llama-cpp-python at c=4
-- The OpenAI SDK, urllib, and Go CLI all show the same server performance — the network/SDK layer is not the bottleneck
+- The OpenAI SDK, infergo SDK, and Go CLI all show the same server performance -- the network/SDK layer is not the bottleneck
 
-The benchmark script is at [`python/benchmarks/bench_three_ways.py`](../python/benchmarks/bench_three_ways.py).
+---
+
+## Complete API reference
+
+| Method | Signature | Returns | Description |
+|---|---|---|---|
+| `chat` | `chat(messages, model, max_tokens, temperature, **kwargs)` | `str` | Chat completion |
+| `chat_stream` | `chat_stream(messages, model, max_tokens, temperature)` | `Iterator[str]` | Streaming chat |
+| `embed` | `embed(text, model)` | `list[float]` | Single text embedding |
+| `embed_batch` | `embed_batch(texts, model)` | `list[list[float]]` | Batch embeddings |
+| `detect` | `detect(image_b64, model, conf, iou)` | `list[dict]` | Object detection |
+| `search` | `search(query, model, k, mode)` | `list[dict]` | Vector/BM25/hybrid search |
+| `ingest` | `ingest(texts, model, metadata)` | `dict` | Document ingestion |
+| `ner` | `ner(text, model)` | `list[dict]` | Named entity recognition |
+| `sentiment` | `sentiment(text, model)` | `dict` | Sentiment analysis |
+| `classify` | `classify(text, labels, model)` | `dict` | Text classification |
+| `summarize` | `summarize(text, model, max_length)` | `str` | Text summarization |
+| `models` | `models()` | `list[dict]` | List loaded models |
+| `health` | `health()` | `dict` | Server health check |
