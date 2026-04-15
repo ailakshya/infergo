@@ -744,7 +744,7 @@ exists to produce real measured numbers — not theoretical calculations.
 
 ---
 
-### OPT-28 — Adaptive detection backend: user-configurable variables `[ ]` S
+### OPT-28 — Adaptive detection backend: user-configurable variables `[x]` S
 
 **Problem:** Adaptive backend selector fixes all routing decisions internally. Users cannot control which backend runs, how many GPU slots are reserved, or which backend is used for final counting decisions. Warm-up is not guaranteed, causing random slow first requests.
 
@@ -797,7 +797,7 @@ per-request backend field
 
 ---
 
-### OPT-29 — Training-to-production bridge: `infergo convert` + `infergo validate` `[ ]` M
+### OPT-29 — Training-to-production bridge: `infergo convert` + `infergo validate` `[x]` M
 
 **Problem:** The gap between training and production is where teams lose weeks. PyTorch trains the model — but exporting it correctly (ONNX opset, input shapes, dynamic axes, precision), validating it didn't lose accuracy, and verifying it serves correctly in infergo requires manual steps spread across multiple tools. There is no single command that takes a checkpoint and gets it production-ready.
 
@@ -876,7 +876,7 @@ Train (PyTorch) → infergo convert → infergo validate → infergo serve
 
 ---
 
-### OPT-30 — LoRA / QLoRA fine-tuning + adapter hot-swap `[ ]` L
+### OPT-30 — LoRA / QLoRA fine-tuning + adapter hot-swap `[x]` L
 
 **Problem:** Every ML team training a custom model hits the same wall: 8 GB Python environment per project, venv conflicts, `bitsandbytes` breaks on CUDA version mismatch, `deepspeed` conflicts with `torch`. Fine-tuning a model for a Go service still requires a full Python stack just to run 3 training epochs. The same binary that serves the model should also fine-tune it.
 
@@ -986,7 +986,7 @@ curl -X POST localhost:9090/v1/admin/reload \
 
 ---
 
-### OPT-36 — GPU-side NMS (CUDA kernel) `[ ]` M
+### OPT-36 — GPU-side NMS (CUDA kernel) `[x]` M
 
 **Problem:** After detection inference, non-maximum suppression (NMS) filters overlapping bounding boxes. Currently NMS runs on CPU: GPU computes logits → copy to CPU → NMS → copy results back. At 1280×720 with 100 candidates, the GPU→CPU copy is ~0.3ms and CPU NMS is ~0.2ms. At high frame rates (30 fps × 8 cameras), this becomes 12ms/s of pure data movement.
 
@@ -1007,7 +1007,7 @@ curl -X POST localhost:9090/v1/admin/reload \
 
 ---
 
-### OPT-37 — Multi-stream GPU batching for detection `[ ]` L
+### OPT-37 — Multi-stream GPU batching for detection `[x]` L
 
 **Problem:** With 8 cameras, detection runs 8 serial GPU forward passes per frame cycle. Each pass launches a CUDA kernel, waits for result, launches next. GPU sits idle between launches. Batching all 8 frames into a single `[8, 3, 640, 640]` tensor runs one kernel that fully occupies the GPU — throughput scales ~6× for the same latency.
 
