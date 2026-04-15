@@ -986,6 +986,53 @@ void infer_llm_destroy(InferLLM llm) {
     try { delete static_cast<LLMHandle*>(llm); } catch (...) {}
 }
 
+// ─── LoRA adapter API ────────────────────────────────────────────────────────
+
+InferLoRA infer_lora_load(InferLLM llm, const char* lora_path) {
+    if (llm == nullptr || lora_path == nullptr) {
+        infergo::set_last_error("infer_lora_load: null argument");
+        return nullptr;
+    }
+    try {
+        auto* h = static_cast<LLMHandle*>(llm);
+        llama_model* model = const_cast<llama_model*>(llama_get_model(h->engine.Context()));
+        auto* adapter = llama_adapter_lora_init(model, lora_path);
+        if (!adapter) {
+            infergo::set_last_error("infer_lora_load: failed to load LoRA adapter");
+            return nullptr;
+        }
+        return static_cast<InferLoRA>(adapter);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return nullptr;
+    }
+}
+
+int infer_lora_apply(InferLLM llm, InferLoRA* adapters, float* scales, int n_adapters) {
+    if (llm == nullptr) return -1;
+    try {
+        auto* h = static_cast<LLMHandle*>(llm);
+        llama_context* ctx = h->engine.Context();
+
+        if (adapters == nullptr || n_adapters <= 0) {
+            // Clear all adapters
+            llama_set_adapters_lora(ctx, nullptr, 0, nullptr);
+            return 0;
+        }
+
+        auto** lora_ptrs = reinterpret_cast<llama_adapter_lora**>(adapters);
+        return llama_set_adapters_lora(ctx, lora_ptrs, static_cast<size_t>(n_adapters), scales);
+    } catch (const std::exception& e) {
+        infergo::set_last_error(e.what());
+        return -1;
+    }
+}
+
+void infer_lora_free(InferLoRA lora) {
+    if (lora == nullptr) return;
+    llama_adapter_lora_free(static_cast<llama_adapter_lora*>(lora));
+}
+
 int infer_llm_vocab_size(InferLLM llm) {
     if (llm == nullptr) return 0;
     return static_cast<LLMHandle*>(llm)->engine.VocabSize();

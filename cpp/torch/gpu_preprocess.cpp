@@ -3,11 +3,14 @@
 
 #include "gpu_preprocess.hpp"
 #include "../include/infer_api.h"   // InferBox
+#include "../postprocess/nms_cuda.hpp"  // infer_nms_cuda (OPT-36)
 
 #include <torch/torch.h>
 
 #ifdef INFER_CUDA_AVAILABLE
 #include "nvjpeg_decode.hpp"
+#include <c10/cuda/CUDAStream.h>
+#include <c10/cuda/CUDAGuard.h>
 #endif
 
 #ifdef INFER_OPENCV_AVAILABLE
@@ -323,6 +326,50 @@ int torch_nms_gpu_into(torch::Tensor yolo_output,
     auto y1 = filtered_cy - filtered_bh / 2.0f;
     auto x2 = filtered_cx + filtered_bw / 2.0f;
     auto y2 = filtered_cy + filtered_bh / 2.0f;
+
+#ifdef INFER_CUDA_AVAILABLE
+    // ── OPT-36: GPU-side NMS using CUDA kernel ──────────────────────────────
+    // Pack [x1,y1,x2,y2,conf,class_id] into a contiguous GPU tensor and run
+    // the entire sort+IoU+suppression on GPU. Only the final kept detections
+    // are copied to host, eliminating the D2H copy of all filtered candidates.
+    if (x1.is_cuda()) {
+        auto classes_f = filtered_classes.to(torch::kFloat32);
+        // Stack into [N, 6]: x1, y1, x2, y2, conf, class_id
+        auto packed = torch::stack({x1, y1, x2, y2, filtered_scores, classes_f}, 1)
+                          .contiguous();
+
+        const int N = static_cast<int>(packed.size(0));
+        const float* d_boxes = packed.data_ptr<float>();
+
+        int nms_count = 0;
+        InferError err = infer_nms_cuda(
+            d_boxes, N,
+            0.0f,         // conf already filtered above, pass 0 to keep all
+            iou_thresh,
+            out_boxes, max_boxes,
+            &nms_count, nullptr);
+
+        if (err != INFER_OK) {
+            write_error(error_buf, error_buf_size,
+                        "torch_nms_gpu_into: infer_nms_cuda failed");
+            return -1;
+        }
+
+        // Rescale boxes from letterbox space to original image coordinates
+        const float fw = static_cast<float>(orig_w);
+        const float fh = static_cast<float>(orig_h);
+        for (int i = 0; i < nms_count; ++i) {
+            out_boxes[i].x1 = std::max(0.0f, std::min((out_boxes[i].x1 - pad_x) / scale, fw));
+            out_boxes[i].y1 = std::max(0.0f, std::min((out_boxes[i].y1 - pad_y) / scale, fh));
+            out_boxes[i].x2 = std::max(0.0f, std::min((out_boxes[i].x2 - pad_x) / scale, fw));
+            out_boxes[i].y2 = std::max(0.0f, std::min((out_boxes[i].y2 - pad_y) / scale, fh));
+        }
+
+        return nms_count;
+    }
+#endif // INFER_CUDA_AVAILABLE
+
+    // ── CPU fallback: same as before ────────────────────────────────────────
     auto boxes = torch::stack({x1, y1, x2, y2}, 1);
 
     auto boxes_cpu   = boxes.to(torch::kCPU).contiguous();
@@ -720,13 +767,41 @@ std::vector<std::vector<Detection>> torch_detect_gpu_batch(
     torch::NoGradGuard no_grad;
     auto output = sess.model().forward({batch_tensor}).toTensor();  // [N,84,8400]
 
-    // 4. NMS per image in the batch
+    // 4. NMS per image — parallel via CUDA streams for independent post-processing
     std::vector<std::vector<Detection>> results(batch_size);
-    for (int i = 0; i < batch_size; ++i) {
-        auto single_output = output[i].unsqueeze(0);  // [1,84,8400]
-        const auto& m = metas[i];
-        results[i] = torch_nms_gpu(single_output, conf_thresh, iou_thresh,
-                                   m.scale, m.pad_x, m.pad_y, m.orig_w, m.orig_h);
+
+#ifdef INFER_CUDA_AVAILABLE
+    if (batch_size > 1 && sess.device().is_cuda()) {
+        // Create per-image CUDA streams for parallel NMS
+        std::vector<c10::cuda::CUDAStream> streams;
+        streams.reserve(batch_size);
+        for (int i = 0; i < batch_size; ++i) {
+            streams.push_back(c10::cuda::getStreamFromPool(false, sess.device().index()));
+        }
+
+        // Launch NMS on separate streams
+        for (int i = 0; i < batch_size; ++i) {
+            c10::cuda::CUDAStreamGuard guard(streams[i]);
+            auto single_output = output[i].unsqueeze(0);
+            const auto& m = metas[i];
+            results[i] = torch_nms_gpu(single_output, conf_thresh, iou_thresh,
+                                       m.scale, m.pad_x, m.pad_y, m.orig_w, m.orig_h);
+        }
+
+        // Synchronize all streams
+        for (auto& s : streams) {
+            s.synchronize();
+        }
+    } else
+#endif
+    {
+        // Sequential fallback (CPU or single image)
+        for (int i = 0; i < batch_size; ++i) {
+            auto single_output = output[i].unsqueeze(0);
+            const auto& m = metas[i];
+            results[i] = torch_nms_gpu(single_output, conf_thresh, iou_thresh,
+                                       m.scale, m.pad_x, m.pad_y, m.orig_w, m.orig_h);
+        }
     }
 
     return results;

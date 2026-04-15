@@ -224,7 +224,9 @@ type DetectRequest struct {
 	ImageB64   string  `json:"image_b64"`   // base64-encoded image bytes
 	ConfThresh float32 `json:"conf_thresh"`
 	IouThresh  float32 `json:"iou_thresh"`
-	Backend    string  `json:"backend,omitempty"` // per-request backend override (e.g. "torch-gpu", "onnx-cuda", "cpu")
+	MaxDet     int     `json:"max_det,omitempty"`  // max detections to return (default 300)
+	Classes    []int   `json:"classes,omitempty"`   // filter to specific class IDs (empty = all)
+	Backend    string  `json:"backend,omitempty"`   // per-request backend override (e.g. "torch-gpu", "onnx-cuda", "cpu")
 }
 
 type DetectResponse struct {
@@ -650,6 +652,7 @@ func (s *Server) handleDetect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	objs = FilterDetections(objs, req.Classes, req.MaxDet)
 	writeJSON(w, http.StatusOK, DetectResponse{Model: req.Model, Objects: objs})
 }
 
@@ -671,9 +674,11 @@ func (s *Server) handleDetectBinary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Thresholds from query params (defaults: 0.25, 0.45).
+	// Thresholds and limits from query params (defaults: 0.25, 0.45, 300).
 	confThresh := parseFloat32(r.URL.Query().Get("conf"), 0.25)
 	iouThresh := parseFloat32(r.URL.Query().Get("iou"), 0.45)
+	maxDet := parseInt(r.URL.Query().Get("max_det"), 0)
+	classes := parseIntSlice(r.URL.Query().Get("classes"))
 
 	// Read raw image bytes directly — no base64, no JSON.
 	// Limit body size to prevent OOM.
@@ -718,6 +723,7 @@ func (s *Server) handleDetectBinary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	objs = FilterDetections(objs, classes, maxDet)
 	writeJSON(w, http.StatusOK, DetectResponse{Model: model, Objects: objs})
 }
 
@@ -732,6 +738,75 @@ func parseFloat32(s string, def float32) float32 {
 		return def
 	}
 	return float32(v)
+}
+
+// parseInt parses a string as int, returning def if the string is empty or
+// unparseable.
+func parseInt(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
+// parseIntSlice parses a comma-separated string of integers (e.g. "0,2,5")
+// into an int slice. Returns nil if the string is empty or all values are
+// unparseable.
+func parseIntSlice(s string) []int {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	var result []int
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		v, err := strconv.Atoi(p)
+		if err != nil {
+			continue
+		}
+		result = append(result, v)
+	}
+	return result
+}
+
+// FilterDetections applies class filtering and max-detection limiting to a
+// slice of detections. The input is assumed to be sorted by confidence
+// descending (as returned by NMS). If classes is non-empty, only detections
+// with a ClassID in that set are kept. If maxDet > 0, the result is truncated
+// to at most maxDet entries. If maxDet is 0, the default limit of 300 is used.
+func FilterDetections(objs []DetectedObject, classes []int, maxDet int) []DetectedObject {
+	// Apply class filter if specified.
+	if len(classes) > 0 {
+		classSet := make(map[int]bool, len(classes))
+		for _, c := range classes {
+			classSet[c] = true
+		}
+		filtered := make([]DetectedObject, 0, len(objs))
+		for _, o := range objs {
+			if classSet[o.ClassID] {
+				filtered = append(filtered, o)
+			}
+		}
+		objs = filtered
+	}
+
+	// Apply max_det limit (default 300).
+	limit := maxDet
+	if limit <= 0 {
+		limit = 300
+	}
+	if len(objs) > limit {
+		objs = objs[:limit]
+	}
+
+	return objs
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {

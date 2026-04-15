@@ -322,6 +322,19 @@ void infer_llm_destroy(InferLLM llm);
 // Returns the vocabulary size (valid after infer_llm_create).
 int infer_llm_vocab_size(InferLLM llm);
 
+// ── LoRA adapter management ──
+
+// Load a LoRA adapter from file. Returns opaque handle, or NULL on error.
+typedef void* InferLoRA;
+InferLoRA infer_lora_load(InferLLM llm, const char* lora_path);
+
+// Apply LoRA adapter(s) to the model context. scale controls adapter strength (1.0 = full).
+// Pass NULL/0 to clear all adapters.
+int infer_lora_apply(InferLLM llm, InferLoRA* adapters, float* scales, int n_adapters);
+
+// Free a LoRA adapter.
+void infer_lora_free(InferLoRA lora);
+
 // Returns BOS token ID.
 int infer_llm_bos(InferLLM llm);
 
@@ -737,6 +750,28 @@ int infer_postprocess_nms(InferTensor predictions,
 // L2-normalize a float32 tensor in-place: divide each element by sqrt(sum of squares).
 // No-op if the L2 norm is zero. Returns INFER_OK on success, or -1 on error.
 InferError infer_postprocess_normalize_embedding(InferTensor t);
+
+// GPU-side NMS using CUDA kernels (OPT-36).
+// Runs the entire NMS pipeline on GPU: confidence filter, sort, IoU computation,
+// and greedy suppression. Only the final kept detections are copied to host.
+//
+// d_boxes:      Device pointer to N detections, each 6 floats:
+//               [x1, y1, x2, y2, confidence, class_id_as_float].
+// n_boxes:      Number of input detections.
+// conf_thresh:  Minimum confidence to keep.
+// iou_thresh:   IoU threshold for suppression (class-aware).
+// out_boxes:    Host-allocated output buffer for kept detections.
+// max_out:      Capacity of out_boxes.
+// out_count:    Receives the number of detections written.
+// stream:       CUDA stream handle (NULL for default stream).
+//
+// Returns INFER_OK on success, INFER_ERR_CUDA on kernel failure,
+// INFER_ERR_NULL if required pointers are NULL.
+// Only available when built with CUDA support.
+InferError infer_nms_cuda(const float* d_boxes, int n_boxes,
+                          float conf_thresh, float iou_thresh,
+                          InferBox* out_boxes, int max_out,
+                          int* out_count, void* stream);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // KV CACHE SERIALIZATION API
