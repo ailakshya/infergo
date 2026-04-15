@@ -1279,7 +1279,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-45 — Streaming RAG `[ ]` S
+### OPT-45 — Streaming RAG `[x]` S
 
 **Problem:** Current RAG pipeline waits for full retrieval before starting generation. Streaming RAG starts generating tokens while retrieval is still running, reducing time-to-first-token.
 
@@ -1323,7 +1323,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-47 — Webhook / Async Callback `[ ]` S
+### OPT-47 — Webhook / Async Callback `[x]` S
 
 **Problem:** Batch inference results need polling. Webhooks push results to a URL when complete.
 
@@ -1415,7 +1415,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-51 — Agent Framework `[ ]` M
+### OPT-51 — Agent Framework `[x]` M
 
 **Problem:** Complex tasks require multi-step reasoning: plan → execute tool → observe → repeat. An agent framework orchestrates this loop.
 
@@ -1438,7 +1438,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-52 — Document Parsing + Ingestion `[ ]` M
+### OPT-52 — Document Parsing + Ingestion `[x]` M
 
 **Problem:** RAG needs documents ingested into vector DB. Currently manual. Auto-parse PDF/DOCX/HTML/MD, chunk, embed, store.
 
@@ -1505,7 +1505,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-55 — OpenAI Proxy / Fallback Mode `[ ]` S
+### OPT-55 — OpenAI Proxy / Fallback Mode `[x]` S
 
 **Problem:** Local model can't handle all queries. Proxy mode forwards to OpenAI/Anthropic API when local model confidence is low or model type is unavailable.
 
@@ -1552,7 +1552,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-57 — PII Detection and Redaction `[ ]` M
+### OPT-57 — PII Detection and Redaction `[x]` M
 
 **Problem:** Requests may contain personal data (emails, phone numbers, SSNs). Auto-detect and redact before sending to LLM.
 
@@ -1596,7 +1596,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-59 — RBAC (Role-Based Access Control) `[ ]` M
+### OPT-59 — RBAC (Role-Based Access Control) `[x]` M
 
 **Problem:** All API keys have same permissions. Need admin vs user vs readonly roles.
 
@@ -1618,7 +1618,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-60 — Model Registry with Versioning `[ ]` M
+### OPT-60 — Model Registry with Versioning `[x]` M
 
 **Problem:** No way to track model versions, rollback, or promote staging→production.
 
@@ -2787,7 +2787,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-112 — Prompt Versioning `[ ]` S
+### OPT-112 — Prompt Versioning `[x]` S
 
 **Problem:** No history of prompt changes. Need git-like versioning.
 
