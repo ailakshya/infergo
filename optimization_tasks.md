@@ -1233,7 +1233,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-43 — Function Calling `[ ]` S
+### OPT-43 — Function Calling `[x]` S
 
 **Problem:** LLMs need to call external tools (search, calculator, API). Function calling lets the model decide which tool to invoke with structured arguments. We already have grammar sampling — function calling is structured output with tool definitions.
 
@@ -1256,7 +1256,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-44 — Conversation Memory `[ ]` S
+### OPT-44 — Conversation Memory `[x]` S
 
 **Problem:** Each request is stateless. Multi-turn conversations require the client to resend full history. Built-in memory management reduces bandwidth and enables automatic context window management.
 
@@ -1299,7 +1299,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-46 — Response Caching `[ ]` S
+### OPT-46 — Response Caching `[x]` S
 
 **Problem:** Identical prompts generate identical responses, wasting GPU compute. Caching saves the full response for repeated queries.
 
@@ -1462,7 +1462,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-53 — A/B Model Testing `[ ]` S
+### OPT-53 — A/B Model Testing `[x]` S
 
 **Problem:** Comparing model quality requires manual switching. A/B testing routes traffic between models and collects metrics.
 
@@ -1575,7 +1575,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-58 — Audit Logging `[ ]` S
+### OPT-58 — Audit Logging `[x]` S
 
 **Problem:** Compliance requires logging all requests/responses. Audit log captures full interaction history.
 
@@ -1994,7 +1994,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-75 — Hybrid Search (BM25 + Vector) `[ ]` M
+### OPT-75 — Hybrid Search (BM25 + Vector) `[x]` M
 
 **Problem:** Pure vector search misses keyword matches. Hybrid combines BM25 keyword search with vector similarity for better retrieval.
 
@@ -2018,7 +2018,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE K — Specialized AI Tasks
 
-### OPT-76 — Named Entity Recognition (NER) `[ ]` S
+### OPT-76 — Named Entity Recognition (NER) `[x]` S
 
 **Problem:** Extract structured entities (people, places, organizations, dates) from text.
 
@@ -2038,7 +2038,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-77 — Sentiment Analysis `[ ]` S
+### OPT-77 — Sentiment Analysis `[x]` S
 
 **Problem:** Classify text sentiment without separate model.
 
@@ -2058,7 +2058,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-78 — Text Classification `[ ]` S
+### OPT-78 — Text Classification `[x]` S
 
 **Problem:** Classify text into custom categories (support, sales, spam, etc.).
 
@@ -2099,7 +2099,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-80 — Summarization `[ ]` S
+### OPT-80 — Summarization `[x]` S
 
 **Problem:** Long text → concise summary. Dedicated endpoint with configurable length.
 
@@ -2207,7 +2207,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-85 — OpenAPI / Swagger Spec `[ ]` S
+### OPT-85 — OpenAPI / Swagger Spec `[x]` S
 
 **Problem:** No auto-generated API documentation. Need machine-readable spec for code generation.
 
@@ -2227,7 +2227,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-86 — CLI Chat Mode `[ ]` S
+### OPT-86 — CLI Chat Mode `[x]` S
 
 **Problem:** No interactive terminal chat. `infergo chat` should work like `ollama run`.
 
@@ -2291,7 +2291,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-89 — Circuit Breaker `[ ]` S
+### OPT-89 — Circuit Breaker `[x]` S
 
 **Problem:** Failing model causes cascading failures. Circuit breaker auto-disables after N failures, re-enables after cooldown.
 
@@ -2355,7 +2355,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-92 — IP Allowlisting `[ ]` S
+### OPT-92 — IP Allowlisting `[x]` S
 
 **Problem:** Server accessible from any IP. Need to restrict by IP range.
 
@@ -2396,7 +2396,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-94 — Data Retention Policy `[ ]` S
+### OPT-94 — Data Retention Policy `[x]` S
 
 **Problem:** Logs and cache grow unbounded. Auto-delete after configurable period.
 
@@ -2829,7 +2829,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-114 — Feedback Loop `[ ]` S
+### OPT-114 — Feedback Loop `[x]` S
 
 **Problem:** Users give thumbs up/down but data isn't collected for retraining.
 
@@ -3009,7 +3009,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-123 — Confidence Scoring `[ ]` S
+### OPT-123 — Confidence Scoring `[x]` S
 
 **Problem:** No way to know if the model is confident in its answer.
 

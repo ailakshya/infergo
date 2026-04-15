@@ -316,6 +316,7 @@ type Server struct {
 	respCache         *ResponseCache   // exact-match response cache (OPT-46)
 	memory            *ConversationMemory // multi-turn session memory (OPT-44)
 	feedback          *FeedbackStore      // user feedback collection (OPT-114)
+	pii               *PIIDetector        // PII detection/redaction (OPT-57)
 	metrics           *Metrics         // prometheus metrics (optional)
 }
 
@@ -345,8 +346,11 @@ func NewServer(reg *Registry) *Server {
 	s.mux.HandleFunc("POST /v1/audio/transcriptions", s.handleTranscription)
 	s.mux.HandleFunc("GET /v1/admin/guardrails", s.handleGuardrailConfig)
 	s.mux.HandleFunc("POST /v1/admin/guardrails", s.handleGuardrailConfig)
+	s.mux.HandleFunc("GET /v1/admin/pii", s.handlePIIConfig)
+	s.mux.HandleFunc("POST /v1/admin/pii", s.handlePIIConfig)
 	s.mux.HandleFunc("POST /v1/rag", s.handleRAG)
 	s.mux.HandleFunc("POST /v1/ingest", s.handleIngest)
+	s.mux.HandleFunc("POST /v1/ingest/url", s.handleIngestURL)
 	s.mux.HandleFunc("POST /v1/batches", s.handleBatchCreate)
 	s.mux.HandleFunc("GET /v1/batches", s.handleBatchStatus)
 	s.mux.HandleFunc("GET /v1/admin/templates", s.handleTemplates)
@@ -361,6 +365,9 @@ func NewServer(reg *Registry) *Server {
 	s.mux.HandleFunc("POST /v1/sentiment", s.handleSentiment)
 	s.mux.HandleFunc("POST /v1/classify", s.handleClassify)
 	s.mux.HandleFunc("POST /v1/summarize", s.handleSummarize)
+	// Agent framework (OPT-51)
+	s.mux.HandleFunc("POST /v1/agents/run", s.handleAgentRun)
+	s.mux.HandleFunc("POST /v1/rag/stream", s.handleStreamingRAG)
 	return s
 }
 
@@ -382,6 +389,11 @@ func (s *Server) SetMode(mode string) {
 // When set, identical non-streaming requests return cached responses in < 0.1ms.
 func (s *Server) SetCache(c *ResponseCache) {
 	s.respCache = c
+}
+
+// SetPII injects a PII detector for request scanning.
+func (s *Server) SetPII(d *PIIDetector) {
+	s.pii = d
 }
 
 // SetMetrics injects Prometheus metrics for cache hit/miss tracking.
