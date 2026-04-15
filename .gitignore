@@ -3,3 +3,10 @@ Infergo plan.md
 infrago_plan.md
 build/
 build-asan/
+
+# Python SDK and benchmarks (kept locally, not in repo)
+python/
+benchmarks/*.py
+benchmarks/vs_python/*.py
+tools/*.py
+deploy/*.py
