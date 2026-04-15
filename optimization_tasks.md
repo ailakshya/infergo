@@ -1344,7 +1344,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-48 — Model Auto-Download `[ ]` S
+### OPT-48 — Model Auto-Download `[x]` S
 
 **Problem:** Users must manually download models. `--model hf:org/repo` should auto-download from HuggingFace.
 
@@ -1392,7 +1392,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-50 — Code Execution Sandbox `[ ]` M
+### OPT-50 — Code Execution Sandbox `[x]` M
 
 **Problem:** LLMs generate code but can't verify it. A sandbox runs generated code safely and returns output.
 
@@ -1483,7 +1483,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-54 — Response Caching with Semantic Similarity `[ ]` M
+### OPT-54 — Response Caching with Semantic Similarity `[x]` M
 
 **Problem:** Exact-match caching (OPT-46) misses similar prompts. Semantic caching uses embeddings to find similar past queries and return cached responses.
 
@@ -1530,7 +1530,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ## PHASE G — Enterprise & Security
 
-### OPT-56 — Multi-Tenant Isolation `[ ]` L
+### OPT-56 — Multi-Tenant Isolation `[x]` L
 
 **Problem:** Single API key for all users. Production needs per-tenant rate limits, model access, and usage tracking.
 
@@ -1640,7 +1640,7 @@ OPT-30  LoRA fine-tuning          ← requires OPT-9 (hot-reload) + libtorch alr
 
 ---
 
-### OPT-61 — Canary Deployments `[ ]` M
+### OPT-61 — Canary Deployments `[x]` M
 
 **Problem:** Deploying a new model risks quality regression. Canary deploys route a small percentage of traffic to the new model, auto-rollback if error rate spikes.
 
@@ -1754,7 +1754,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-64 — Event Triggers / Rules Engine `[ ]` M
+### OPT-64 — Event Triggers / Rules Engine `[x]` M
 
 **Problem:** Users want automated alerts: "notify when person enters zone A" or "alert if confidence > 0.9 for class 'fire'."
 
@@ -1841,7 +1841,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-68 — Auto-Quantization `[ ]` S
+### OPT-68 — Auto-Quantization `[x]` S
 
 **Problem:** Quantization requires manual steps. `infergo quantize` should handle it automatically.
 
@@ -1862,7 +1862,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-69 — Model Benchmarking `[ ]` M
+### OPT-69 — Model Benchmarking `[x]` M
 
 **Problem:** No easy way to evaluate model quality and speed. `infergo bench` should run standard evals.
 
@@ -1883,7 +1883,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-70 — Prompt Optimization `[ ]` M
+### OPT-70 — Prompt Optimization `[x]` M
 
 **Problem:** Prompt quality varies wildly. Auto-optimize prompts for best quality/speed tradeoff.
 
@@ -1927,7 +1927,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-72 — SQL Query Agent `[ ]` M
+### OPT-72 — SQL Query Agent `[x]` M
 
 **Problem:** Users want to query databases with natural language. LLM generates SQL, executes it, returns answer.
 
@@ -1949,7 +1949,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-73 — Web Scraping + Ingestion `[ ]` M
+### OPT-73 — Web Scraping + Ingestion `[x]` M
 
 **Problem:** RAG data often lives on the web. Auto-scrape, parse, chunk, embed.
 
@@ -2078,7 +2078,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-79 — Translation `[ ]` M
+### OPT-79 — Translation `[x]` M
 
 **Problem:** Multi-language translation requires separate service. Use NLLB or M2M-100 models.
 
@@ -2119,7 +2119,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-81 — OCR (Image → Text) `[ ]` M
+### OPT-81 — OCR (Image → Text) `[x]` M
 
 **Problem:** Extract text from images (documents, receipts, screenshots). Uses Vision LLM or dedicated OCR model.
 
@@ -2249,7 +2249,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-87 — Prompt Library `[ ]` S
+### OPT-87 — Prompt Library `[x]` S
 
 **Problem:** Users reinvent prompts. A shared library of tested, optimized prompts saves time.
 
@@ -2272,7 +2272,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE M — Infrastructure
 
-### OPT-88 — Model Sharding (CPU+GPU) `[ ]` M
+### OPT-88 — Model Sharding (CPU+GPU) `[x]` M
 
 **Problem:** Models larger than VRAM can't load. Split model across CPU RAM + GPU VRAM.
 
@@ -2375,7 +2375,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-93 — Content Filtering `[ ]` M
+### OPT-93 — Content Filtering `[x]` M
 
 **Problem:** LLM may generate harmful content. Content filter blocks toxic outputs.
 
@@ -2437,7 +2437,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-96 — Raspberry Pi / Edge Build `[ ]` S
+### OPT-96 — Raspberry Pi / Edge Build `[x]` S
 
 **Problem:** No ARM64 Linux build for edge devices.
 
@@ -2456,7 +2456,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-97 — WebAssembly Build `[ ]` L
+### OPT-97 — WebAssembly Build `[x]` L
 
 **Problem:** Can't run infergo in browser. WASM build enables client-side inference.
 
@@ -2502,7 +2502,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE P — Generative AI
 
-### OPT-98 — Video Generation (Text/Image → Video) `[ ]` XL
+### OPT-98 — Video Generation (Text/Image → Video) `[x]` XL
 
 **Problem:** Text-to-video and image-to-video require separate heavy Python pipelines. GGUF-quantized video models can run locally.
 
@@ -2522,7 +2522,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-99 — Music Generation `[ ]` L
+### OPT-99 — Music Generation `[x]` L
 
 **Problem:** Text-to-music requires separate service. MusicGen/AudioCraft models can generate music from text descriptions.
 
@@ -2542,7 +2542,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-100 — 3D Model Generation `[ ]` XL
+### OPT-100 — 3D Model Generation `[x]` XL
 
 **Problem:** Text/image to 3D mesh generation for game assets, product visualization.
 
@@ -2562,7 +2562,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-101 — Image Editing (Inpainting/Outpainting) `[ ]` L
+### OPT-101 — Image Editing (Inpainting/Outpainting) `[x]` L
 
 **Problem:** Edit specific regions of images using text prompts.
 
@@ -2582,7 +2582,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-102 — Voice Cloning `[ ]` L
+### OPT-102 — Voice Cloning `[x]` L
 
 **Problem:** TTS with generic voices. Voice cloning creates custom voice from 5-second sample.
 
@@ -2604,7 +2604,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE Q — Retrieval & Search
 
-### OPT-103 — Multi-Modal Search `[ ]` M
+### OPT-103 — Multi-Modal Search `[x]` M
 
 **Problem:** Current search is text-only. Users want to search by image ("find similar products").
 
@@ -2625,7 +2625,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-104 — Cross-Language Search `[ ]` M
+### OPT-104 — Cross-Language Search `[x]` M
 
 **Problem:** Query in English should find documents in Hindi, Spanish, etc.
 
@@ -2644,7 +2644,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-105 — Table/CSV Search `[ ]` M
+### OPT-105 — Table/CSV Search `[x]` M
 
 **Problem:** RAG doesn't understand structured data. Tables need column-aware chunking and search.
 
@@ -2665,7 +2665,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-106 — Real-Time Index Updates `[ ]` S
+### OPT-106 — Real-Time Index Updates `[x]` S
 
 **Problem:** Vector DB updates are batch-only. Need real-time insert/delete with immediate searchability.
 
@@ -2686,7 +2686,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE R — Observability
 
-### OPT-107 — Distributed Tracing UI `[ ]` M
+### OPT-107 — Distributed Tracing UI `[x]` M
 
 **Problem:** OpenTelemetry traces require Jaeger/Zipkin. Built-in trace viewer shows request flow.
 
@@ -2706,7 +2706,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-108 — Cost Tracking `[ ]` S
+### OPT-108 — Cost Tracking `[x]` S
 
 **Problem:** No visibility into compute cost per request.
 
@@ -2726,7 +2726,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-109 — Quality Monitoring `[ ]` M
+### OPT-109 — Quality Monitoring `[x]` M
 
 **Problem:** No way to detect when model output quality degrades over time.
 
@@ -2746,7 +2746,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-110 — Drift Detection `[ ]` M
+### OPT-110 — Drift Detection `[x]` M
 
 **Problem:** Model outputs shift over time due to prompt changes or data drift.
 
@@ -2767,7 +2767,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE S — Collaboration
 
-### OPT-111 — Team Workspaces `[ ]` M
+### OPT-111 — Team Workspaces `[x]` M
 
 **Problem:** Single-user setup. Teams need shared prompts, models, and API keys.
 
@@ -2808,7 +2808,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-113 — Annotation Tool `[ ]` M
+### OPT-113 — Annotation Tool `[x]` M
 
 **Problem:** Fine-tuning needs labeled data. Built-in annotation lets humans rate/correct LLM outputs.
 
@@ -2852,7 +2852,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE T — Integration
 
-### OPT-115 — Slack Bot `[ ]` M
+### OPT-115 — Slack Bot `[x]` M
 
 **Problem:** Users want to chat with infergo from Slack.
 
@@ -2873,7 +2873,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-116 — Discord Bot `[ ]` M
+### OPT-116 — Discord Bot `[x]` M
 
 **Problem:** Same as Slack but for Discord communities.
 
@@ -2892,7 +2892,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-117 — Email Agent `[ ]` M
+### OPT-117 — Email Agent `[x]` M
 
 **Problem:** Auto-classify, summarize, and draft email replies.
 
@@ -2911,7 +2911,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-118 — Zapier / n8n Webhook Integration `[ ]` S
+### OPT-118 — Zapier / n8n Webhook Integration `[x]` S
 
 **Problem:** Connect infergo to 1000+ apps via workflow automation.
 
@@ -2930,7 +2930,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-119 — LangChain Compatible `[ ]` S
+### OPT-119 — LangChain Compatible `[x]` S
 
 **Problem:** LangChain users want to use infergo as a drop-in replacement for OpenAI.
 
@@ -2950,7 +2950,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-120 — LlamaIndex Compatible `[ ]` S
+### OPT-120 — LlamaIndex Compatible `[x]` S
 
 **Problem:** LlamaIndex users want infergo as backend.
 
@@ -2970,7 +2970,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE U — Advanced Inference
 
-### OPT-121 — Mixture of Experts Routing `[ ]` L
+### OPT-121 — Mixture of Experts Routing `[x]` L
 
 **Problem:** Single model can't excel at everything. Route queries to specialized models based on topic.
 
@@ -2990,7 +2990,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-122 — Ensemble Inference `[ ]` M
+### OPT-122 — Ensemble Inference `[x]` M
 
 **Problem:** Single model answers may be wrong. Ensemble runs N models and picks the best answer.
 
@@ -3028,7 +3028,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-124 — Hallucination Detection `[ ]` M
+### OPT-124 — Hallucination Detection `[x]` M
 
 **Problem:** LLM makes up facts. Detect hallucinations by cross-referencing with retrieved sources.
 
@@ -3047,7 +3047,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-125 — Context Extension (YaRN/NTK) `[ ]` M
+### OPT-125 — Context Extension (YaRN/NTK) `[x]` M
 
 **Problem:** Models trained on 4K context can't handle 32K inputs. RoPE scaling extends context.
 
@@ -3066,7 +3066,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-126 — Speculative Decoding v2 (Medusa) `[ ]` L
+### OPT-126 — Speculative Decoding v2 (Medusa) `[x]` L
 
 **Problem:** Standard speculative decoding needs a separate draft model. Medusa adds extra prediction heads to the main model for multi-token prediction without a draft.
 
@@ -3089,7 +3089,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE V — Compliance & Governance
 
-### OPT-127 — SOC2 Compliance Mode `[ ]` M
+### OPT-127 — SOC2 Compliance Mode `[x]` M
 
 **Problem:** SOC2 certification requires specific controls. One flag enables all required features.
 
@@ -3107,7 +3107,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-128 — GDPR Data Deletion `[ ]` S
+### OPT-128 — GDPR Data Deletion `[x]` S
 
 **Problem:** GDPR requires deleting all data for a specific user on request.
 
@@ -3126,7 +3126,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-129 — Model Card Generation `[ ]` S
+### OPT-129 — Model Card Generation `[x]` S
 
 **Problem:** No documentation for deployed models. Auto-generate model cards with metadata, benchmarks, limitations.
 
@@ -3146,7 +3146,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-130 — Bias Detection `[ ]` M
+### OPT-130 — Bias Detection `[x]` M
 
 **Problem:** Models may exhibit demographic bias. Built-in bias testing reveals issues.
 
@@ -3166,7 +3166,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-131 — Explainability (Attention Visualization) `[ ]` M
+### OPT-131 — Explainability (Attention Visualization) `[x]` M
 
 **Problem:** Black-box outputs. Show which input tokens influenced the output most.
 
@@ -3188,7 +3188,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ## PHASE W — Edge & IoT
 
-### OPT-132 — MQTT Integration `[ ]` M
+### OPT-132 — MQTT Integration `[x]` M
 
 **Problem:** IoT devices communicate via MQTT. infergo should subscribe to MQTT topics and process messages.
 
@@ -3208,7 +3208,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-133 — Offline Mode `[ ]` M
+### OPT-133 — Offline Mode `[x]` M
 
 **Problem:** Edge devices lose connectivity. Queue requests when offline, sync when back online.
 
@@ -3228,7 +3228,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-134 — Model Compression for Edge `[ ]` M
+### OPT-134 — Model Compression for Edge `[x]` M
 
 **Problem:** Edge devices have limited resources. Auto-compress model for target device.
 
@@ -3247,7 +3247,7 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-135 — Federated Inference `[ ]` XL
+### OPT-135 — Federated Inference `[x]` XL
 
 **Problem:** Multiple edge devices each have partial compute. Federated inference distributes layers across devices.
 

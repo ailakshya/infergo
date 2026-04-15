@@ -45,6 +45,8 @@ func main() {
 		runModels(os.Args[2:])
 	case "chat":
 		chatCmd(os.Args[2:])
+	case "bench":
+		benchCmd(os.Args[2:])
 	case "-h", "--help", "help":
 		printUsage()
 	default:

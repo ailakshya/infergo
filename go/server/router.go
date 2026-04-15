@@ -318,6 +318,10 @@ type Server struct {
 	feedback          *FeedbackStore      // user feedback collection (OPT-114)
 	pii               *PIIDetector        // PII detection/redaction (OPT-57)
 	metrics           *Metrics         // prometheus metrics (optional)
+	semanticCache     *SemanticCache      // semantic similarity cache (OPT-54)
+	tenants           *TenantStore        // multi-tenant management (OPT-56)
+	canary            *CanaryDeploy       // canary deployment (OPT-61)
+	triggers          *TriggerEngine      // event triggers (OPT-64)
 }
 
 // NewServer creates a Server backed by the given Registry and registers all routes.
@@ -370,6 +374,20 @@ func NewServer(reg *Registry) *Server {
 	s.mux.HandleFunc("POST /v1/rag/stream", s.handleStreamingRAG)
 	// Code execution sandbox (OPT-50)
 	s.mux.HandleFunc("POST /v1/code/execute", s.handleCodeExecute)
+	s.mux.HandleFunc("POST /v1/agents/sql", s.handleSQLAgent)
+	s.mux.HandleFunc("POST /v1/admin/optimize-prompt", s.handlePromptOptimize)
+	s.mux.HandleFunc("DELETE /v1/admin/gdpr/{user_id}", s.handleGDPRDelete)
+	// Multi-tenant management (OPT-56)
+	s.mux.HandleFunc("POST /v1/admin/tenants", s.handleTenantCreate)
+	s.mux.HandleFunc("GET /v1/admin/tenants/{id}/usage", s.handleTenantUsage)
+	// Canary deployment (OPT-61)
+	s.mux.HandleFunc("POST /v1/admin/canary", s.handleCanaryCreate)
+	s.mux.HandleFunc("GET /v1/admin/canary", s.handleCanaryStatus)
+	s.mux.HandleFunc("DELETE /v1/admin/canary", s.handleCanaryDelete)
+	// Event triggers (OPT-64)
+	s.mux.HandleFunc("POST /v1/admin/triggers", s.handleTriggersCreate)
+	s.mux.HandleFunc("GET /v1/admin/triggers", s.handleTriggersList)
+	s.mux.HandleFunc("DELETE /v1/admin/triggers/{name}", s.handleTriggersDelete)
 	return s
 }
 
@@ -401,6 +419,27 @@ func (s *Server) SetPII(d *PIIDetector) {
 // SetMetrics injects Prometheus metrics for cache hit/miss tracking.
 func (s *Server) SetMetrics(m *Metrics) {
 	s.metrics = m
+}
+
+// SetSemanticCache injects a semantic similarity cache for embedding-based
+// cache lookups of chat completions.
+func (s *Server) SetSemanticCache(sc *SemanticCache) {
+	s.semanticCache = sc
+}
+
+// SetTenants injects a tenant store for multi-tenant API key management.
+func (s *Server) SetTenants(ts *TenantStore) {
+	s.tenants = ts
+}
+
+// SetCanary injects a canary deployment manager.
+func (s *Server) SetCanary(cd *CanaryDeploy) {
+	s.canary = cd
+}
+
+// SetTriggers injects an event trigger engine.
+func (s *Server) SetTriggers(te *TriggerEngine) {
+	s.triggers = te
 }
 
 // ServeHTTP implements http.Handler.
