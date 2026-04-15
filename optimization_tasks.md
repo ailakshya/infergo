@@ -1705,3 +1705,795 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 | F — Advanced AI | OPT-49..55 | 0/7 | 7 |
 | G — Enterprise | OPT-56..61 | 0/6 | 6 |
 | **Total** | **61** | **36** | **22 + 5 FUTURE** |
+
+---
+
+## PHASE H — Real-Time & Streaming
+
+### OPT-62 — Live Video Analysis Pipeline `[ ]` L
+
+**Problem:** Real-time video analysis requires stitching together decode → detect → track → annotate at 30 FPS. infergo already has all components — need a unified pipeline endpoint.
+
+**What changes:**
+- `go/cmd/infergo/video_pipeline.go` — unified pipeline: RTSP/webcam → decode → detect → track → annotate → output
+- `POST /v1/video/analyze` — start analysis on a video source
+- `GET /v1/video/stream` — SSE stream of detection events
+- WebSocket output for live annotated frames
+- Support: RTSP, USB webcam, video file, MJPEG
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-62-T1 | Video file analyzed | MP4 file → detection events per frame | |
+| OPT-62-T2 | 30 FPS sustained | 1080p input → ≥ 30 FPS output | |
+| OPT-62-T3 | Tracking IDs persist | Same object across 100 frames → same track ID | |
+| OPT-62-T4 | Multiple streams | 2 concurrent video sources → both processed | |
+| OPT-62-T5 | Start/stop control | Start analysis → stop → restart cleanly | |
+
+---
+
+### OPT-63 — Real-Time Translation Pipeline `[ ]` L
+
+**Problem:** Audio → transcribe → translate → TTS as a single pipeline for live translation.
+
+**What changes:**
+- `go/pipeline/translate.go` — chain: Whisper STT → translation model → TTS
+- `POST /v1/translate/stream` — WebSocket audio in → audio out
+- Support: 50+ languages via NLLB or M2M-100 models
+- Latency target: < 2s end-to-end
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-63-T1 | English → Spanish | Audio in English → text + audio in Spanish | |
+| OPT-63-T2 | Auto language detect | Input language auto-detected | |
+| OPT-63-T3 | Latency < 2s | End-to-end < 2 seconds for 5s audio chunk | |
+| OPT-63-T4 | Streaming mode | Continuous audio → continuous translated output | |
+
+---
+
+### OPT-64 — Event Triggers / Rules Engine `[ ]` M
+
+**Problem:** Users want automated alerts: "notify when person enters zone A" or "alert if confidence > 0.9 for class 'fire'."
+
+**What changes:**
+- `go/server/triggers.go` — rule engine: condition → action
+- `POST /v1/admin/triggers` — create rules: `{condition: "class=person AND zone=A", action: "webhook", url: "..."}`
+- Conditions: class, confidence threshold, zone (polygon), count, time window
+- Actions: webhook, log, SSE event, email (via SMTP)
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-64-T1 | Trigger fires on match | Detection matches rule → webhook called | |
+| OPT-64-T2 | Zone filtering | Detection inside polygon → trigger fires | |
+| OPT-64-T3 | Cooldown period | Same trigger doesn't fire within cooldown window | |
+| OPT-64-T4 | Multiple triggers | 3 rules active → correct ones fire | |
+| OPT-64-T5 | CRUD triggers | Create, list, update, delete triggers via API | |
+
+---
+
+### OPT-65 — WebRTC Video Streaming `[ ]` L
+
+**Problem:** Browser needs live annotated video. WebRTC provides low-latency bidirectional video.
+
+**What changes:**
+- `go/server/webrtc.go` — Pion WebRTC integration
+- Browser sends video → infergo detects → returns annotated video
+- Peer connection negotiation via signaling endpoint
+- TURN/STUN server configuration
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-65-T1 | Browser connects | WebRTC peer connection established | |
+| OPT-65-T2 | Video round-trip | Send video → receive annotated video | |
+| OPT-65-T3 | Latency < 200ms | Glass-to-glass latency under 200ms | |
+| OPT-65-T4 | Multiple peers | 4 browser connections simultaneously | |
+
+---
+
+## PHASE I — Model Intelligence
+
+### OPT-66 — QLoRA Fine-Tuning `[ ]` XL
+
+**Problem:** Fine-tuning requires separate Python workflow. infergo should fine-tune models in-place.
+
+**What changes:**
+- `cpp/train/qlora.cpp` — QLoRA training loop using llama.cpp's training API
+- `go/cmd/infergo/train.go` — `infergo train` subcommand
+- `POST /v1/train` — start training job
+- Input: JSONL file with `{"prompt": "...", "completion": "..."}` pairs
+- Output: LoRA adapter GGUF file
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-66-T1 | Training completes | 100 samples → LoRA adapter saved | |
+| OPT-66-T2 | Adapter loadable | Trained adapter loads via infer_lora_load | |
+| OPT-66-T3 | Quality improves | Fine-tuned model scores higher on task-specific eval | |
+| OPT-66-T4 | GPU memory managed | Training fits in available VRAM | |
+| OPT-66-T5 | Checkpointing | Training resumes from checkpoint after interruption | |
+
+---
+
+### OPT-67 — Model Distillation `[ ]` L
+
+**Problem:** Large models are slow. Distillation compresses a large model into a small one with minimal quality loss.
+
+**What changes:**
+- `go/cmd/infergo/distill.go` — `infergo distill --teacher llama3-8b --student llama3-1b --data train.jsonl`
+- Teacher generates completions → student learns to match
+- Output: fine-tuned student model
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-67-T1 | Distillation completes | Teacher 8B → student 1B trained | |
+| OPT-67-T2 | Student quality | Student scores ≥ 80% of teacher on eval set | |
+| OPT-67-T3 | Speed improvement | Student 4x faster than teacher | |
+
+---
+
+### OPT-68 — Auto-Quantization `[ ]` S
+
+**Problem:** Quantization requires manual steps. `infergo quantize` should handle it automatically.
+
+**What changes:**
+- `go/cmd/infergo/quantize.go` — `infergo quantize model.safetensors --target q4_k_m`
+- Wraps llama.cpp's `llama-quantize` binary
+- Auto-detect input format (safetensors, GGUF F16/F32)
+- Benchmark before/after: perplexity + speed
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-68-T1 | F16 → Q4_K_M | GGUF F16 quantized to Q4_K_M | |
+| OPT-68-T2 | Size reduction | Q4 file ~25% of F16 file | |
+| OPT-68-T3 | Quality report | Perplexity before/after printed | |
+| OPT-68-T4 | Speed report | tok/s before/after printed | |
+
+---
+
+### OPT-69 — Model Benchmarking `[ ]` M
+
+**Problem:** No easy way to evaluate model quality and speed. `infergo bench` should run standard evals.
+
+**What changes:**
+- `go/cmd/infergo/bench.go` — `infergo bench model.gguf`
+- Measures: tok/s, TTFT, perplexity, MMLU (if eval data available)
+- Concurrent load test: ramp from 1→16 users
+- Output: JSON report + terminal summary
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-69-T1 | Speed benchmark runs | tok/s and TTFT reported | |
+| OPT-69-T2 | Perplexity computed | Perplexity on WikiText sample | |
+| OPT-69-T3 | Load test scales | 1→16 concurrent users, RPS reported | |
+| OPT-69-T4 | JSON output | `--output results.json` saves structured results | |
+
+---
+
+### OPT-70 — Prompt Optimization `[ ]` M
+
+**Problem:** Prompt quality varies wildly. Auto-optimize prompts for best quality/speed tradeoff.
+
+**What changes:**
+- `go/server/prompt_opt.go` — test N prompt variants, measure quality
+- `POST /v1/admin/optimize-prompt` — input: task description + eval criteria
+- Uses LLM to generate prompt variants, evaluates each
+- Returns best prompt with quality score
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-70-T1 | Generates variants | Input task → 5+ prompt variants generated | |
+| OPT-70-T2 | Evaluates quality | Each variant scored on criteria | |
+| OPT-70-T3 | Best returned | Highest-scoring variant returned | |
+| OPT-70-T4 | Speed considered | Shorter prompts preferred if quality equal | |
+
+---
+
+## PHASE J — Data & Knowledge
+
+### OPT-71 — Knowledge Graph Extraction `[ ]` L
+
+**Problem:** RAG with flat text misses entity relationships. Knowledge graphs capture structured relationships for better retrieval.
+
+**What changes:**
+- `go/knowledge/graph.go` — entity extraction + relationship building
+- LLM-based NER: extract people, places, orgs, events
+- Store as triples: (subject, predicate, object)
+- Graph-enhanced RAG: retrieve relevant subgraph + text chunks
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-71-T1 | Entities extracted | "John works at Google" → (John, works_at, Google) | |
+| OPT-71-T2 | Graph stored | Triples persisted to disk | |
+| OPT-71-T3 | Graph-RAG works | Question about entity → answer uses graph context | |
+| OPT-71-T4 | Multi-hop reasoning | "Where does John's employer's CEO live?" → traverses graph | |
+
+---
+
+### OPT-72 — SQL Query Agent `[ ]` M
+
+**Problem:** Users want to query databases with natural language. LLM generates SQL, executes it, returns answer.
+
+**What changes:**
+- `go/agent/sql_agent.go` — text → SQL → execute → answer
+- `POST /v1/agents/sql` — `{query: "How many users signed up last week?", db: "postgres://..."}`
+- Schema inspection: reads table schemas for context
+- Safety: read-only queries, timeout, row limit
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-72-T1 | Simple query | "Count all users" → valid SQL → number | |
+| OPT-72-T2 | Join query | "Users with orders > $100" → correct JOIN | |
+| OPT-72-T3 | Read-only enforced | DELETE/UPDATE attempt → blocked | |
+| OPT-72-T4 | Schema context | Agent knows table/column names | |
+| OPT-72-T5 | Error handling | Bad SQL → clear error message | |
+
+---
+
+### OPT-73 — Web Scraping + Ingestion `[ ]` M
+
+**Problem:** RAG data often lives on the web. Auto-scrape, parse, chunk, embed.
+
+**What changes:**
+- `go/ingest/web.go` — HTTP fetch → HTML parse → clean text → chunk → embed
+- `POST /v1/ingest/url` — `{url: "https://...", depth: 2}`
+- Respects robots.txt, rate limits
+- Recursive crawl with depth limit
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-73-T1 | Single URL scraped | URL → text chunks in vector DB | |
+| OPT-73-T2 | HTML cleaned | Script/style tags removed, text extracted | |
+| OPT-73-T3 | Recursive crawl | depth=2 → follows links to 2 levels | |
+| OPT-73-T4 | robots.txt respected | Disallowed paths skipped | |
+| OPT-73-T5 | RAG finds web content | Scrape URL → ask question → answer from scraped content | |
+
+---
+
+### OPT-74 — Data Connectors `[ ]` L
+
+**Problem:** RAG sources are scattered: PostgreSQL, MongoDB, S3, Google Drive. Need connectors to pull data automatically.
+
+**What changes:**
+- `go/connectors/postgres.go` — PostgreSQL connector
+- `go/connectors/mongodb.go` — MongoDB connector
+- `go/connectors/s3.go` — AWS S3 file connector
+- `go/connectors/gdrive.go` — Google Drive connector
+- `POST /v1/admin/connectors` — configure data source
+- Auto-sync: poll for new data at configurable interval
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-74-T1 | PostgreSQL connector | Connect → pull rows → embed → searchable | |
+| OPT-74-T2 | S3 connector | Pull files from S3 bucket → ingest | |
+| OPT-74-T3 | Auto-sync | New data added → auto-ingested within sync interval | |
+| OPT-74-T4 | Connector CRUD | Create, list, update, delete connectors | |
+
+---
+
+### OPT-75 — Hybrid Search (BM25 + Vector) `[ ]` M
+
+**Problem:** Pure vector search misses keyword matches. Hybrid combines BM25 keyword search with vector similarity for better retrieval.
+
+**What changes:**
+- `go/search/bm25.go` — BM25 keyword index
+- `go/search/hybrid.go` — merge BM25 + HNSW results with reciprocal rank fusion
+- `POST /v1/search` — `{query: "...", mode: "hybrid"}` parameter
+- Configurable weight: `alpha=0.7` (70% vector, 30% keyword)
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-75-T1 | BM25 finds keywords | Exact keyword match → ranked high | |
+| OPT-75-T2 | Vector finds semantics | Synonym query → relevant results | |
+| OPT-75-T3 | Hybrid beats both | Hybrid retrieval quality > pure BM25 or pure vector alone | |
+| OPT-75-T4 | Alpha configurable | `alpha=1.0` → pure vector; `alpha=0.0` → pure BM25 | |
+| OPT-75-T5 | BM25 index persists | Restart → BM25 index still available | |
+
+---
+
+## PHASE K — Specialized AI Tasks
+
+### OPT-76 — Named Entity Recognition (NER) `[ ]` S
+
+**Problem:** Extract structured entities (people, places, organizations, dates) from text.
+
+**What changes:**
+- `go/server/ner.go` — LLM-based NER with grammar-constrained output
+- `POST /v1/ner` — `{text: "John works at Google in NYC"}`
+- Response: `{entities: [{text: "John", type: "PERSON"}, {text: "Google", type: "ORG"}, ...]}`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-76-T1 | Person detected | "John Smith" → PERSON | |
+| OPT-76-T2 | Org detected | "Google Inc." → ORG | |
+| OPT-76-T3 | Location detected | "New York City" → LOCATION | |
+| OPT-76-T4 | Multiple entities | Complex text → all entities extracted | |
+
+---
+
+### OPT-77 — Sentiment Analysis `[ ]` S
+
+**Problem:** Classify text sentiment without separate model.
+
+**What changes:**
+- `go/server/sentiment.go` — LLM-based sentiment with constrained output
+- `POST /v1/sentiment` — `{text: "This product is amazing!"}`
+- Response: `{sentiment: "positive", score: 0.95}`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-77-T1 | Positive detected | "I love this!" → positive, score > 0.8 | |
+| OPT-77-T2 | Negative detected | "Terrible experience" → negative, score > 0.8 | |
+| OPT-77-T3 | Neutral detected | "The meeting is at 3pm" → neutral | |
+| OPT-77-T4 | Batch sentiment | 10 texts → 10 results | |
+
+---
+
+### OPT-78 — Text Classification `[ ]` S
+
+**Problem:** Classify text into custom categories (support, sales, spam, etc.).
+
+**What changes:**
+- `go/server/classify.go` — LLM-based classification with user-defined labels
+- `POST /v1/classify` — `{text: "I need help with billing", labels: ["support", "sales", "spam"]}`
+- Response: `{label: "support", confidence: 0.92}`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-78-T1 | Correct label | Support query → "support" label | |
+| OPT-78-T2 | Custom labels | User-defined labels work | |
+| OPT-78-T3 | Confidence score | Score between 0 and 1 | |
+| OPT-78-T4 | Multi-label | `multi_label: true` → multiple labels per text | |
+
+---
+
+### OPT-79 — Translation `[ ]` M
+
+**Problem:** Multi-language translation requires separate service. Use NLLB or M2M-100 models.
+
+**What changes:**
+- `POST /v1/translate` — `{text: "Hello", source: "en", target: "es"}`
+- `--model translate:models/nllb-200.gguf` model type
+- Auto language detection when source not specified
+- Batch translation support
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-79-T1 | EN → ES | "Hello" → "Hola" | |
+| OPT-79-T2 | Auto-detect source | No source specified → detected correctly | |
+| OPT-79-T3 | Batch translate | 10 texts → 10 translations | |
+| OPT-79-T4 | 50+ languages | Support all NLLB languages | |
+
+---
+
+### OPT-80 — Summarization `[ ]` S
+
+**Problem:** Long text → concise summary. Dedicated endpoint with configurable length.
+
+**What changes:**
+- `POST /v1/summarize` — `{text: "...", max_length: 100}`
+- Modes: `extractive` (pick key sentences) or `abstractive` (LLM rewrite)
+- Configurable length: sentences, words, or percentage
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-80-T1 | Long text summarized | 1000-word article → 100-word summary | |
+| OPT-80-T2 | Key points preserved | Summary contains main facts | |
+| OPT-80-T3 | Length respected | `max_length: 50` → ≤ 50 words | |
+| OPT-80-T4 | Extractive mode | Key sentences selected from original | |
+
+---
+
+### OPT-81 — OCR (Image → Text) `[ ]` M
+
+**Problem:** Extract text from images (documents, receipts, screenshots). Uses Vision LLM or dedicated OCR model.
+
+**What changes:**
+- `POST /v1/ocr` — `{image_b64: "..."}` or binary upload
+- Response: `{text: "...", blocks: [{text: "...", bbox: [x1,y1,x2,y2]}]}`
+- Uses Vision LLM (OPT-40) or dedicated OCR model
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-81-T1 | Document OCR | Photo of document → extracted text | |
+| OPT-81-T2 | Bounding boxes | Each text block has position coordinates | |
+| OPT-81-T3 | Multi-language | Chinese/Arabic text extracted | |
+| OPT-81-T4 | Handwriting | Handwritten text → reasonable output | |
+
+---
+
+## PHASE L — Developer Experience
+
+### OPT-82 — Interactive Playground UI `[ ]` M
+
+**Problem:** Built-in `/ui` is minimal. Need a full playground with model picker, parameter sliders, history, and multi-modal input.
+
+**What changes:**
+- `go/server/playground.go` — serve embedded React/Svelte app
+- Features: model selector, temperature/top_p sliders, system prompt editor
+- Chat history (local storage), export conversations
+- Image upload for vision models, audio upload for STT
+- Side-by-side model comparison
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-82-T1 | Playground loads | `GET /ui/playground` → interactive page | |
+| OPT-82-T2 | Chat works | Send message → receive response | |
+| OPT-82-T3 | Parameters adjust | Change temperature → different outputs | |
+| OPT-82-T4 | Image upload | Upload image → vision model responds | |
+| OPT-82-T5 | History persists | Refresh page → conversation still there | |
+
+---
+
+### OPT-83 — Python SDK `[ ]` M
+
+**Problem:** Python developers need a typed client library. `pip install infergo` for easy integration.
+
+**What changes:**
+- `sdk/python/infergo/` — Python package
+- Type hints, async support, streaming
+- Classes: `InfergoClient`, `ChatCompletion`, `Embedding`, `Detection`
+- Published to PyPI
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-83-T1 | pip install works | `pip install infergo` → import succeeds | |
+| OPT-83-T2 | Chat works | `client.chat("Hello")` → response | |
+| OPT-83-T3 | Streaming works | `for chunk in client.chat_stream(...)` → tokens | |
+| OPT-83-T4 | Async works | `await client.achat(...)` → async response | |
+| OPT-83-T5 | Type hints | IDE autocomplete works for all methods | |
+
+---
+
+### OPT-84 — TypeScript SDK `[ ]` M
+
+**Problem:** Frontend and Node.js developers need a typed client.
+
+**What changes:**
+- `sdk/typescript/` — npm package with TypeScript types
+- `npm install @infergo/client`
+- Browser + Node.js compatible
+- Streaming via ReadableStream
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-84-T1 | npm install works | Package installs, types resolve | |
+| OPT-84-T2 | Chat works | `client.chat(...)` → typed response | |
+| OPT-84-T3 | Streaming works | `for await (const chunk of stream)` → tokens | |
+| OPT-84-T4 | Browser compatible | Works in browser fetch, no Node.js deps | |
+
+---
+
+### OPT-85 — OpenAPI / Swagger Spec `[ ]` S
+
+**Problem:** No auto-generated API documentation. Need machine-readable spec for code generation.
+
+**What changes:**
+- `go/server/openapi.go` — generate OpenAPI 3.0 spec from endpoints
+- `GET /v1/openapi.json` — returns spec
+- `GET /ui/docs` — Swagger UI for interactive API exploration
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-85-T1 | Spec generated | `/v1/openapi.json` returns valid OpenAPI 3.0 | |
+| OPT-85-T2 | All endpoints listed | Every registered endpoint in spec | |
+| OPT-85-T3 | Swagger UI works | `/ui/docs` shows interactive documentation | |
+| OPT-85-T4 | Try-it works | Execute requests from Swagger UI | |
+
+---
+
+### OPT-86 — CLI Chat Mode `[ ]` S
+
+**Problem:** No interactive terminal chat. `infergo chat` should work like `ollama run`.
+
+**What changes:**
+- `go/cmd/infergo/chat.go` — interactive REPL
+- `infergo chat --model llm` — connect to running server
+- `infergo chat --model models/llama3.gguf` — load model directly (no server)
+- Streaming output, multi-line input, `/commands`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-86-T1 | Chat starts | `infergo chat` → interactive prompt | |
+| OPT-86-T2 | Streaming output | Tokens appear as generated | |
+| OPT-86-T3 | Multi-turn | History maintained across turns | |
+| OPT-86-T4 | /help command | `/help` shows available commands | |
+| OPT-86-T5 | Direct model load | `--model file.gguf` loads without server | |
+
+---
+
+### OPT-87 — Prompt Library `[ ]` S
+
+**Problem:** Users reinvent prompts. A shared library of tested, optimized prompts saves time.
+
+**What changes:**
+- `go/server/prompt_lib.go` — prompt template registry
+- `GET /v1/prompts` — list available prompts
+- `POST /v1/prompts` — create/import prompt template
+- Built-in prompts: JSON extractor, code reviewer, summarizer, translator
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-87-T1 | List prompts | `GET /v1/prompts` → list of templates | |
+| OPT-87-T2 | Use prompt | `{template: "json-extractor", vars: {text: "..."}}` → structured output | |
+| OPT-87-T3 | Create custom | `POST /v1/prompts` → saved and usable | |
+| OPT-87-T4 | Variables substituted | `{{input}}` in template → replaced with user input | |
+
+---
+
+## PHASE M — Infrastructure
+
+### OPT-88 — Model Sharding (CPU+GPU) `[ ]` M
+
+**Problem:** Models larger than VRAM can't load. Split model across CPU RAM + GPU VRAM.
+
+**What changes:**
+- `--gpu-layers N` flag — put N layers on GPU, rest on CPU
+- Auto-detect: if model > VRAM, auto-split optimally
+- Report: which layers on GPU vs CPU
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-88-T1 | Partial offload | 8B model with --gpu-layers 20 → runs | |
+| OPT-88-T2 | Auto-detect | Model > VRAM → auto-splits, no crash | |
+| OPT-88-T3 | Speed reported | Shows GPU layers tok/s vs full-CPU tok/s | |
+
+---
+
+### OPT-89 — Circuit Breaker `[ ]` S
+
+**Problem:** Failing model causes cascading failures. Circuit breaker auto-disables after N failures, re-enables after cooldown.
+
+**What changes:**
+- `go/server/circuit_breaker.go` — per-model failure tracking
+- States: closed (normal) → open (disabled) → half-open (testing)
+- Configurable: failure threshold, cooldown period
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-89-T1 | Opens on failures | 5 consecutive failures → model disabled | |
+| OPT-89-T2 | Returns 503 when open | Request to disabled model → 503 | |
+| OPT-89-T3 | Half-open test | After cooldown → one test request allowed | |
+| OPT-89-T4 | Closes on success | Test request succeeds → model re-enabled | |
+
+---
+
+### OPT-90 — Health Dashboard UI `[ ]` M
+
+**Problem:** Monitoring requires external Grafana. Built-in dashboard shows real-time metrics.
+
+**What changes:**
+- `go/server/dashboard.go` — embedded dashboard at `/ui/dashboard`
+- Real-time charts: GPU utilization, req/s, latency percentiles, VRAM usage
+- Per-model metrics, active connections, error rates
+- Auto-refresh every 1s
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-90-T1 | Dashboard loads | `GET /ui/dashboard` → interactive page | |
+| OPT-90-T2 | GPU metrics shown | GPU util %, VRAM, temperature displayed | |
+| OPT-90-T3 | Request metrics | req/s, latency P50/P99 per model | |
+| OPT-90-T4 | Real-time updates | Metrics refresh without page reload | |
+
+---
+
+## PHASE N — Security & Compliance
+
+### OPT-91 — Model Encryption at Rest `[ ]` M
+
+**Problem:** Model files on disk are unprotected. Encrypt at rest, decrypt on load.
+
+**What changes:**
+- `go/cmd/infergo/encrypt.go` — `infergo encrypt model.gguf --key <key>`
+- AES-256-GCM encryption
+- `--model-key` flag or `INFERGO_MODEL_KEY` env var for decryption on load
+- Key derivation from passphrase via Argon2
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-91-T1 | Encrypt works | `infergo encrypt` → encrypted file created | |
+| OPT-91-T2 | Decrypt on load | `--model-key` → model loads normally | |
+| OPT-91-T3 | Wrong key rejected | Wrong key → clear error, no crash | |
+| OPT-91-T4 | Performance | Decryption adds < 1s to cold start | |
+
+---
+
+### OPT-92 — IP Allowlisting `[ ]` S
+
+**Problem:** Server accessible from any IP. Need to restrict by IP range.
+
+**What changes:**
+- `go/server/ip_filter.go` — IP allowlist/blocklist middleware
+- `--allow-ip 10.0.0.0/8,192.168.1.0/24` flag
+- CIDR range support
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-92-T1 | Allowed IP passes | Request from allowed IP → 200 | |
+| OPT-92-T2 | Blocked IP rejected | Request from blocked IP → 403 | |
+| OPT-92-T3 | CIDR range works | `10.0.0.0/8` allows all 10.x.x.x | |
+| OPT-92-T4 | Health exempt | `/health/live` accessible from any IP | |
+
+---
+
+### OPT-93 — Content Filtering `[ ]` M
+
+**Problem:** LLM may generate harmful content. Content filter blocks toxic outputs.
+
+**What changes:**
+- `go/server/content_filter.go` — output scanning
+- Modes: `block` (reject), `warn` (add header), `redact` (replace)
+- Categories: hate speech, violence, self-harm, sexual content
+- Uses small classifier model or keyword matching
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-93-T1 | Toxic output blocked | Harmful request → filtered response | |
+| OPT-93-T2 | Clean output passes | Normal request → normal response | |
+| OPT-93-T3 | Warn mode | Flagged content → `X-Content-Warning` header | |
+| OPT-93-T4 | Categories configurable | Enable/disable specific categories | |
+
+---
+
+### OPT-94 — Data Retention Policy `[ ]` S
+
+**Problem:** Logs and cache grow unbounded. Auto-delete after configurable period.
+
+**What changes:**
+- `go/server/retention.go` — periodic cleanup of logs, cache, audit data
+- `--retention-days 30` flag
+- Applies to: audit logs, response cache, vector DB entries (optional)
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-94-T1 | Old logs deleted | Logs > 30 days → auto-deleted | |
+| OPT-94-T2 | Cache cleaned | Cache entries > retention → evicted | |
+| OPT-94-T3 | Configurable | `--retention-days 7` → 7-day retention | |
+
+---
+
+## PHASE O — Edge & Mobile
+
+### OPT-95 — ARM64 / Apple Silicon Build `[ ]` M
+
+**Problem:** No native macOS ARM build. Need Metal backend for M1/M2/M3/M4.
+
+**What changes:**
+- CMake: detect Apple Silicon, enable Metal backend
+- `cmake -DGGML_METAL=ON` for macOS builds
+- Cross-compile from Linux if needed
+- Release binary: `infergo-darwin-arm64`
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-95-T1 | macOS build | `go build` on macOS ARM64 succeeds | |
+| OPT-95-T2 | Metal inference | LLM generation uses Metal GPU | |
+| OPT-95-T3 | Performance | Metal tok/s comparable to CUDA on equivalent hardware | |
+
+---
+
+### OPT-96 — Raspberry Pi / Edge Build `[ ]` S
+
+**Problem:** No ARM64 Linux build for edge devices.
+
+**What changes:**
+- Cross-compile: `GOARCH=arm64 GOOS=linux go build`
+- Minimal binary without CUDA (CPU-only)
+- Optimized for limited RAM (2-4 GB)
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-96-T1 | ARM64 build | Cross-compiled binary runs on Pi 5 | |
+| OPT-96-T2 | 2GB RAM | Qwen 0.5B Q4 runs in 2 GB RAM | |
+| OPT-96-T3 | CPU performance | Reasonable tok/s on ARM Cortex-A76 | |
+
+---
+
+### OPT-97 — WebAssembly Build `[ ]` L
+
+**Problem:** Can't run infergo in browser. WASM build enables client-side inference.
+
+**What changes:**
+- `GOOS=js GOARCH=wasm go build` with llama.cpp WASM backend
+- JavaScript API: `const infergo = await Infergo.load("model.gguf")`
+- Web Worker for non-blocking inference
+- IndexedDB model caching
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-97-T1 | WASM builds | Binary compiles to .wasm | |
+| OPT-97-T2 | Browser loads | Model loads in Chrome/Firefox | |
+| OPT-97-T3 | Inference works | Generate text from browser | |
+| OPT-97-T4 | Performance | ≥ 5 tok/s for small model in browser | |
+
+---
+
+## Updated task summary
+
+| Phase | Tasks | Done | Pending |
+|---|---|---|---|
+| A — Performance | OPT-1..2 | 2/2 | 0 |
+| B — Core Inference | OPT-3..7 | 5/5 | 0 |
+| C — Production Serving | OPT-8..21 | 14/14 | 0 |
+| D — Advanced Optimization | OPT-22..39 | 15/15 | 0 (5 FUTURE) |
+| E — Multi-Modal | OPT-40..48 | 0/9 | 9 |
+| F — Advanced AI | OPT-49..55 | 0/7 | 7 |
+| G — Enterprise | OPT-56..61 | 0/6 | 6 |
+| H — Real-Time & Streaming | OPT-62..65 | 0/4 | 4 |
+| I — Model Intelligence | OPT-66..70 | 0/5 | 5 |
+| J — Data & Knowledge | OPT-71..75 | 0/5 | 5 |
+| K — Specialized AI | OPT-76..81 | 0/6 | 6 |
+| L — Developer Experience | OPT-82..87 | 0/6 | 6 |
+| M — Infrastructure | OPT-88..90 | 0/3 | 3 |
+| N — Security & Compliance | OPT-91..94 | 0/4 | 4 |
+| O — Edge & Mobile | OPT-95..97 | 0/3 | 3 |
+| **Total** | **97** | **36** | **58 + 5 FUTURE** |
