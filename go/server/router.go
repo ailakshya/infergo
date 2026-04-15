@@ -356,6 +356,11 @@ func NewServer(reg *Registry) *Server {
 	s.mux.HandleFunc("GET /ui/docs", s.handleSwaggerUI)
 	s.mux.HandleFunc("DELETE /v1/sessions/{id}", s.handleDeleteSession)
 	s.mux.HandleFunc("POST /v1/feedback", s.handleFeedback)
+	// NLP task endpoints (OPT-76..80)
+	s.mux.HandleFunc("POST /v1/ner", s.handleNER)
+	s.mux.HandleFunc("POST /v1/sentiment", s.handleSentiment)
+	s.mux.HandleFunc("POST /v1/classify", s.handleClassify)
+	s.mux.HandleFunc("POST /v1/summarize", s.handleSummarize)
 	return s
 }
 
