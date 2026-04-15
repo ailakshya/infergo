@@ -43,6 +43,8 @@ func main() {
 		runValidate(os.Args[2:])
 	case "models":
 		runModels(os.Args[2:])
+	case "chat":
+		chatCmd(os.Args[2:])
 	case "-h", "--help", "help":
 		printUsage()
 	default:

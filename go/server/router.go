@@ -84,8 +84,9 @@ type DetectedObject struct {
 
 // ChatMessage is a single turn in a conversation.
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string     `json:"role"`
+	Content   string     `json:"content"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // ResponseFormat specifies the output format for chat completions.
@@ -312,7 +313,10 @@ type Server struct {
 	ModelRegistryPath string     // optional; path to models/registry.json for convert/validate metadata
 	guardrail         *Guardrail      // optional content safety filter
 	templates         *TemplateStore   // server-side prompt templates
-	cache             *SemanticCache   // response cache
+	respCache         *ResponseCache   // exact-match response cache (OPT-46)
+	memory            *ConversationMemory // multi-turn session memory (OPT-44)
+	feedback          *FeedbackStore      // user feedback collection (OPT-114)
+	metrics           *Metrics         // prometheus metrics (optional)
 }
 
 // NewServer creates a Server backed by the given Registry and registers all routes.
@@ -348,6 +352,10 @@ func NewServer(reg *Registry) *Server {
 	s.mux.HandleFunc("GET /v1/admin/templates", s.handleTemplates)
 	s.mux.HandleFunc("POST /v1/admin/templates", s.handleTemplates)
 	s.mux.HandleFunc("GET /ui", s.handleWebUI)
+	s.mux.HandleFunc("GET /v1/openapi.json", s.handleOpenAPISpec)
+	s.mux.HandleFunc("GET /ui/docs", s.handleSwaggerUI)
+	s.mux.HandleFunc("DELETE /v1/sessions/{id}", s.handleDeleteSession)
+	s.mux.HandleFunc("POST /v1/feedback", s.handleFeedback)
 	return s
 }
 
@@ -363,6 +371,17 @@ func (s *Server) SetReloader(f ReloadFunc) {
 // In combined mode all endpoints are active.
 func (s *Server) SetMode(mode string) {
 	s.mode = mode
+}
+
+// SetCache injects a ResponseCache for exact-match caching of chat completions.
+// When set, identical non-streaming requests return cached responses in < 0.1ms.
+func (s *Server) SetCache(c *ResponseCache) {
+	s.respCache = c
+}
+
+// SetMetrics injects Prometheus metrics for cache hit/miss tracking.
+func (s *Server) SetMetrics(m *Metrics) {
+	s.metrics = m
 }
 
 // ServeHTTP implements http.Handler.
@@ -445,9 +464,52 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ── Function calling: generate grammar from tools ──
+	toolsActive := false
+	var resolvedChoice ResolvedToolChoice
+	if len(req.Tools) > 0 {
+		resolvedChoice = ResolveToolChoice(req.ToolChoice)
+		if resolvedChoice.Mode != "none" {
+			var fcGrammar string
+			switch resolvedChoice.Mode {
+			case "function":
+				fcGrammar = GenerateFunctionCallGrammar(req.Tools, resolvedChoice.FunctionName)
+			case "required":
+				fcGrammar = GenerateFunctionCallGrammar(req.Tools, "")
+			case "auto":
+				fcGrammar = GenerateFunctionCallGrammar(req.Tools, "")
+			}
+			if fcGrammar != "" {
+				ctx = WithGrammar(ctx, fcGrammar)
+				toolsActive = true
+			}
+		}
+	}
+	_ = resolvedChoice // used only for mode check above
+
 	if req.Stream {
 		s.streamChatCompletions(w, ctx, req)
 		return
+	}
+
+	// ── Response cache: check for cached response (skip if X-No-Cache or streaming) ──
+	noCache := r.Header.Get("X-No-Cache") == "true"
+	var cacheKey uint64
+	if s.respCache != nil && !noCache {
+		cacheKey = CacheKey(&req)
+		if cached, ok := s.respCache.Get(cacheKey); ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Cache", "HIT")
+			w.WriteHeader(http.StatusOK)
+			w.Write(cached) //nolint:errcheck
+			if s.metrics != nil {
+				s.metrics.CacheHits.Inc()
+			}
+			return
+		}
+		if s.metrics != nil {
+			s.metrics.CacheMisses.Inc()
+		}
 	}
 
 	ref, err := s.registry.Get(req.Model)
@@ -476,7 +538,29 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeChatCompletionFast(w, fastID("chatcmpl"), req.Model, text, promptToks, genToks)
+	// ── Function call response parsing ──
+	if toolsActive {
+		if tc, ok := ParseFunctionCallResponse(text); ok {
+			writeChatCompletionToolCall(w, fastID("chatcmpl"), req.Model, []ToolCall{tc}, promptToks, genToks)
+			return
+		}
+		// If parsing failed, fall through to return as normal text.
+	}
+
+	// ── Write response and store in cache ──
+	if s.respCache != nil && !noCache {
+		w.Header().Set("X-Cache", "MISS")
+		resp := buildChatCompletionJSON(fastID("chatcmpl"), req.Model, text, promptToks, genToks)
+		s.respCache.Put(cacheKey, resp)
+		if s.metrics != nil {
+			s.metrics.CacheSize.Set(float64(s.respCache.Len()))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(resp) //nolint:errcheck
+	} else {
+		writeChatCompletionFast(w, fastID("chatcmpl"), req.Model, text, promptToks, genToks)
+	}
 }
 
 func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {

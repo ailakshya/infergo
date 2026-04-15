@@ -47,6 +47,38 @@ func writeChatCompletionFast(w http.ResponseWriter, id string, model string, con
 	jsonBufPool.Put(bp)
 }
 
+// buildChatCompletionJSON returns a pre-serialized JSON response as a byte slice.
+// Used by the response cache so the same bytes can be served on cache hits.
+func buildChatCompletionJSON(id string, model string, content string, promptToks, genToks int) []byte {
+	bp := jsonBufPool.Get().(*[]byte)
+	b := (*bp)[:0]
+
+	b = append(b, `{"id":"`...)
+	b = append(b, id...)
+	b = append(b, `","object":"chat.completion","created":`...)
+	b = strconv.AppendInt(b, time.Now().Unix(), 10)
+	b = append(b, `,"model":"`...)
+	b = append(b, model...)
+	b = append(b, `","choices":[{"index":0,"message":{"role":"assistant","content":`...)
+	b = appendJSONString(b, content)
+	b = append(b, `},"finish_reason":"stop"}],"usage":{"prompt_tokens":`...)
+	b = strconv.AppendInt(b, int64(promptToks), 10)
+	b = append(b, `,"completion_tokens":`...)
+	b = strconv.AppendInt(b, int64(genToks), 10)
+	b = append(b, `,"total_tokens":`...)
+	b = strconv.AppendInt(b, int64(promptToks+genToks), 10)
+	b = append(b, `}}`...)
+	b = append(b, '\n')
+
+	// Copy to a new slice so the pooled buffer can be returned.
+	out := make([]byte, len(b))
+	copy(out, b)
+
+	*bp = b
+	jsonBufPool.Put(bp)
+	return out
+}
+
 // appendJSONString appends a JSON-escaped string to b.
 func appendJSONString(b []byte, s string) []byte {
 	b = append(b, '"')
