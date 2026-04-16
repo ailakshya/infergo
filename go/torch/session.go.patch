@@ -1,0 +1,3 @@
+// Add to the top of any file that imports torch CGo:
+// func init() { runtime.LockOSThread() }
+// This ensures CUDA init happens on the OS main thread.

@@ -6,6 +6,7 @@ package postprocess
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../cpp/include
 #cgo LDFLAGS: -L${SRCDIR}/../../build/cpp/api -linfer_api -Wl,-rpath,${SRCDIR}/../../build/cpp/api
+#cgo LDFLAGS: -lpthread
 
 #include "infer_api.h"
 #include <stdlib.h>

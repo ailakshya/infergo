@@ -59,6 +59,10 @@ import (
 	"github.com/ailakshya/infergo/tensor"
 )
 
+// Note: libtorch CUDA initialization may deadlock on some systems when
+// Go's goroutine scheduler moves threads. If detection hangs on startup,
+// set CUDA_VISIBLE_DEVICES=0 environment variable.
+
 // Session wraps an InferTorchSession (opaque C pointer).
 // We store the handle as unsafe.Pointer because Go 1.22 CGo resolves the
 // typedef void* to unsafe.Pointer in generated function wrappers.
