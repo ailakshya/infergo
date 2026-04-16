@@ -3800,3 +3800,105 @@ const text = await infergo.generate('Hello', { maxTokens: 32 });
 | H-W — Advanced + Edge | 74 | 74 |
 | X — Native SDK Bindings | 14 | 0 |
 | **Total** | **149** | **132 done, 14 pending, 4 FUTURE** |
+
+---
+
+## PHASE Y — Zero-Overhead Transport Layer
+
+> Direct C++ server — no Go in the inference hot path.
+> Developers choose transport based on their architecture.
+
+### OPT-150 — Unix Domain Socket Server (C++) `[ ]` M
+
+**Problem:** TCP adds kernel overhead (checksums, routing, buffer management). UDS is kernel-local IPC — 10x faster for same-machine clients.
+
+**What changes:**
+- `cpp/server/uds_server.cpp` — C++ server listening on Unix domain socket
+- Protocol: length-prefixed protobuf messages (4-byte length + protobuf payload)
+- `infergo.proto` — protobuf definitions for all request/response types
+- Thread pool: one thread per connection, shared model instance
+- `--uds /tmp/infergo.sock` flag to enable alongside HTTP
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-150-T1 | Socket created | `--uds /tmp/infergo.sock` creates socket file | |
+| OPT-150-T2 | Chat completion | Send protobuf request → receive response | |
+| OPT-150-T3 | Latency < 0.5ms overhead | Request-response overhead under 0.5ms | |
+| OPT-150-T4 | Concurrent clients | 8 clients on same socket → all served | |
+| OPT-150-T5 | Cleanup on exit | Socket file removed on SIGTERM | |
+
+---
+
+### OPT-151 — Shared Memory Transport (C++) `[ ]` L
+
+**Problem:** Even UDS has syscall overhead (sendmsg/recvmsg). Shared memory eliminates ALL kernel involvement — just read/write to mapped memory.
+
+**What changes:**
+- `cpp/server/shm_server.cpp` — shared memory ring buffer server
+- `cpp/server/shm_protocol.h` — lock-free SPSC ring buffer
+- Memory layout: `[header: 64B][request_ring: 4MB][response_ring: 4MB]`
+- Client writes request to ring → server reads → processes → writes response to ring
+- Signaling: futex or eventfd for wake-up (not busy-wait)
+- `--shm /infergo_shm` flag to create named shared memory region
+
+**Client library:**
+- `sdk/c/infergo_shm.h` — `infergo_shm_connect()`, `infergo_shm_generate()`, `infergo_shm_disconnect()`
+- Python: `mmap` + `struct` module wrapper
+- Any language with mmap support can use it
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-151-T1 | SHM created | `/dev/shm/infergo_shm` exists | |
+| OPT-151-T2 | Chat via SHM | Write request → read response | |
+| OPT-151-T3 | Overhead < 0.05ms | Round-trip overhead under 50 microseconds | |
+| OPT-151-T4 | No data copy | Request/response stay in shared pages | |
+| OPT-151-T5 | Client crash safe | Client dies → server detects, cleans up | |
+| OPT-151-T6 | Concurrent clients | Multiple SHM regions for multiple clients | |
+
+---
+
+### OPT-152 — Transport Selection Documentation `[ ]` S
+
+**Problem:** Developers need to understand which transport to use for their architecture.
+
+**What changes:**
+- `docs/transport.md` — complete guide with decision flowchart
+- Benchmark comparison table (all transports, same machine)
+- Code examples for every transport × language combination
+- Architecture diagrams for each deployment pattern
+
+**Content:**
+
+```
+When to use what:
+
+┌─────────────────────────────────────────────────────┐
+│                  Where is your app?                  │
+├──────────────┬──────────────────┬────────────────────┤
+│ Same process │ Same machine     │ Different machine  │
+│ (embedded)   │ (client/server)  │ (remote GPU)       │
+├──────────────┼──────────────────┼────────────────────┤
+│ Direct link  │ Shared memory    │ gRPC (protobuf)    │
+│ libinfer_api │ or Unix socket   │ or HTTP (JSON)     │
+│              │                  │                    │
+│ 0.001ms      │ 0.01-0.3ms       │ 1.5-4ms            │
+│              │                  │                    │
+│ C/C++/Rust   │ Any language     │ Any language        │
+│ Go (CGo)     │ with mmap/UDS    │ any platform        │
+│ Python(ctypes)│                 │                    │
+└──────────────┴──────────────────┴────────────────────┘
+```
+
+**Test cases:**
+
+| ID | Test | Target | Result |
+|---|---|---|---|
+| OPT-152-T1 | Doc complete | All 4 transports documented with examples | |
+| OPT-152-T2 | Benchmark table | Measured latency for each transport | |
+| OPT-152-T3 | Decision flowchart | Clear when to use what | |
+
+---
