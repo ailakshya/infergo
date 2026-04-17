@@ -58,7 +58,7 @@ response = client.chat.completions.create(
 
 ## Performance
 
-All numbers measured on RTX 5070 Ti, CUDA 12.8, Qwen 2.5 Coder 1.5B Q4_K_M. Benchmark scripts included.
+All numbers measured on RTX 5070 Ti, CUDA 12.8, Qwen 2.5 Coder 1.5B Q4_K_M, with `--batch-timeout-ms 5 --max-batch-size 8`. Benchmark scripts included. Performance scales with GPU — A100 achieves ~2x faster latency.
 
 ### LLM inference -- same speed as raw llama.cpp
 

@@ -18,3 +18,8 @@ models/
 # Built binaries (not SDK dirs)
 /infergo
 /go/infergo
+infergo_opt
+
+# SDK build artifacts
+sdk/rust/infergo/target/
+sdk/rust/infergo-sys/target/
