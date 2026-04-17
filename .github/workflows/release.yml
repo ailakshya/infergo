@@ -12,7 +12,7 @@ jobs:
   # ── CPU binary: Linux x86-64 ─────────────────────────────────────────────────
   release-linux-cpu:
     name: Linux x86-64 (CPU)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cuda]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,7 +75,7 @@ jobs:
   # ── macOS Apple Silicon ──────────────────────────────────────────────────────
   release-macos-arm64:
     name: macOS Apple Silicon
-    runs-on: macos-latest
+    runs-on: macos-latest  # GitHub-hosted — Mac runner needed for CoreML/Metal
     steps:
       - uses: actions/checkout@v4
         with:
@@ -133,7 +133,7 @@ jobs:
   # ── Docker images ──────────────────────────────────────────────────────────
   docker:
     name: Docker images
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cuda, gpu]
     permissions:
       contents: read
       packages: write

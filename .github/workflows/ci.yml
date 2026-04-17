@@ -10,63 +10,46 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  GO_VERSION_FILE: go/go.mod
+# All jobs run on the self-hosted gpu_dev runner which has every dependency
+# pre-installed: CUDA 12.8, libtorch, ONNX Runtime, Go, Rust, Docker.
+# No download/install overhead — builds are fast.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   # ── Go: lint ─────────────────────────────────────────────────────────────────
   go-lint:
     name: Go lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cuda]
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
-
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          working-directory: go
-          args: --timeout=5m
+        run: |
+          cd go
+          export PATH=$HOME/.local/bin:$PATH
+          golangci-lint run --timeout=5m || \
+            (go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest && golangci-lint run --timeout=5m)
 
   # ── Go: vet + pure-Go tests ──────────────────────────────────────────────────
   go-test:
-    name: Go tests (pure-Go)
-    runs-on: ubuntu-latest
+    name: Go tests
+    runs-on: [self-hosted, linux, x64, cuda]
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          submodules: recursive
 
       - name: go vet
         working-directory: go
         run: go vet ./hub/... ./grpc/... ./client/... ./tracker/... ./analytics/...
 
-      - name: go test
+      - name: go test (pure-Go packages)
         working-directory: go
         run: go test -race -count=1 -timeout=120s ./hub/... ./grpc/... ./client/... ./tracker/... ./analytics/...
 
-  # ── Go: server package (pure-Go subset, no CGo) ──────────────────────────────
-  go-test-server:
-    name: Go tests (server)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
-
-      - name: go test — server
+      - name: go test (server)
         working-directory: go
         env:
           CGO_ENABLED: "0"
@@ -75,66 +58,30 @@ jobs:
   # ── C++: format check ────────────────────────────────────────────────────────
   cpp-format:
     name: C++ format check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cuda]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install clang-format
-        run: sudo apt-get install -y clang-format-18
-
-      - name: Check formatting
+      - name: clang-format check
         run: |
           find cpp -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \
             | grep -v vendor \
-            | xargs clang-format-18 --dry-run --Werror
+            | xargs clang-format --dry-run --Werror
 
   # ── C++: build + gtest (CPU) ─────────────────────────────────────────────────
   cpp-test:
     name: C++ build + tests (CPU)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: [self-hosted, linux, x64, cuda]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y cmake ninja-build libopenblas-dev \
-            libgtest-dev libgmock-dev wget
-
-      - name: Cache ONNX Runtime
-        uses: actions/cache@v4
-        id: ort-cache
-        with:
-          path: /opt/onnxruntime
-          key: onnxruntime-1.24.4-linux-x64
-
-      - name: Install ONNX Runtime
-        if: steps.ort-cache.outputs.cache-hit != 'true'
-        run: |
-          wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-1.24.4.tgz
-          sudo tar -xzf onnxruntime-linux-x64-1.24.4.tgz -C /opt
-          sudo mv /opt/onnxruntime-linux-x64-1.24.4 /opt/onnxruntime
-      - run: |
-          echo "/opt/onnxruntime/lib" | sudo tee /etc/ld.so.conf.d/onnxruntime.conf
-          sudo ldconfig
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust build
-        uses: actions/cache@v4
-        with:
-          path: tokenizer-rs/target
-          key: rust-${{ hashFiles('tokenizer-rs/Cargo.lock') }}
 
       - name: Build Rust tokenizer
         run: cargo build --release --manifest-path tokenizer-rs/Cargo.toml
 
       - name: Generate ONNX test fixtures
         run: |
-          pip install onnx numpy --quiet
           python3 - <<'EOF'
           import numpy as np, onnx
           from onnx import numpy_helper, TensorProto, helper
@@ -163,47 +110,66 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure -j$(nproc)
 
+  # ── C++: build + gtest (CUDA) — only possible on self-hosted GPU runner ──────
+  cpp-test-cuda:
+    name: C++ build + tests (CUDA)
+    runs-on: [self-hosted, linux, x64, cuda, gpu]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Rust tokenizer
+        run: cargo build --release --manifest-path tokenizer-rs/Cargo.toml
+
+      - name: Configure (CUDA)
+        run: |
+          cmake -S . -B build-cuda -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CUDA=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=89 \
+            -DINFER_CUDA=ON \
+            -DINFER_TESTS=ON \
+            -DONNXRUNTIME_ROOT=/opt/onnxruntime \
+            -DTorch_DIR=$(python3 -c "import torch; print(torch.utils.cmake_prefix_path)")/Torch
+
+      - name: Build
+        run: cmake --build build-cuda -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build-cuda --output-on-failure -j$(nproc)
+
   # ── Helm: lint + dry-run ─────────────────────────────────────────────────────
   helm-lint:
     name: Helm lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cuda]
     steps:
       - uses: actions/checkout@v4
-
-      - uses: azure/setup-helm@v4
-        with:
-          version: v3.17.0
-
       - run: helm lint deploy/helm/infergo/
       - run: helm template infergo deploy/helm/infergo/ --debug > /dev/null
 
-  # ── Docker: CPU image only (CUDA too slow for CI, built on release) ──────────
+  # ── Docker: CPU + CUDA (self-hosted has Docker + GPU) ────────────────────────
   docker-build:
-    name: Docker build (CPU)
-    runs-on: ubuntu-latest
+    name: Docker build (CPU + CUDA)
+    runs-on: [self-hosted, linux, x64, cuda, gpu]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - uses: docker/setup-buildx-action@v3
-
       - name: Build CPU image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.cpu
-          push: false
-          tags: infergo:cpu-test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        run: docker build -f Dockerfile.cpu -t infergo:cpu-test .
 
-  # ── Summary: required checks gate ───────────────────────────────────────────
+      - name: Build CUDA image
+        run: docker build -f Dockerfile.cuda -t infergo:cuda-test .
+
+  # ── Summary gate ─────────────────────────────────────────────────────────────
   ci-pass:
     name: CI pass
-    needs: [go-lint, go-test, go-test-server, cpp-test, helm-lint, docker-build]
-    runs-on: ubuntu-latest
+    needs: [go-lint, go-test, cpp-test, cpp-test-cuda, helm-lint, docker-build]
+    runs-on: [self-hosted, linux, x64, cuda]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -213,4 +179,4 @@ jobs:
             echo "One or more required jobs failed."
             exit 1
           fi
-          echo "All jobs passed."
+          echo "All CI jobs passed."
