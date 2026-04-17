@@ -66,7 +66,7 @@ jobs:
           sha256sum infergo-linux-amd64-cpu.tar.gz > infergo-linux-amd64-cpu.tar.gz.sha256
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             infergo-linux-amd64-cpu.tar.gz
@@ -124,7 +124,7 @@ jobs:
           shasum -a 256 infergo-darwin-arm64.tar.gz > infergo-darwin-arm64.tar.gz.sha256
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             infergo-darwin-arm64.tar.gz
