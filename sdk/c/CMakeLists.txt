@@ -9,7 +9,7 @@ find_path(INFERGO_INCLUDE infer_api.h
     PATHS ${INFERGO_INCLUDE_DIR} /usr/local/include
     HINTS ${CMAKE_CURRENT_SOURCE_DIR}/../../cpp/include)
 
-add_library(infergo::infergo SHARED IMPORTED)
+add_library(infergo::infergo UNKNOWN IMPORTED)
 set_target_properties(infergo::infergo PROPERTIES
     IMPORTED_LOCATION ${INFERGO_LIB}
     INTERFACE_INCLUDE_DIRECTORIES ${INFERGO_INCLUDE})

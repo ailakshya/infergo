@@ -199,7 +199,7 @@ impl Llm {
                 buf.len() as c_int,
             )
         };
-        if ret < 0 {
+        if ret != 0 {
             return Err(Error::Api(last_error()));
         }
         let s = unsafe { CStr::from_ptr(buf.as_ptr() as *const c_char) };
@@ -275,7 +275,7 @@ impl Llm {
             }
         }
 
-        if ret < 0 {
+        if ret != 0 {
             return Err(Error::Api(last_error()));
         }
 
@@ -524,7 +524,7 @@ impl VectorDb {
         let ret = unsafe {
             infergo_sys::infer_vectordb_insert(self.handle, id, vec.as_ptr(), meta_ptr)
         };
-        if ret < 0 {
+        if ret != 0 {
             return Err(Error::Api(last_error()));
         }
         Ok(())
@@ -533,7 +533,7 @@ impl VectorDb {
     /// Delete a vector by ID.
     pub fn delete(&self, id: i64) -> Result<()> {
         let ret = unsafe { infergo_sys::infer_vectordb_delete(self.handle, id) };
-        if ret < 0 {
+        if ret != 0 {
             return Err(Error::Api(last_error()));
         }
         Ok(())
@@ -556,7 +556,7 @@ impl VectorDb {
         let ret = unsafe {
             infergo_sys::infer_vectordb_update(self.handle, id, vec.as_ptr(), meta_ptr)
         };
-        if ret < 0 {
+        if ret != 0 {
             return Err(Error::Api(last_error()));
         }
         Ok(())
@@ -576,7 +576,7 @@ impl VectorDb {
                 meta_buf_size,
             )
         };
-        if ret < 0 {
+        if ret != 0 {
             return Err(Error::Api(last_error()));
         }
         let meta = unsafe { CStr::from_ptr(out_meta.as_ptr() as *const c_char) };
@@ -640,7 +640,7 @@ impl VectorDb {
     pub fn save(&self, path: &str) -> Result<()> {
         let c_path = CString::new(path)?;
         let ret = unsafe { infergo_sys::infer_vectordb_save(self.handle, c_path.as_ptr()) };
-        if ret < 0 {
+        if ret != 0 {
             return Err(Error::Api(last_error()));
         }
         Ok(())
@@ -650,7 +650,7 @@ impl VectorDb {
     pub fn load(&self, path: &str) -> Result<()> {
         let c_path = CString::new(path)?;
         let ret = unsafe { infergo_sys::infer_vectordb_load(self.handle, c_path.as_ptr()) };
-        if ret < 0 {
+        if ret != 0 {
             return Err(Error::Api(last_error()));
         }
         Ok(())
@@ -757,7 +757,7 @@ impl Bm25 {
     pub fn save(&self, path: &str) -> Result<()> {
         let c_path = CString::new(path)?;
         let ret = unsafe { infergo_sys::infer_bm25_save(self.handle, c_path.as_ptr()) };
-        if ret < 0 {
+        if ret != 0 {
             return Err(Error::Api(last_error()));
         }
         Ok(())
@@ -767,7 +767,7 @@ impl Bm25 {
     pub fn load(&self, path: &str) -> Result<()> {
         let c_path = CString::new(path)?;
         let ret = unsafe { infergo_sys::infer_bm25_load(self.handle, c_path.as_ptr()) };
-        if ret < 0 {
+        if ret != 0 {
             return Err(Error::Api(last_error()));
         }
         Ok(())
