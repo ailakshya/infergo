@@ -1,5 +1,5 @@
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:13.2.0-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -73,7 +73,7 @@ RUN mkdir -p /out/lib && \
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 # Use cudnn-runtime for CNN inference (cuDNN kernels for conv2d, batch norm, etc.)
 # This adds ~400MB over base but enables libtorch/ONNX CNN models.
-FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:13.2.0-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
