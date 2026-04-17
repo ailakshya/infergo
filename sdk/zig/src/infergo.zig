@@ -59,7 +59,7 @@ pub const Embedding = struct {
 
     pub fn init(model_path: [:0]const u8, tok_path: [:0]const u8, provider: [:0]const u8, device: i32) !Embedding {
         const s = c.infer_session_create(provider.ptr, device) orelse return InferError.LoadFailed;
-        if (c.infer_session_load(s, model_path.ptr) < 0) return InferError.LoadFailed;
+        if (c.infer_session_load(s, model_path.ptr) != 0) return InferError.LoadFailed;
         const t = c.infer_tokenizer_load(tok_path.ptr) orelse return InferError.LoadFailed;
         return Embedding{ .session = s, .tokenizer = t };
     }

@@ -49,7 +49,7 @@ LLM.__index = LLM
 
 function infergo.LLM(path, gpu_layers, ctx_size, n_seq_max, n_batch)
     local handle = C.infer_llm_create(path, gpu_layers or -1, ctx_size or 4096, n_seq_max or 1, n_batch or 2048)
-    if handle == nil then error("Failed to load: " .. ffi.string(C.infer_last_error_string())) end
+    if handle == nil or handle == ffi.cast("void*", 0) then error("Failed to load: " .. ffi.string(C.infer_last_error_string())) end
     local self = setmetatable({ _handle = handle }, LLM)
     ffi.gc(handle, C.infer_llm_destroy)
     return self
@@ -95,8 +95,11 @@ Embedding.__index = Embedding
 
 function infergo.Embedding(model_path, tok_path, provider, device)
     local session = C.infer_session_create(provider or "cpu", device or 0)
-    C.infer_session_load(session, model_path)
+    if session == nil or session == ffi.cast("void*", 0) then error("Session create failed") end
+    local rc = C.infer_session_load(session, model_path)
+    if rc ~= 0 then error("Session load failed: " .. ffi.string(C.infer_last_error_string())) end
     local tokenizer = C.infer_tokenizer_load(tok_path)
+    if tokenizer == nil or tokenizer == ffi.cast("void*", 0) then error("Tokenizer load failed") end
     local self = setmetatable({ _session = session, _tokenizer = tokenizer }, Embedding)
     return self
 end

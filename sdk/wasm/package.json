@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "infergo WASM SDK — CPU inference in browser/Node.js via WebAssembly",
   "main": "lib/infergo.js",
-  "types": "lib/infergo.d.ts",
   "files": [
     "lib/",
     "infergo.js",

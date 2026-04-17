@@ -96,11 +96,28 @@ static napi_value throw_infer_error(napi_env env) {
     return NULL;
 }
 
-/* Extract a void* handle from a napi_external */
+/* Handle wrapper to prevent double-free between destroy() and GC destructor */
+typedef struct { void* ptr; } handle_box_t;
+
+static handle_box_t* alloc_box(void* ptr) {
+    handle_box_t* box = (handle_box_t*)malloc(sizeof(handle_box_t));
+    if (box) box->ptr = ptr;
+    return box;
+}
+
+/* Extract a void* handle from a napi_external (via handle_box_t) */
 static void* unwrap_handle(napi_env env, napi_value val) {
-    void* ptr = NULL;
-    napi_get_value_external(env, val, &ptr);
-    return ptr;
+    void* data = NULL;
+    napi_get_value_external(env, val, &data);
+    if (!data) return NULL;
+    return ((handle_box_t*)data)->ptr;
+}
+
+/* Clear handle in box (prevents double-free from GC destructor) */
+static void clear_handle(napi_env env, napi_value val) {
+    void* data = NULL;
+    napi_get_value_external(env, val, &data);
+    if (data) ((handle_box_t*)data)->ptr = NULL;
 }
 
 /* Get a C string from a JS string argument. Caller must free() the result. */
@@ -119,7 +136,8 @@ static char* get_string_arg(napi_env env, napi_value val) {
 
 static void _llm_destructor(napi_env env, void* data, void* hint) {
     (void)env; (void)hint;
-    if (data) infer_llm_destroy((InferLLM)data);
+    handle_box_t* box = (handle_box_t*)data;
+    if (box) { if (box->ptr) infer_llm_destroy((InferLLM)box->ptr); free(box); }
 }
 
 /* llmCreate(path, gpuLayers, ctxSize, seqMax, batch) → external */
@@ -140,8 +158,9 @@ static napi_value napi_llm_create(napi_env env, napi_callback_info info) {
 
     if (!llm) return throw_infer_error(env);
 
+    handle_box_t* box = alloc_box(llm);
     napi_value ext;
-    NAPI_CALL(env, napi_create_external(env, llm, _llm_destructor, NULL, &ext));
+    NAPI_CALL(env, napi_create_external(env, box, _llm_destructor, NULL, &ext));
     return ext;
 }
 
@@ -152,9 +171,7 @@ static napi_value napi_llm_destroy(napi_env env, napi_callback_info info) {
     NAPI_CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
     void* ptr = unwrap_handle(env, argv[0]);
     if (ptr) infer_llm_destroy((InferLLM)ptr);
-    /* Prevent double-free: the destructor will see NULL if GC runs later,
-       but napi_external does not support clearing. The destructor checks for
-       NULL but this handle is now dangling — callers must not reuse it. */
+    clear_handle(env, argv[0]);  /* prevent double-free from GC destructor */
     return NULL;
 }
 
@@ -293,7 +310,8 @@ static napi_value napi_llm_token_to_piece(napi_env env, napi_callback_info info)
 
 static void _session_destructor(napi_env env, void* data, void* hint) {
     (void)env; (void)hint;
-    if (data) infer_session_destroy((InferSession)data);
+    handle_box_t* box = (handle_box_t*)data;
+    if (box) { if (box->ptr) infer_session_destroy((InferSession)box->ptr); free(box); }
 }
 
 /* sessionCreate(provider, deviceId) → external */
@@ -311,7 +329,8 @@ static napi_value napi_session_create(napi_env env, napi_callback_info info) {
     if (!s) return throw_infer_error(env);
 
     napi_value ext;
-    NAPI_CALL(env, napi_create_external(env, s, _session_destructor, NULL, &ext));
+    handle_box_t* box = alloc_box(s);
+    NAPI_CALL(env, napi_create_external(env, box, _session_destructor, NULL, &ext));
     return ext;
 }
 
@@ -336,6 +355,7 @@ static napi_value napi_session_destroy(napi_env env, napi_callback_info info) {
     NAPI_CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
     void* ptr = unwrap_handle(env, argv[0]);
     if (ptr) infer_session_destroy((InferSession)ptr);
+    clear_handle(env, argv[0]);
     return NULL;
 }
 
@@ -345,7 +365,8 @@ static napi_value napi_session_destroy(napi_env env, napi_callback_info info) {
 
 static void _tokenizer_destructor(napi_env env, void* data, void* hint) {
     (void)env; (void)hint;
-    if (data) infer_tokenizer_destroy((InferTokenizer)data);
+    handle_box_t* box = (handle_box_t*)data;
+    if (box) { if (box->ptr) infer_tokenizer_destroy((InferTokenizer)box->ptr); free(box); }
 }
 
 /* tokenizerLoad(path) → external */
@@ -360,7 +381,8 @@ static napi_value napi_tokenizer_load(napi_env env, napi_callback_info info) {
     if (!tok) return throw_infer_error(env);
 
     napi_value ext;
-    NAPI_CALL(env, napi_create_external(env, tok, _tokenizer_destructor, NULL, &ext));
+    handle_box_t* box = alloc_box(tok);
+    NAPI_CALL(env, napi_create_external(env, box, _tokenizer_destructor, NULL, &ext));
     return ext;
 }
 
@@ -438,6 +460,7 @@ static napi_value napi_tokenizer_destroy(napi_env env, napi_callback_info info) 
     NAPI_CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
     void* ptr = unwrap_handle(env, argv[0]);
     if (ptr) infer_tokenizer_destroy((InferTokenizer)ptr);
+    clear_handle(env, argv[0]);
     return NULL;
 }
 
@@ -532,7 +555,8 @@ static napi_value napi_embed_batch_pipeline(napi_env env, napi_callback_info inf
 
 static void _vectordb_destructor(napi_env env, void* data, void* hint) {
     (void)env; (void)hint;
-    if (data) infer_vectordb_free((InferVectorDB)data);
+    handle_box_t* box = (handle_box_t*)data;
+    if (box) { if (box->ptr) infer_vectordb_free((InferVectorDB)box->ptr); free(box); }
 }
 
 /* vectordbCreate(dim, M, efConstruction) → external */
@@ -550,7 +574,8 @@ static napi_value napi_vectordb_create(napi_env env, napi_callback_info info) {
     if (!db) return throw_infer_error(env);
 
     napi_value ext;
-    NAPI_CALL(env, napi_create_external(env, db, _vectordb_destructor, NULL, &ext));
+    handle_box_t* box = alloc_box(db);
+    NAPI_CALL(env, napi_create_external(env, box, _vectordb_destructor, NULL, &ext));
     return ext;
 }
 
@@ -719,6 +744,7 @@ static napi_value napi_vectordb_free(napi_env env, napi_callback_info info) {
     NAPI_CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
     void* ptr = unwrap_handle(env, argv[0]);
     if (ptr) infer_vectordb_free((InferVectorDB)ptr);
+    clear_handle(env, argv[0]);
     return NULL;
 }
 
@@ -728,7 +754,8 @@ static napi_value napi_vectordb_free(napi_env env, napi_callback_info info) {
 
 static void _bm25_destructor(napi_env env, void* data, void* hint) {
     (void)env; (void)hint;
-    if (data) infer_bm25_free((InferBM25)data);
+    handle_box_t* box = (handle_box_t*)data;
+    if (box) { if (box->ptr) infer_bm25_free((InferBM25)box->ptr); free(box); }
 }
 
 /* bm25Create(k1, b) → external */
@@ -745,7 +772,8 @@ static napi_value napi_bm25_create(napi_env env, napi_callback_info info) {
     if (!idx) return throw_infer_error(env);
 
     napi_value ext;
-    NAPI_CALL(env, napi_create_external(env, idx, _bm25_destructor, NULL, &ext));
+    handle_box_t* box = alloc_box(idx);
+    NAPI_CALL(env, napi_create_external(env, box, _bm25_destructor, NULL, &ext));
     return ext;
 }
 
@@ -867,6 +895,7 @@ static napi_value napi_bm25_free(napi_env env, napi_callback_info info) {
     NAPI_CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
     void* ptr = unwrap_handle(env, argv[0]);
     if (ptr) infer_bm25_free((InferBM25)ptr);
+    clear_handle(env, argv[0]);
     return NULL;
 }
 

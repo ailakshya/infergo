@@ -40,6 +40,7 @@ def _check(rc, msg=""):
 # --- LLM ---
 _lib.infer_llm_create.restype = ctypes.c_void_p
 _lib.infer_llm_create.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+_lib.infer_llm_destroy.restype = None
 _lib.infer_llm_destroy.argtypes = [ctypes.c_void_p]
 _lib.infer_llm_vocab_size.restype = ctypes.c_int
 _lib.infer_llm_vocab_size.argtypes = [ctypes.c_void_p]
@@ -57,9 +58,11 @@ _lib.infer_session_create.restype = ctypes.c_void_p
 _lib.infer_session_create.argtypes = [ctypes.c_char_p, ctypes.c_int]
 _lib.infer_session_load.restype = ctypes.c_int
 _lib.infer_session_load.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+_lib.infer_session_destroy.restype = None
 _lib.infer_session_destroy.argtypes = [ctypes.c_void_p]
 _lib.infer_tokenizer_load.restype = ctypes.c_void_p
 _lib.infer_tokenizer_load.argtypes = [ctypes.c_char_p]
+_lib.infer_tokenizer_destroy.restype = None
 _lib.infer_tokenizer_destroy.argtypes = [ctypes.c_void_p]
 
 # --- Embedding ---
@@ -83,16 +86,19 @@ _lib.infer_vectordb_load.restype = ctypes.c_int
 _lib.infer_vectordb_load.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
 _lib.infer_vectordb_size.restype = ctypes.c_int
 _lib.infer_vectordb_size.argtypes = [ctypes.c_void_p]
+_lib.infer_vectordb_free.restype = None
 _lib.infer_vectordb_free.argtypes = [ctypes.c_void_p]
 
 # --- BM25 ---
 _lib.infer_bm25_create.restype = ctypes.c_void_p
 _lib.infer_bm25_create.argtypes = [ctypes.c_float, ctypes.c_float]
+_lib.infer_bm25_insert.restype = None
 _lib.infer_bm25_insert.argtypes = [ctypes.c_void_p, ctypes.c_int64, ctypes.c_char_p]
 _lib.infer_bm25_search.restype = ctypes.c_int
 _lib.infer_bm25_search.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(ctypes.c_float), ctypes.c_int]
 _lib.infer_bm25_size.restype = ctypes.c_int
 _lib.infer_bm25_size.argtypes = [ctypes.c_void_p]
+_lib.infer_bm25_free.restype = None
 _lib.infer_bm25_free.argtypes = [ctypes.c_void_p]
 
 # --- LoRA ---
@@ -100,6 +106,7 @@ _lib.infer_lora_load.restype = ctypes.c_void_p
 _lib.infer_lora_load.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
 _lib.infer_lora_apply.restype = ctypes.c_int
 _lib.infer_lora_apply.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_float), ctypes.c_int]
+_lib.infer_lora_free.restype = None
 _lib.infer_lora_free.argtypes = [ctypes.c_void_p]
 
 
@@ -284,6 +291,12 @@ class LoRA:
         self._handle = _lib.infer_lora_load(self._llm, lora_path.encode())
         if not self._handle:
             raise RuntimeError(f"Failed to load LoRA: {_lib.infer_last_error_string().decode()}")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
     def apply(self, scale=1.0):
         adapter = ctypes.c_void_p(self._handle)

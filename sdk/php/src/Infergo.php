@@ -97,8 +97,17 @@ class Embedding {
     public function __construct(string $model, string $tokenizerPath, string $provider = "cpu") {
         $ffi = Native::lib();
         $this->session = $ffi->infer_session_create($provider, 0);
-        $ffi->infer_session_load($this->session, $model);
+        if (\FFI::isNull($this->session)) {
+            throw new \RuntimeException("Session create failed");
+        }
+        $rc = $ffi->infer_session_load($this->session, $model);
+        if ($rc !== 0) {
+            throw new \RuntimeException("Model load failed: " . $ffi->infer_last_error_string());
+        }
         $this->tokenizer = $ffi->infer_tokenizer_load($tokenizerPath);
+        if (\FFI::isNull($this->tokenizer)) {
+            throw new \RuntimeException("Tokenizer load failed");
+        }
     }
 
     public function embed(string $text): array {

@@ -145,8 +145,9 @@ class Embedding {
     _session = _sessionCreate(prov, deviceId);
     calloc.free(prov);
     final mp = modelPath.toNativeUtf8();
-    _sessionLoad(_session!, mp);
+    final rc = _sessionLoad(_session!, mp);
     calloc.free(mp);
+    if (rc != 0) throw InfergoException.last('session load: ');
     final tp = tokenizerPath.toNativeUtf8();
     _tokenizer = _tokLoad(tp);
     calloc.free(tp);

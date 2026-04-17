@@ -47,7 +47,8 @@ module Infergo
     end
 
     def self._release(handle)
-      proc { Infergo.infer_llm_destroy(handle) }
+      handle_ref = handle
+      proc { Infergo.infer_llm_destroy(handle_ref) unless handle_ref.null? }
     end
 
     def vocab_size
@@ -84,7 +85,7 @@ module Infergo
       @session = Infergo.infer_session_create(provider, device_id)
       raise "Session failed" if @session.null?
       rc = Infergo.infer_session_load(@session, model_path)
-      raise "Load failed" if rc < 0
+      raise "Load failed: #{Infergo.infer_last_error_string}" if rc != 0
       @tokenizer = Infergo.infer_tokenizer_load(tokenizer_path)
       raise "Tokenizer failed" if @tokenizer.null?
     end

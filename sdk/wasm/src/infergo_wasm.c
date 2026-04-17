@@ -154,13 +154,13 @@ void* wasm_vectordb_create(int dim, int M, int ef) {
 }
 
 EMSCRIPTEN_KEEPALIVE
-int wasm_vectordb_insert(void* db, int id, const float* vec, const char* meta) {
-    return infer_vectordb_insert(db, (int64_t)id, vec, meta);
+int wasm_vectordb_insert(void* db, int64_t id, const float* vec, const char* meta) {
+    return infer_vectordb_insert(db, id, vec, meta);
 }
 
 EMSCRIPTEN_KEEPALIVE
-int wasm_vectordb_delete(void* db, int id) {
-    return infer_vectordb_delete(db, (int64_t)id);
+int wasm_vectordb_delete(void* db, int64_t id) {
+    return infer_vectordb_delete(db, id);
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -197,13 +197,13 @@ void* wasm_bm25_create(float k1, float b) {
 }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_bm25_insert(void* idx, int id, const char* text) {
-    infer_bm25_insert(idx, (int64_t)id, text);
+void wasm_bm25_insert(void* idx, int64_t id, const char* text) {
+    infer_bm25_insert(idx, id, text);
 }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_bm25_remove(void* idx, int id) {
-    infer_bm25_remove(idx, (int64_t)id);
+void wasm_bm25_remove(void* idx, int64_t id) {
+    infer_bm25_remove(idx, id);
 }
 
 EMSCRIPTEN_KEEPALIVE
