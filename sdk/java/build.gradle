@@ -1,0 +1,98 @@
+plugins {
+    id 'java-library'
+}
+
+group = 'com.infergo'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+repositories {
+    mavenCentral()
+}
+
+// ── JNI native compilation ──────────────────────────────────────────────────
+
+def infergoRoot = file("${projectDir}/../..")  // points to /home/lakshya/cgo
+def jniSrcDir   = file("${projectDir}/jni")
+def jniBuildDir = file("${buildDir}/jni")
+def javaHome    = System.getenv('JAVA_HOME') ?: '/usr/lib/jvm/default-java'
+
+// Detect OS for library naming
+def osName = System.getProperty('os.name').toLowerCase()
+def libPrefix = 'lib'
+def libSuffix = osName.contains('mac') ? '.dylib' : osName.contains('win') ? '.dll' : '.so'
+def jniIncludeOs = osName.contains('mac') ? 'darwin' : osName.contains('win') ? 'win32' : 'linux'
+def libName = "${libPrefix}infergo_jni${libSuffix}"
+
+task compileJni(type: Exec) {
+    description = 'Compile JNI C bridge into a shared library'
+
+    inputs.files fileTree(dir: jniSrcDir, includes: ['*.c', '*.h'])
+    outputs.file file("${jniBuildDir}/${libName}")
+
+    doFirst {
+        jniBuildDir.mkdirs()
+    }
+
+    // Build command: compile infergo_jni.c into a shared library
+    // Link against libinfergo (the main C library from the infergo project)
+    commandLine 'gcc',
+        '-shared', '-fPIC', '-O2',
+        "-I${javaHome}/include",
+        "-I${javaHome}/include/${jniIncludeOs}",
+        "-I${infergoRoot}/cpp/include",
+        '-o', "${jniBuildDir}/${libName}",
+        "${jniSrcDir}/infergo_jni.c",
+        "-L${infergoRoot}/build",
+        '-linfergo',
+        '-Wl,-rpath,\$ORIGIN'
+}
+
+// Ensure JNI is compiled before tests or jar
+classes.dependsOn compileJni
+
+test {
+    systemProperty 'java.library.path', jniBuildDir.absolutePath
+}
+
+jar {
+    from(jniBuildDir) {
+        include libName
+        into 'native'
+    }
+}
+
+// ── Source sets ──────────────────────────────────────────────────────────────
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src/main/java']
+        }
+    }
+    examples {
+        java {
+            srcDirs = ['examples']
+            compileClasspath += sourceSets.main.output
+            runtimeClasspath += sourceSets.main.output
+        }
+    }
+}
+
+// ── Example runner ──────────────────────────────────────────────────────────
+
+task runChat(type: JavaExec) {
+    description = 'Run the Chat example'
+    classpath = sourceSets.examples.runtimeClasspath
+    mainClass = 'Chat'
+    systemProperty 'java.library.path', jniBuildDir.absolutePath
+
+    // Pass command-line args: gradle runChat --args="path/to/model.gguf"
+    if (project.hasProperty('args')) {
+        args project.args.split(' ')
+    }
+}

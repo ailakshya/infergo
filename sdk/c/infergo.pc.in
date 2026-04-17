@@ -1,0 +1,9 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: infergo
+Description: Production AI inference runtime — C SDK
+Version: 1.0.0
+Libs: -L${libdir} -linfer_api
+Cflags: -I${includedir}

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Infergo</RootNamespace>
+    <AssemblyName>Infergo</AssemblyName>
+    <Version>0.1.0</Version>
+    <Authors>infergo</Authors>
+    <Description>C# / .NET SDK for infergo — native AI inference via P/Invoke</Description>
+    <PackageId>Infergo</PackageId>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+</Project>

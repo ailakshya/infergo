@@ -1,0 +1,8 @@
+[package]
+name = "infergo-sys"
+version = "0.1.0"
+edition = "2021"
+description = "Raw FFI bindings to libinfer_api (infergo C API)"
+license = "MIT"
+links = "infer_api"
+build = "build.rs"

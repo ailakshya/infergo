@@ -1,0 +1,8 @@
+{
+  "name": "infergo/infergo",
+  "description": "infergo — native AI inference for PHP via FFI",
+  "type": "library",
+  "license": "Apache-2.0",
+  "require": { "php": ">=7.4", "ext-ffi": "*" },
+  "autoload": { "psr-4": { "Infergo\\": "src/" } }
+}

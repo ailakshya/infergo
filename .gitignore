@@ -15,5 +15,6 @@ __pycache__/
 *.gguf
 models/
 *.so
-infergo
-infergo_*
+# Built binaries (not SDK dirs)
+/infergo
+/go/infergo

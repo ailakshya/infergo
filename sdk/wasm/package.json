@@ -1,0 +1,34 @@
+{
+  "name": "@infergo/wasm",
+  "version": "0.1.0",
+  "description": "infergo WASM SDK — CPU inference in browser/Node.js via WebAssembly",
+  "main": "lib/infergo.js",
+  "types": "lib/infergo.d.ts",
+  "files": [
+    "lib/",
+    "infergo.js",
+    "infergo.wasm"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/infergo-llm/infergo",
+    "directory": "sdk/wasm"
+  },
+  "keywords": [
+    "infergo",
+    "wasm",
+    "llm",
+    "inference",
+    "ai",
+    "vector-search",
+    "embedding"
+  ],
+  "scripts": {
+    "build": "make",
+    "clean": "make clean"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

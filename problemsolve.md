@@ -444,6 +444,7 @@ Problem 9  Observability         [x] 7/7 done  (Prometheus + health + OTel + que
 Problem 10 Hard to test          [x] 7/7 done  (ctest + ASan + go test + onnx + client mock + CI + SOLVED)
 ───────────────────────────────────────────────
 Active total                     49/54 done (91%) — SOLVED: P4, P5, P8, P9, P10
+SDK bindings                     14/14 languages + 3/3 transport layers (149 tasks done total)
 Future vision (deferred)         OPT-23 tensor parallelism · OPT-24 pipeline parallelism · OPT-25 multi-node cluster · OPT-26 disaggregated prefill/decode
 Remaining active                 P1/P2 P50 ≤600ms (needs faster GPU) · P3 EKS cold start · P7 CUDA image build
 ```

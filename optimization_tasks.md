@@ -3304,7 +3304,9 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 > Function call overhead only (~0.001ms vs ~4ms for HTTP).
 > Every language gets full access to: LLM, embedding, detection, search, LoRA, BM25, TOON.
 
-### OPT-136 — C/C++ SDK (header-only, reference implementation) `[ ]` S
+### OPT-136 — C/C++ SDK (header-only, reference implementation) `[x]` S
+
+**Result:** 2026-04-17 — C++ RAII header (infergo.h), CMakeLists.txt, pkg-config, 4 examples (chat, embed, detect, rag).
 
 **Problem:** `infer_api.h` exists but lacks usage examples, CMake integration, and packaging.
 
@@ -3329,7 +3331,9 @@ OPT-61  canary deploy      ← requires OPT-53 (A/B) + OPT-60 (registry)
 
 ---
 
-### OPT-137 — Python Native SDK (ctypes, zero HTTP) `[ ]` M
+### OPT-137 — Python Native SDK (ctypes, zero HTTP) `[x]` M
+
+**Result:** 2026-04-17 — ctypes core.py with LLM, Embedding, VectorDB, BM25, LoRA classes. numpy arrays, context managers.
 
 **Problem:** Current Python SDK uses HTTP. Direct ctypes binding gives 4000x faster function calls.
 
@@ -3366,7 +3370,9 @@ results = db.search(query_vector, k=10)
 
 ---
 
-### OPT-138 — Rust SDK (safe bindings via bindgen) `[ ]` M
+### OPT-138 — Rust SDK (safe bindings via bindgen) `[x]` M
+
+**Result:** 2026-04-17 — infergo-sys (raw FFI) + infergo (safe RAII wrappers). Send+Sync, thiserror, 2 examples.
 
 **Problem:** Rust developers need safe, idiomatic bindings to infergo's C API.
 
@@ -3403,7 +3409,9 @@ let results = db.search(&query, 10)?;
 
 ---
 
-### OPT-139 — Java/Kotlin SDK (JNI bindings) `[ ]` M
+### OPT-139 — Java/Kotlin SDK (JNI bindings) `[x]` M
+
+**Result:** 2026-04-17 — JNI C impl + 6 Java wrappers (LLM, Embedding, VectorDB, BM25, etc). AutoCloseable, Gradle build.
 
 **Problem:** Java/Android developers need native access without HTTP overhead.
 
@@ -3449,7 +3457,9 @@ val response = withContext(Dispatchers.IO) {
 
 ---
 
-### OPT-140 — TypeScript/Node.js Native SDK (N-API addon) `[ ]` M
+### OPT-140 — TypeScript/Node.js Native SDK (N-API addon) `[x]` M
+
+**Result:** 2026-04-17 — N-API C addon, JS wrapper classes, TypeScript declarations, node-gyp build.
 
 **Problem:** Current TS SDK is HTTP-only. N-API addon gives direct native access from Node.js.
 
@@ -3492,7 +3502,9 @@ const results = await db.search(query, 10);
 
 ---
 
-### OPT-141 — C# / .NET SDK (P/Invoke) `[ ]` M
+### OPT-141 — C# / .NET SDK (P/Invoke) `[x]` M
+
+**Result:** 2026-04-17 — P/Invoke declarations + 5 IDisposable wrappers (Llm, Embedding, VectorDb, Bm25). .NET 8.0.
 
 **Problem:** .NET developers need native access for Unity, ASP.NET, Blazor apps.
 
@@ -3528,7 +3540,9 @@ var results = db.Search(queryVector, k: 10);
 
 ---
 
-### OPT-142 — Swift SDK (C bridging header) `[ ]` M
+### OPT-142 — Swift SDK (C bridging header) `[x]` M
+
+**Result:** 2026-04-17 — Swift Package with C module map, RAII classes (deinit → destroy), OpaquePointer handles.
 
 **Problem:** iOS/macOS developers need native Swift access for on-device inference.
 
@@ -3563,7 +3577,9 @@ let results = try db.search(query: queryVector, k: 10)
 
 ---
 
-### OPT-143 — Ruby SDK (FFI gem) `[ ]` S
+### OPT-143 — Ruby SDK (FFI gem) `[x]` S
+
+**Result:** 2026-04-17 — FFI gem with LLM, Embedding, VectorDB, BM25 classes. Finalizer cleanup.
 
 **Problem:** Ruby developers need native access for Rails apps.
 
@@ -3594,7 +3610,9 @@ results = db.search(query, k: 10)
 
 ---
 
-### OPT-144 — PHP SDK (FFI extension) `[ ]` S
+### OPT-144 — PHP SDK (FFI extension) `[x]` S
+
+**Result:** 2026-04-17 — PHP FFI (7.4+) with LLM, Embedding, VectorDB, BM25 classes. Composer package.
 
 **Problem:** PHP developers need native access for Laravel/WordPress AI features.
 
@@ -3626,7 +3644,9 @@ $results = $db->search($query, k: 10);
 
 ---
 
-### OPT-145 — Dart/Flutter SDK (dart:ffi) `[ ]` M
+### OPT-145 — Dart/Flutter SDK (dart:ffi) `[x]` M
+
+**Result:** 2026-04-17 — dart:ffi bindings with LLM, Embedding, VectorDB, BM25. pubspec.yaml, example.
 
 **Problem:** Flutter developers need on-device inference for mobile apps.
 
@@ -3660,7 +3680,9 @@ final results = await db.search(query, k: 10);
 
 ---
 
-### OPT-146 — Zig SDK (C interop) `[ ]` S
+### OPT-146 — Zig SDK (C interop) `[x]` S
+
+**Result:** 2026-04-17 — @cImport bindings, Zig structs with deinit(), build.zig, chat example.
 
 **Problem:** Zig developers want zero-overhead C interop without bindgen.
 
@@ -3690,7 +3712,9 @@ const text = try llm.generate("Hello", .{ .max_tokens = 32 });
 
 ---
 
-### OPT-147 — Elixir/Erlang SDK (NIF) `[ ]` M
+### OPT-147 — Elixir/Erlang SDK (NIF) `[x]` M
+
+**Result:** 2026-04-17 — NIF C implementation + Elixir wrapper module. mix.exs with elixir_make.
 
 **Problem:** Elixir developers building AI-powered Phoenix apps need native inference.
 
@@ -3722,7 +3746,9 @@ const text = try llm.generate("Hello", .{ .max_tokens = 32 });
 
 ---
 
-### OPT-148 — Lua SDK (LuaJIT FFI) `[ ]` S
+### OPT-148 — Lua SDK (LuaJIT FFI) `[x]` S
+
+**Result:** 2026-04-17 — LuaJIT ffi.cdef + ffi.load. Metatables with __gc cleanup. LLM, Embedding, VectorDB, BM25.
 
 **Problem:** Game developers using Lua/LuaJIT need native AI inference.
 
@@ -3751,7 +3777,9 @@ infergo.llm_destroy(llm)
 
 ---
 
-### OPT-149 — WASM/JavaScript SDK (Emscripten) `[ ]` L
+### OPT-149 — WASM/JavaScript SDK (Emscripten) `[x]` L
+
+**Result:** 2026-04-17 — Emscripten C wrapper (EMSCRIPTEN_KEEPALIVE), JS API classes, Makefile. CPU-only in browser.
 
 **Problem:** Browser and edge workers need client-side inference without a server.
 
@@ -3798,8 +3826,9 @@ const text = await infergo.generate('Hello', { maxTokens: 32 });
 | A-D — Core + Optimization | 39 | 36 + 4 FUTURE |
 | E-G — Multi-Modal + Enterprise | 22 | 22 |
 | H-W — Advanced + Edge | 74 | 74 |
-| X — Native SDK Bindings | 14 | 0 |
-| **Total** | **149** | **132 done, 14 pending, 4 FUTURE** |
+| X — Native SDK Bindings | 14 | 14 |
+| Y — Zero-Overhead Transport | 3 | 3 |
+| **Total** | **152** | **149 done, 4 FUTURE** |
 
 ---
 
@@ -3808,7 +3837,9 @@ const text = await infergo.generate('Hello', { maxTokens: 32 });
 > Direct C++ server — no Go in the inference hot path.
 > Developers choose transport based on their architecture.
 
-### OPT-150 — Unix Domain Socket Server (C++) `[ ]` M
+### OPT-150 — Unix Domain Socket Server (C++) `[x]` M
+
+**Result:** 2026-04-16 — UDS server implemented in cpp/server/uds_server.cpp. Length-prefixed binary protocol, one thread per client, SIGTERM cleanup.
 
 **Problem:** TCP adds kernel overhead (checksums, routing, buffer management). UDS is kernel-local IPC — 10x faster for same-machine clients.
 
@@ -3831,7 +3862,9 @@ const text = await infergo.generate('Hello', { maxTokens: 32 });
 
 ---
 
-### OPT-151 — Shared Memory Transport (C++) `[ ]` L
+### OPT-151 — Shared Memory Transport (C++) `[x]` L
+
+**Result:** 2026-04-16 — SHM transport implemented in cpp/server/shm_transport.cpp. Lock-free ring buffer, futex signaling, multi-slot design.
 
 **Problem:** Even UDS has syscall overhead (sendmsg/recvmsg). Shared memory eliminates ALL kernel involvement — just read/write to mapped memory.
 
@@ -3861,7 +3894,9 @@ const text = await infergo.generate('Hello', { maxTokens: 32 });
 
 ---
 
-### OPT-152 — Transport Selection Documentation `[ ]` S
+### OPT-152 — Transport Selection Documentation `[x]` S
+
+**Result:** 2026-04-16 — Complete transport guide at docs/transport.md with decision flowchart, benchmark table, code examples for all 5 transports.
 
 **Problem:** Developers need to understand which transport to use for their architecture.
 

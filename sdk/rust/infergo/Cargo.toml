@@ -1,0 +1,18 @@
+[package]
+name = "infergo"
+version = "0.1.0"
+edition = "2021"
+description = "Safe Rust bindings for infergo — LLM inference, embeddings, vector search, and RAG"
+license = "MIT"
+
+[dependencies]
+infergo-sys = { path = "../infergo-sys" }
+thiserror = "2"
+
+[[example]]
+name = "chat"
+path = "examples/chat.rs"
+
+[[example]]
+name = "embed"
+path = "examples/embed.rs"

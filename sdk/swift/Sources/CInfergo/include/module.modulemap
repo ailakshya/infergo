@@ -1,0 +1,5 @@
+module CInfergo {
+    header "shim.h"
+    link "infer_api"
+    export *
+}
