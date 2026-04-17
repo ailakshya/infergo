@@ -1,0 +1,65 @@
+name: CodeQL Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * 1'  # Every Monday 03:00 UTC
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go, c-cpp]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+
+      # Go: let CodeQL autobuild
+      - name: Autobuild (Go)
+        if: matrix.language == 'go'
+        uses: github/codeql-action/autobuild@v3
+
+      # C++: manual build so CodeQL traces all translation units
+      - name: Build C++ for analysis
+        if: matrix.language == 'c-cpp'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build libopenblas-dev \
+            libgtest-dev libgmock-dev wget
+          wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-1.24.4.tgz
+          sudo tar -xzf onnxruntime-linux-x64-1.24.4.tgz -C /opt
+          sudo mv /opt/onnxruntime-linux-x64-1.24.4 /opt/onnxruntime
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CUDA=OFF \
+            -DINFER_CUDA=OFF \
+            -DONNXRUNTIME_ROOT=/opt/onnxruntime
+          cmake --build build -j$(nproc)
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}

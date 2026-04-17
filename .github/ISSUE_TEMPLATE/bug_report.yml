@@ -1,0 +1,90 @@
+name: Bug Report
+description: Something is broken
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please fill out all fields so we can reproduce it.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - LLM inference
+        - Embedding
+        - Detection
+        - RAG / vector search
+        - Reranking
+        - Speculative decoding
+        - gRPC API
+        - Go SDK
+        - Native SDK (C/Python/Rust/etc.)
+        - Docker / deployment
+        - CI / build
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options:
+        - CUDA
+        - CPU
+        - Metal (Apple Silicon)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: infergo version
+      placeholder: "v1.0.0 or commit hash"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `infergo serve ...`
+        2. Send request `curl ...`
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      render: text
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      placeholder: |
+        OS: Ubuntu 22.04
+        GPU: RTX 4090 (CUDA 12.4)
+        Go: 1.23
+        CMake: 3.28

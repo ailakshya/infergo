@@ -1,0 +1,49 @@
+# Automatically applied labels based on changed files
+
+go:
+  - changed-files:
+    - any-glob-to-any-file: ['go/**', '*.go']
+
+c++:
+  - changed-files:
+    - any-glob-to-any-file: ['cpp/**', '*.cpp', '*.hpp', '*.h']
+
+cuda:
+  - changed-files:
+    - any-glob-to-any-file: ['cpp/cuda/**', '**/*.cu', '**/*.cuh']
+
+sdk:
+  - changed-files:
+    - any-glob-to-any-file: ['sdk/**']
+
+docs:
+  - changed-files:
+    - any-glob-to-any-file: ['docs/**', '*.md', 'README*']
+
+ci:
+  - changed-files:
+    - any-glob-to-any-file: ['.github/**']
+
+docker:
+  - changed-files:
+    - any-glob-to-any-file: ['Dockerfile*', 'docker-compose*']
+
+helm:
+  - changed-files:
+    - any-glob-to-any-file: ['deploy/helm/**']
+
+benchmarks:
+  - changed-files:
+    - any-glob-to-any-file: ['benchmarks/**']
+
+detection:
+  - changed-files:
+    - any-glob-to-any-file: ['cpp/torch/**', 'cpp/onnx/**', 'go/server/detect*', 'go/server/ws_detect*']
+
+llm:
+  - changed-files:
+    - any-glob-to-any-file: ['cpp/llm/**', 'go/llm/**']
+
+rust:
+  - changed-files:
+    - any-glob-to-any-file: ['tokenizer-rs/**']

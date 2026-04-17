@@ -1,0 +1,45 @@
+version: 2
+
+updates:
+  # Go modules
+  - package-ecosystem: gomod
+    directory: /go
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    labels: [dependencies, go]
+    open-pull-requests-limit: 5
+    groups:
+      go-minor:
+        update-types: [minor, patch]
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    labels: [dependencies, ci]
+    open-pull-requests-limit: 5
+
+  # Rust (tokenizer-rs)
+  - package-ecosystem: cargo
+    directory: /tokenizer-rs
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    labels: [dependencies, rust]
+    open-pull-requests-limit: 3
+
+  # Docker base images
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    labels: [dependencies, docker]
+    open-pull-requests-limit: 3

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Roadmap
+    url: https://github.com/ailakshya/infergo/blob/main/optimization_tasks.md
+    about: See what's planned before opening a feature request
+  - name: Discussions
+    url: https://github.com/ailakshya/infergo/discussions
+    about: Ask questions and share ideas

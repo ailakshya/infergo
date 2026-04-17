@@ -1,0 +1,46 @@
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - gofmt
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - gosimple
+    - ineffassign
+    - typecheck
+  disable:
+    - exhaustruct
+    - exhaustive
+    - wrapcheck
+    - varnamelen
+    - funlen
+    - cyclop
+    - gocognit
+    - maintidx
+
+linters-settings:
+  errcheck:
+    # Don't require checking errors on defer/close — common pattern in this codebase
+    check-type-assertions: false
+    check-blank: false
+  govet:
+    enable-all: false
+    enable:
+      - shadow
+      - assign
+
+issues:
+  exclude-rules:
+    # Test files: allow unused vars, unhandled errors
+    - path: _test\.go
+      linters: [errcheck, unused]
+    # CGo files: skip vet on unsafe pointer patterns
+    - path: \.go
+      text: "possible misuse of unsafe.Pointer"
+      linters: [govet]
+  max-issues-per-linter: 50
+  max-same-issues: 10
