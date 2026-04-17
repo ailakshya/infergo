@@ -20,6 +20,7 @@
   <a href="docs/detection.md">Detection</a> --
   <a href="docs/video-annotation.md">Video Pipeline</a> --
   <a href="docs/go-api-reference.md">Go API</a> --
+  <a href="docs/security.md">Security</a> --
   <a href="docs/deployment.md">Deployment</a> --
   <a href="benchmarks/vs_python/results_full.md">Benchmarks</a>
 </p>
