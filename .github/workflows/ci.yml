@@ -23,7 +23,7 @@ jobs:
     name: Go lint
     runs-on: [self-hosted, linux, x64, cuda]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: golangci-lint
         run: |
@@ -37,7 +37,7 @@ jobs:
     name: Go tests
     runs-on: [self-hosted, linux, x64, cuda]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -60,7 +60,7 @@ jobs:
     name: C++ format check
     runs-on: [self-hosted, linux, x64, cuda]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: clang-format check
         run: |
           find cpp -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \
@@ -73,7 +73,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, cuda]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -116,7 +116,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, cuda, gpu]
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -145,7 +145,7 @@ jobs:
     name: Helm lint
     runs-on: [self-hosted, linux, x64, cuda]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: helm lint deploy/helm/infergo/
       - run: helm template infergo deploy/helm/infergo/ --debug > /dev/null
 
@@ -155,7 +155,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, cuda, gpu]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 

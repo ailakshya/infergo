@@ -14,7 +14,7 @@ jobs:
     name: Linux x86-64 (CPU)
     runs-on: [self-hosted, linux, x64, cuda]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -77,7 +77,7 @@ jobs:
     name: macOS Apple Silicon
     runs-on: macos-latest  # GitHub-hosted — Mac runner needed for CoreML/Metal
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -138,7 +138,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
