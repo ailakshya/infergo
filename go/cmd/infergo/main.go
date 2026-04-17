@@ -17,6 +17,14 @@ import (
 	"os"
 )
 
+func init() {
+	// Fix CUDA deadlock on driver 13.0+ with toolkit 12.8
+	// LAZY loading defers CUDA module init until first API call
+	if os.Getenv("CUDA_MODULE_LOADING") == "" {
+		os.Setenv("CUDA_MODULE_LOADING", "LAZY")
+	}
+}
+
 func main() {
 	log.SetPrefix("[infergo] ")
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
