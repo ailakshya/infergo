@@ -14,6 +14,8 @@ env:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
+    # Dependabot PRs use read-only tokens — CodeQL upload fails. Skip and run on merge to main instead.
+    if: github.actor != 'dependabot[bot]'
     runs-on: [self-hosted, linux, x64, cuda]
     timeout-minutes: 30
     permissions:

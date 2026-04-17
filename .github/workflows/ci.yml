@@ -113,6 +113,7 @@ jobs:
   # ── C++: build + gtest (CUDA) — only possible on self-hosted GPU runner ──────
   cpp-test-cuda:
     name: C++ build + tests (CUDA)
+    if: github.actor != 'dependabot[bot]'
     runs-on: [self-hosted, linux, x64, cuda, gpu]
     timeout-minutes: 20
     steps:
@@ -152,6 +153,7 @@ jobs:
   # ── Docker: CPU + CUDA (self-hosted has Docker + GPU) ────────────────────────
   docker-build:
     name: Docker build (CPU + CUDA)
+    if: github.actor != 'dependabot[bot]'
     runs-on: [self-hosted, linux, x64, cuda, gpu]
     timeout-minutes: 30
     steps:
@@ -175,8 +177,9 @@ jobs:
       - name: Check all jobs passed
         run: |
           results='${{ toJSON(needs) }}'
+          # skipped jobs (Dependabot) are acceptable — only failures block
           if echo "$results" | grep -q '"result":"failure"'; then
             echo "One or more required jobs failed."
             exit 1
           fi
-          echo "All CI jobs passed."
+          echo "All CI jobs passed or skipped."
