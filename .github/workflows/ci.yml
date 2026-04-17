@@ -6,19 +6,42 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  GO_VERSION_FILE: go/go.mod
 
 jobs:
-  # ── Go: pure-Go packages (no CGo, no GPU required) ──────────────────────────
-  go-test:
-    name: Go tests (pure-Go packages)
+  # ── Go: lint ─────────────────────────────────────────────────────────────────
+  go-lint:
+    name: Go lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: go
+          args: --timeout=5m
+
+  # ── Go: vet + pure-Go tests ──────────────────────────────────────────────────
+  go-test:
+    name: Go tests (pure-Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
@@ -27,70 +50,49 @@ jobs:
         working-directory: go
         run: go vet ./hub/... ./grpc/... ./client/... ./tracker/... ./analytics/...
 
-      - name: go test — hub
+      - name: go test
         working-directory: go
-        run: go test -race -count=1 ./hub/...
-
-      - name: go test — grpc
-        working-directory: go
-        run: go test -race -count=1 ./grpc/...
-
-      - name: go test — client
-        working-directory: go
-        run: go test -race -count=1 ./client/...
-
-      - name: go test — tracker
-        working-directory: go
-        run: go test -race -count=1 ./tracker/...
-
-      - name: go test — analytics
-        working-directory: go
-        run: go test -race -count=1 ./analytics/...
+        run: go test -race -count=1 -timeout=120s ./hub/... ./grpc/... ./client/... ./tracker/... ./analytics/...
 
   # ── Go: server package (pure-Go subset, no CGo) ──────────────────────────────
   go-test-server:
-    name: Go tests (server — no CGo)
+    name: Go tests (server)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
-      - name: go test — server (metrics, auth, queue, tracing, websocket)
+      - name: go test — server
         working-directory: go
-        # batcher.go has a //go:build cgo constraint so it is excluded here.
-        # All other server code (routing, health, metrics, auth, queue, tracing) is pure Go.
-        # -race requires cgo, so we omit it when CGO_ENABLED=0.
         env:
           CGO_ENABLED: "0"
-        run: go test -count=1 ./server/...
+        run: go test -count=1 -timeout=120s ./server/...
 
-  # ── Helm: dry-run validation ──────────────────────────────────────────────────
-  helm-lint:
-    name: Helm lint + dry-run
+  # ── C++: format check ────────────────────────────────────────────────────────
+  cpp-format:
+    name: C++ format check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: v3.14.0
+      - name: Install clang-format
+        run: sudo apt-get install -y clang-format-18
 
-      - name: helm lint
-        run: helm lint deploy/helm/infergo/
+      - name: Check formatting
+        run: |
+          find cpp -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \
+            | grep -v vendor \
+            | xargs clang-format-18 --dry-run --Werror
 
-      - name: helm template (dry-run validation)
-        run: helm template infergo deploy/helm/infergo/ --debug > /dev/null
-
-  # ── C++ build + tests (GPU not required for unit tests) ──────────────────────
+  # ── C++: build + gtest (CPU) ─────────────────────────────────────────────────
   cpp-test:
-    name: C++ build + gtest (CPU)
+    name: C++ build + tests (CPU)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -99,35 +101,42 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y cmake ninja-build libopenblas-dev libgtest-dev libgmock-dev wget curl
+          sudo apt-get install -y cmake ninja-build libopenblas-dev \
+            libgtest-dev libgmock-dev wget
+
+      - name: Cache ONNX Runtime
+        uses: actions/cache@v4
+        id: ort-cache
+        with:
+          path: /opt/onnxruntime
+          key: onnxruntime-1.24.4-linux-x64
 
       - name: Install ONNX Runtime
+        if: steps.ort-cache.outputs.cache-hit != 'true'
         run: |
-          ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/aarch64/')
-          wget -q "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-${ARCH}-1.24.4.tgz"
-          sudo tar -xzf "onnxruntime-linux-${ARCH}-1.24.4.tgz" -C /opt
-          sudo mv "/opt/onnxruntime-linux-${ARCH}-1.24.4" /opt/onnxruntime
+          wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-1.24.4.tgz
+          sudo tar -xzf onnxruntime-linux-x64-1.24.4.tgz -C /opt
+          sudo mv /opt/onnxruntime-linux-x64-1.24.4 /opt/onnxruntime
+      - run: |
           echo "/opt/onnxruntime/lib" | sudo tee /etc/ld.so.conf.d/onnxruntime.conf
           sudo ldconfig
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: tokenizer-rs/target
+          key: rust-${{ hashFiles('tokenizer-rs/Cargo.lock') }}
 
       - name: Build Rust tokenizer
         run: cargo build --release --manifest-path tokenizer-rs/Cargo.toml
-
-      - name: Download tokenizer test fixture
-        run: |
-          mkdir -p /tmp/bert_tokenizer
-          wget -q -O /tmp/bert_tokenizer/tokenizer.json \
-            "https://huggingface.co/bert-base-uncased/resolve/main/tokenizer.json"
 
       - name: Generate ONNX test fixtures
         run: |
           pip install onnx numpy --quiet
           python3 - <<'EOF'
-          import numpy as np
-          import onnx
+          import numpy as np, onnx
           from onnx import numpy_helper, TensorProto, helper
           x = helper.make_tensor_value_info('x', TensorProto.FLOAT, [1, 4])
           y = helper.make_tensor_value_info('y', TensorProto.FLOAT, [1, 4])
@@ -136,19 +145,14 @@ jobs:
           graph = helper.make_graph([node], 'scale', [x], [y], initializer=[scale])
           model = helper.make_model(graph, opset_imports=[helper.make_opsetid('', 17)])
           onnx.save(model, '/tmp/scale.onnx')
-          print('Created /tmp/scale.onnx')
           EOF
 
-      - name: Configure (CPU only)
-        env:
-          ONNXRUNTIME_ROOT: /opt/onnxruntime
+      - name: Configure (CPU)
         run: |
-          cmake -S . -B build \
-            -G Ninja \
+          cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_CUDA=OFF \
-            -DGGML_BLAS=ON \
-            -DGGML_BLAS_VENDOR=OpenBLAS \
+            -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS \
             -DINFER_CUDA=OFF \
             -DINFER_TESTS=ON \
             -DONNXRUNTIME_ROOT=/opt/onnxruntime
@@ -159,17 +163,31 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure -j$(nproc)
 
-  # ── Docker: build images (no push) ────────────────────────────────────────────
-  docker-build:
-    name: Docker build (CPU + CUDA)
+  # ── Helm: lint + dry-run ─────────────────────────────────────────────────────
+  helm-lint:
+    name: Helm lint
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.17.0
+
+      - run: helm lint deploy/helm/infergo/
+      - run: helm template infergo deploy/helm/infergo/ --debug > /dev/null
+
+  # ── Docker: CPU image only (CUDA too slow for CI, built on release) ──────────
+  docker-build:
+    name: Docker build (CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Build CPU image
         uses: docker/build-push-action@v6
@@ -181,12 +199,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build CUDA image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.cuda
-          push: false
-          tags: infergo:cuda-test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+  # ── Summary: required checks gate ───────────────────────────────────────────
+  ci-pass:
+    name: CI pass
+    needs: [go-lint, go-test, go-test-server, cpp-test, helm-lint, docker-build]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          results='${{ toJSON(needs) }}'
+          if echo "$results" | grep -q '"result":"failure"'; then
+            echo "One or more required jobs failed."
+            exit 1
+          fi
+          echo "All jobs passed."
