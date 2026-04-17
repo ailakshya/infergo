@@ -48,6 +48,8 @@ typedef _VdbSearchC = Int32 Function(Pointer<Void>, Pointer<Float>, Int32, Int32
 typedef _VdbSearchDart = int Function(Pointer<Void>, Pointer<Float>, int, int, Pointer<Utf8>, Pointer<Int64>, Pointer<Float>, int);
 typedef _VdbFreeC = Void Function(Pointer<Void>);
 typedef _VdbFreeDart = void Function(Pointer<Void>);
+typedef _VdbSizeC = Int32 Function(Pointer<Void>);
+typedef _VdbSizeDart = int Function(Pointer<Void>);
 typedef _Bm25CreateC = Pointer<Void> Function(Float, Float);
 typedef _Bm25CreateDart = Pointer<Void> Function(double, double);
 typedef _Bm25InsertC = Void Function(Pointer<Void>, Int64, Pointer<Utf8>);
@@ -56,6 +58,8 @@ typedef _Bm25SearchC = Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32, Point
 typedef _Bm25SearchDart = int Function(Pointer<Void>, Pointer<Utf8>, int, Pointer<Int64>, Pointer<Float>, int);
 typedef _Bm25FreeC = Void Function(Pointer<Void>);
 typedef _Bm25FreeDart = void Function(Pointer<Void>);
+typedef _Bm25SizeC = Int32 Function(Pointer<Void>);
+typedef _Bm25SizeDart = int Function(Pointer<Void>);
 
 final _lastError = _lib.lookupFunction<_LastErrorC, _LastErrorDart>('infer_last_error_string');
 final _llmCreate = _lib.lookupFunction<_LlmCreateC, _LlmCreateDart>('infer_llm_create');
@@ -73,10 +77,12 @@ final _vdbCreate = _lib.lookupFunction<_VdbCreateC, _VdbCreateDart>('infer_vecto
 final _vdbInsert = _lib.lookupFunction<_VdbInsertC, _VdbInsertDart>('infer_vectordb_insert');
 final _vdbSearch = _lib.lookupFunction<_VdbSearchC, _VdbSearchDart>('infer_vectordb_search');
 final _vdbFree = _lib.lookupFunction<_VdbFreeC, _VdbFreeDart>('infer_vectordb_free');
+final _vdbSize = _lib.lookupFunction<_VdbSizeC, _VdbSizeDart>('infer_vectordb_size');
 final _bm25Create = _lib.lookupFunction<_Bm25CreateC, _Bm25CreateDart>('infer_bm25_create');
 final _bm25Insert = _lib.lookupFunction<_Bm25InsertC, _Bm25InsertDart>('infer_bm25_insert');
 final _bm25Search = _lib.lookupFunction<_Bm25SearchC, _Bm25SearchDart>('infer_bm25_search');
 final _bm25Free = _lib.lookupFunction<_Bm25FreeC, _Bm25FreeDart>('infer_bm25_free');
+final _bm25Size = _lib.lookupFunction<_Bm25SizeC, _Bm25SizeDart>('infer_bm25_size');
 
 class InfergoException implements Exception {
   final String message;
@@ -192,6 +198,8 @@ class VectorDB {
     return results;
   }
 
+  int get size => _vdbSize(_handle!);
+
   void close() { if (_handle != null) { _vdbFree(_handle!); _handle = null; } }
 }
 
@@ -218,6 +226,8 @@ class BM25 {
     calloc.free(ids); calloc.free(scores);
     return results;
   }
+
+  int get size => _bm25Size(_handle!);
 
   void close() { if (_handle != null) { _bm25Free(_handle!); _handle = null; } }
 }

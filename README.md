@@ -14,7 +14,9 @@
 
 <p align="center">
   <a href="docs/getting-started.md">Getting Started</a> --
+  <a href="docs/sdk.md">Native SDKs (14 languages)</a> --
   <a href="docs/python.md">Python SDK</a> --
+  <a href="docs/transport.md">Transport Guide</a> --
   <a href="docs/detection.md">Detection</a> --
   <a href="docs/video-annotation.md">Video Pipeline</a> --
   <a href="docs/go-api-reference.md">Go API</a> --
@@ -296,6 +298,8 @@ Client (Python / TypeScript / Go / curl / any language)
 | Model validation | Pre-flight model checks via `infergo validate` |
 | Python SDK | `pip install infergo` -- chat, embed, detect, search, NER, sentiment, classify, summarize |
 | TypeScript SDK | `npm install @infergo/client` -- streaming, fully typed |
+| Native SDKs | 14 languages: C/C++, Python, Rust, Java, Node.js, C#, Swift, Ruby, PHP, Dart, Zig, Elixir, Lua, WASM |
+| Transport layers | Shared memory (0.01ms), Unix socket (0.3ms), gRPC (1.5ms), HTTP (4ms) |
 
 ### Enterprise
 
@@ -527,7 +531,61 @@ infergo convert --input model.onnx --output model.torchscript
 
 ## SDKs
 
-### Python SDK
+infergo provides **two types** of SDK:
+
+1. **HTTP SDKs** — connect to a running `infergo serve` instance over the network (any machine)
+2. **Native SDKs** — link directly to `libinfer_api.so` for zero-overhead inference (same machine as GPU)
+
+### Native SDKs (14 languages, zero HTTP overhead)
+
+Link directly to the C inference engine. No server, no serialization, no network. 0.01ms overhead.
+
+| Language | Directory | Binding | Install |
+|---|---|---|---|
+| **C / C++** | `sdk/c/` | Direct link | `gcc app.c -linfer_api` or CMake `find_package(infergo)` |
+| **Python** | `sdk/python-native/` | ctypes | `export INFERGO_LIB_DIR=...` |
+| **Rust** | `sdk/rust/` | FFI (infergo-sys) | `cargo add infergo` |
+| **Java / Kotlin** | `sdk/java/` | JNI | `gradle build` |
+| **Node.js** | `sdk/nodejs/` | N-API addon | `npm install` (builds native) |
+| **C# / .NET** | `sdk/dotnet/` | P/Invoke | `dotnet build` |
+| **Swift** | `sdk/swift/` | C bridging | Swift Package Manager |
+| **Ruby** | `sdk/ruby/` | FFI gem | `gem install ffi` |
+| **PHP** | `sdk/php/` | FFI extension | `composer install` (PHP 7.4+) |
+| **Dart / Flutter** | `sdk/dart/` | dart:ffi | Add to `pubspec.yaml` |
+| **Zig** | `sdk/zig/` | @cImport | `zig build` |
+| **Elixir / Erlang** | `sdk/elixir/` | NIF | `mix compile` |
+| **Lua** | `sdk/lua/` | LuaJIT FFI | `require("infergo")` |
+| **WASM / JS** | `sdk/wasm/` | Emscripten | `make` (CPU only) |
+
+Every native SDK wraps the same C API (`libinfer_api.so`) and provides: **LLM generation, embedding, vector search, BM25 search, LoRA adapters, and RAG pipeline.**
+
+```python
+# Python — zero HTTP, direct C call
+from infergo_native import LLM, VectorDB
+
+with LLM("model.gguf") as llm:
+    print(llm.generate("Hello!"))  # 0.01ms overhead vs raw C++
+```
+
+```rust
+// Rust — safe RAII bindings
+let llm = infergo::Llm::new("model.gguf", -1, 4096, 1, 2048)?;
+let result = llm.generate("Hello!", 128, 0.7, 0.9, None)?;
+```
+
+```cpp
+// C++ — header-only RAII
+infergo::LLM llm("model.gguf");
+std::cout << llm.generate("Hello!") << std::endl;
+```
+
+See **[Native SDK Reference](docs/sdk.md)** for full API docs, install guides, and examples for all 14 languages.
+
+### HTTP SDKs (any machine)
+
+Connect to `infergo serve` over the network. Works from any machine.
+
+#### Python
 
 ```bash
 pip install infergo
@@ -535,41 +593,13 @@ pip install infergo
 
 ```python
 from infergo import InfergoClient
-
 client = InfergoClient("http://localhost:9090", api_key="YOUR_KEY")
-
-# Chat
 response = client.chat("What is Go?", model="llm")
-print(response.content)
-
-# Streaming chat
-for chunk in client.chat("Tell me a story", model="llm", stream=True):
-    print(chunk.content, end="")
-
-# Embedding
-vectors = client.embed(["hello", "world"], model="embed")
-
-# Detection
-detections = client.detect("photo.jpg", model="detect")
-
-# Search
-results = client.search("quantum computing", collection="docs", top_k=5)
-
-# NER
+vectors = client.embed(["hello"], model="embed")
 entities = client.ner("John works at Google.", model="llm")
-
-# Sentiment
-sentiment = client.sentiment("I love this product!", model="llm")
-
-# Classification
-label = client.classify("Urgent: server is down", model="llm",
-                         labels=["urgent", "normal", "low"])
-
-# Summarization
-summary = client.summarize(long_text, model="llm")
 ```
 
-### TypeScript SDK
+#### TypeScript
 
 ```bash
 npm install @infergo/client
@@ -577,54 +607,31 @@ npm install @infergo/client
 
 ```typescript
 import { InfergoClient } from '@infergo/client';
-
-const client = new InfergoClient('http://localhost:9090', { apiKey: 'YOUR_KEY' });
-
-// Chat
-const response = await client.chat({
-  model: 'llm',
-  messages: [{ role: 'user', content: 'Hello' }],
-});
-
-// Streaming
-for await (const chunk of client.chatStream({
-  model: 'llm',
-  messages: [{ role: 'user', content: 'Tell me a story' }],
-})) {
+const client = new InfergoClient('http://localhost:9090');
+const response = await client.chat({ model: 'llm', messages: [{ role: 'user', content: 'Hello' }] });
+for await (const chunk of client.chatStream({ model: 'llm', messages: [...] })) {
   process.stdout.write(chunk.content);
 }
-
-// Embedding
-const vectors = await client.embed({ model: 'embed', input: ['hello'] });
-
-// Detection
-const detections = await client.detect({ model: 'detect', imageBase64: b64 });
 ```
 
-### Go SDK
+#### Go
 
 ```go
 import "github.com/ailakshya/infergo/go/client"
-
 c := client.New("http://localhost:9090", client.WithAPIKey("key"))
-
-// Chat
-resp, _ := c.Chat(ctx, client.ChatRequest{
-    Model:    "llm",
-    Messages: []client.Message{{Role: "user", Content: "Hello"}},
-})
-
-// Embedding
+resp, _ := c.Chat(ctx, client.ChatRequest{Model: "llm", Messages: msgs})
 vec, _ := c.Embed(ctx, client.EmbedRequest{Model: "embed", Input: "hello"})
-
-// Detection
-dets, _ := c.Detect(ctx, client.DetectRequest{Model: "detect", ImageB64: b64})
-
-// Search
-results, _ := c.Search(ctx, client.SearchRequest{
-    Query: "quantum computing", Collection: "docs", TopK: 5,
-})
 ```
+
+### Transport Selection
+
+| Where is your app? | Use | Overhead |
+|---|---|---|
+| Same process (embedded) | Native SDK (direct link) | 0.001ms |
+| Same machine (client/server) | [Shared memory or Unix socket](docs/transport.md) | 0.01–0.3ms |
+| Different machine (remote GPU) | HTTP or gRPC | 1.5–4ms |
+
+See **[Transport Guide](docs/transport.md)** for architecture decision flowchart.
 
 ---
 
