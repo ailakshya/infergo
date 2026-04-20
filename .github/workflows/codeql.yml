@@ -34,7 +34,7 @@ jobs:
           submodules: recursive
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           queries: security-extended
@@ -42,7 +42,7 @@ jobs:
       # Go: let CodeQL autobuild
       - name: Autobuild (Go)
         if: matrix.language == 'go'
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@v4
 
       # C++: manual build so CodeQL traces all translation units
       - name: Build C++ for analysis
@@ -62,6 +62,6 @@ jobs:
           cmake --build build -j$(nproc)
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: /language:${{ matrix.language }}
