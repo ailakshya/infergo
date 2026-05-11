@@ -1,5 +1,5 @@
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM ubuntu:24.04 AS builder
+FROM ubuntu:26.04 AS builder
 
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -63,7 +63,7 @@ RUN cp /src/build/cpp/api/libinfer_api.so /out/libinfer_api.so
 
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
